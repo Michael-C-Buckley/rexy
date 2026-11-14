@@ -473,9 +473,8 @@ impl Connection<'_> {
     async fn perform(&mut self, action: Action) -> Result<Option<Response>> {
         let (rpc, shared) = (&self.rpc, self.shared);
         let session = match &action {
-            Action::CreateSession { name } => {
+            Action::CreateSession => {
                 let payload = json!({
-                    "label": name,
                     "initial_windows": [{"window_label": "Shell", "layout": shell()}],
                 });
                 let created = rpc.call("session.create", payload).await?;
@@ -607,7 +606,7 @@ impl Connection<'_> {
                 (pane, "block.event", payload, false)
             }
             // Handled above, or by the connection loop.
-            Action::CreateSession { .. }
+            Action::CreateSession
             | Action::SelectSession(_)
             | Action::Leave(_)
             | Action::Reconnect => return Ok(None),

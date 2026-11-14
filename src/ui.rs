@@ -77,8 +77,6 @@ pub struct App {
     /// Home's address, as typed.
     endpoint: String,
     sidebar: bool,
-    /// The server and the name being typed while the new-session dialog is open.
-    new_session: Option<(usize, String)>,
     /// The pane that has the keyboard, while one is on screen.
     focused: Option<String>,
     panes: HashMap<String, PaneView>,
@@ -95,7 +93,6 @@ impl App {
             current: 0,
             endpoint,
             sidebar: true,
-            new_session: None,
             focused: None,
             panes: HashMap::new(),
             keyboard: Keyboard::default(),
@@ -122,12 +119,9 @@ impl App {
 
     /// Home names the other servers. Keep a connection to each, and to no others.
     fn follow_hosts(&mut self, ctx: &egui::Context, home: &View) {
-        // Only a connected home knows, and a server is not swapped under an open dialog.
-        if !home.connected || self.new_session.is_some() {
-            return;
-        }
         let listed = self.servers[1..].iter().map(|server| &server.host);
-        if listed.eq(&home.hosts) {
+        // Only a connected home knows.
+        if !home.connected || listed.eq(&home.hosts) {
             return;
         }
         let current = self.servers[self.current].host.clone();
@@ -141,11 +135,6 @@ impl App {
         }
         let current = self.servers.iter().position(|s| s.host == current);
         self.current = current.unwrap_or(0);
-    }
-
-    /// A dialog or a menu is up, and keeps the keyboard to itself.
-    fn modal(&self, ctx: &egui::Context) -> bool {
-        self.new_session.is_some() || egui::Popup::is_any_open(ctx)
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context, view: &View) {
@@ -167,11 +156,11 @@ impl App {
                 paste();
             }
         }
-        if self.modal(ctx) {
+        if egui::Popup::is_any_open(ctx) {
             return;
         }
-        if pressed(chord, Key::N) {
-            self.new_session = Some((self.current, String::new()));
+        if pressed(chord, Key::N) && view.connected {
+            self.send(Action::CreateSession);
         }
         if pressed(chord, Key::T) && view.connected {
             self.send(Action::CreateWindow);
@@ -212,7 +201,7 @@ impl App {
                             let _ = self.servers[index].client.try_send(Action::Reconnect);
                         }
                     } else if icon_button(ui, Icon::Plus, "New session").clicked() {
-                        self.new_session = Some((index, String::new()));
+                        self.open(index, Action::CreateSession);
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.add_space(12.0);
@@ -308,7 +297,7 @@ impl App {
                 ui.label(RichText::new(about).color(DIM));
                 ui.add_space(12.0);
                 if ui.add(action("New Session")).clicked() {
-                    self.new_session = Some((self.current, String::new()));
+                    self.send(Action::CreateSession);
                 }
                 return;
             }
@@ -335,8 +324,8 @@ impl App {
 
     fn terminal_pane(&mut self, ui: &mut egui::Ui, pane: &Pane, rect: Rect, split: bool) {
         let active = self.focused.as_deref() == Some(&pane.id);
-        // The focused pane holds the keyboard whenever a dialog or a menu does not.
-        let keyboard = active && !self.modal(ui.ctx());
+        // The focused pane holds the keyboard whenever a menu does not.
+        let keyboard = active && !egui::Popup::is_any_open(ui.ctx());
         let mut terminal_rect = rect;
         if split {
             ui.painter().with_clip_rect(rect).text(
@@ -489,60 +478,6 @@ impl App {
         }
     }
 
-    fn session_dialog(&mut self, ctx: &egui::Context) {
-        let Some((server, name)) = &mut self.new_session else {
-            return;
-        };
-        let server = *server;
-        let place = match server {
-            0 => "the server",
-            _ => self.servers[server].label(),
-        };
-        let about = format!("Its programs keep running on {place}.");
-        let (mut create, mut cancel) = (false, false);
-        let frame = egui::Frame::new()
-            .fill(POPOVER)
-            .corner_radius(14)
-            .inner_margin(24);
-        let modal = egui::Modal::new(egui::Id::unique("new-session"))
-            .frame(frame)
-            .show(ctx, |ui| {
-                ui.set_width(300.0);
-                ui.spacing_mut().item_spacing.y = 12.0;
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("New Session").font(bold(17.0)));
-                    ui.label(RichText::new(about).color(DIM));
-                });
-                let field = ui.add(
-                    egui::TextEdit::singleline(name)
-                        .hint_text("Name")
-                        .margin(egui::vec2(10.0, 8.0))
-                        .desired_width(f32::INFINITY),
-                );
-                if !field.has_focus() {
-                    field.request_focus();
-                }
-                let named = !name.trim().is_empty();
-                ui.columns(2, |columns| {
-                    let size = [columns[0].available_width(), 36.0];
-                    cancel = columns[0]
-                        .add_sized(size, egui::Button::new("Cancel"))
-                        .clicked();
-                    columns[1].add_enabled_ui(named, |ui| {
-                        create = ui.add_sized(size, suggested("Create")).clicked();
-                    });
-                });
-                create |= named && ui.input(|i| i.key_pressed(Key::Enter));
-            });
-        if create {
-            let name = name.trim().to_owned();
-            self.open(server, Action::CreateSession { name });
-        }
-        if create || cancel || modal.should_close() {
-            self.new_session = None;
-        }
-    }
-
     /// Send this frame's keyboard events to the focused pane.
     fn terminal_keys(&mut self, ctx: &egui::Context, pane: &str) {
         // Escape leaves a selection instead of reaching the program.
@@ -572,8 +507,8 @@ impl eframe::App for App {
             self.toast.say(error);
         }
         let view = &views[self.current];
-        // Whether this frame's keys were pressed with a dialog or a menu up.
-        let modal = self.modal(&ctx);
+        // Whether this frame's keys were pressed with a menu up.
+        let menu = egui::Popup::is_any_open(&ctx);
         self.shortcuts(&ctx, view);
         if self.sidebar {
             self.sidebar(root_ui, &views);
@@ -614,10 +549,9 @@ impl eframe::App for App {
                     self.terminal_pane(ui, pane, rect, panes.len() > 1);
                 }
             });
-        self.session_dialog(&ctx);
         self.toast.show(&ctx);
         if view.connected
-            && !modal
+            && !menu
             && let Some(pane) = self.focused.clone()
         {
             self.terminal_keys(&ctx, &pane);
@@ -700,7 +634,7 @@ impl Pointer<'_> {
                     pressed,
                     modifiers,
                 } => {
-                    // Hovered, not merely inside: a dialog or a menu over the pane keeps its clicks.
+                    // Hovered, not merely inside: whatever is drawn over the pane keeps its clicks.
                     let start = *pressed && self.tracking && self.response.hovered();
                     let end = !pressed && state.mouse_button == Some(*button);
                     if start || end {

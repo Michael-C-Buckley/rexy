@@ -44,7 +44,7 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## Controls
 
-- Click a session or tab to switch. `+` beside a server creates a session there; `+` in the toolbar creates a tab, and the two buttons beside it split the focused pane right or down.
+- Click a session or tab to switch. `+` beside a server creates a session there, which the server names; `+` in the toolbar creates a tab, and the two buttons beside it split the focused pane right or down.
 - Click a pane to focus it. Input and focus take ownership; only owned panes are resized.
 - Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes. **Shift** overrides a program's mouse capture for selection and scrollback.
 - **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: toggle sidebar.

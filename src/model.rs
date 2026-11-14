@@ -138,9 +138,8 @@ pub enum Action {
         y: u16,
         lines: i32,
     },
-    CreateSession {
-        name: String,
-    },
+    /// The server chooses the new session's name.
+    CreateSession,
     CreateWindow,
     Split {
         pane: String,
