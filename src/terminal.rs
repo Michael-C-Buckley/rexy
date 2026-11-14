@@ -1,7 +1,12 @@
-//! Ghostty belongs to one worker per pane. The UI only borrows immutable frames.
+//! Ghostty belongs to one worker per pane. The UI only borrows immutable frames,
+//! and asks the worker for what is to be selected or found.
 //!
 //! A pane starts with a streamed Ghostty snapshot, then carries VT output with
 //! nonce-tagged Rex metadata. Neither socket reads nor UI callbacks decode it.
+mod find;
+mod request;
+mod select;
+
 use anyhow::{Context, Result, anyhow, ensure};
 use libghostty_vt::{
     RenderState, Terminal,
@@ -27,6 +32,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use find::Finding;
+pub use request::{Copied, Request};
+use select::Selecting;
 
 const CHUNK_BYTES: usize = 64 * 1024;
 const QUEUE_CHUNKS: usize = 16;
@@ -113,62 +122,34 @@ pub struct Frame {
     /// Scrolled back, it is as of this frame: history that grows under a view
     /// it leaves as it was draws no new one.
     pub scroll_offset: usize,
+    /// What is selected of each row, as columns from one up to another. Empty
+    /// when nothing is selected anywhere, in view or out of it.
+    pub selected: Vec<Option<(u16, u16)>>,
+    /// While text is looked for: which of its matches is selected, the newest
+    /// being the first, and how many have been found.
+    pub found: Option<(usize, usize)>,
 }
 
 impl Frame {
-    /// Copy inclusive flat cell bounds, retaining graphemes and soft line wraps.
-    pub fn selected_text(&self, start: usize, end: usize) -> String {
-        let cols = usize::from(self.cols);
-        if cols == 0 || self.lines.is_empty() {
-            return String::new();
-        }
-        let limit = cols.saturating_mul(self.lines.len());
-        let (mut start, end) = (start.min(end), start.max(end).min(limit - 1));
-        if start >= limit {
-            return String::new();
-        }
-        // Clicking the trailing half of a wide glyph selects the glyph too.
-        while start % cols > 0
-            && self.lines[start / cols]
-                .cells
-                .get(start % cols)
-                .is_some_and(|cell| cell.spacer_tail)
-        {
-            start -= 1;
-        }
-        let mut out = String::new();
-        for (y, row) in self
-            .lines
-            .iter()
-            .enumerate()
-            .take(end / cols + 1)
-            .skip(start / cols)
-        {
-            let left = if y == start / cols { start % cols } else { 0 };
-            let right = if y == end / cols {
-                end % cols
-            } else {
-                cols - 1
-            };
-            let mut line = String::new();
-            for (x, cell) in row.cells.iter().enumerate().take(right + 1).skip(left) {
-                if !cell.spacer_tail && !cell.spacer_head {
-                    match row.text(x, x + 1) {
-                        "" => line.push(' '),
-                        text => line.push_str(text),
-                    }
+    /// The text of every row on show, a line to each but where a row wraps into
+    /// the next. For tests: what the user copies is read from the terminal.
+    pub fn text(&self) -> String {
+        let mut text = String::new();
+        for row in &self.lines {
+            for (x, cell) in row.cells.iter().enumerate() {
+                match row.text(x, x + 1) {
+                    _ if cell.spacer_tail || cell.spacer_head => {}
+                    "" => text.push(' '),
+                    shown => text.push_str(shown),
                 }
             }
-            if row.wrapped && y < end / cols {
-                out.push_str(&line);
-            } else {
-                out.push_str(line.trim_end_matches(' '));
-                if y < end / cols {
-                    out.push('\n');
-                }
+            if !row.wrapped {
+                text.truncate(text.trim_end_matches(' ').len());
+                text.push('\n');
             }
         }
-        out
+        text.truncate(text.strip_suffix('\n').unwrap_or(&text).len());
+        text
     }
 }
 
@@ -183,6 +164,8 @@ struct Shared {
     scroll: AtomicI32,
     prompts: AtomicI32,
     bottom: AtomicBool,
+    asks: Mutex<Vec<Request>>,
+    copied: Mutex<Vec<Copied>>,
     repaint: Notify,
 }
 
@@ -203,6 +186,8 @@ impl TerminalHandle {
             scroll: AtomicI32::new(0),
             prompts: AtomicI32::new(0),
             bottom: AtomicBool::new(false),
+            asks: Mutex::default(),
+            copied: Mutex::default(),
             repaint,
         });
         let worker_shared = shared.clone();
@@ -270,6 +255,17 @@ impl TerminalHandle {
         self.shared.scroll.store(0, Relaxed);
         self.shared.prompts.store(0, Relaxed);
         self.wake();
+    }
+
+    /// Nothing is said of a worker that has stopped: its pane says so.
+    pub fn ask(&self, request: Request) {
+        self.shared.asks.lock().unwrap().push(request);
+        self.wake();
+    }
+
+    /// The selected text handed back since this was last asked.
+    pub fn copied(&self) -> Vec<Copied> {
+        std::mem::take(&mut self.shared.copied.lock().unwrap())
     }
 
     fn nudge(&self, control: &AtomicI32, by: i32) -> Result<()> {
@@ -491,14 +487,22 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
         }
     })?;
     let mut parser = ApcParser::new(nonce);
+    let (mut selecting, mut finding) = (Selecting::new()?, Finding::default());
     // A frame is owed whatever a program holds back: the first after a restore,
-    // and where the user has scrolled to.
+    // and what the user has scrolled to, selected or found.
     let mut owed = true;
+    // The terminal has been written to since text was last looked for in it.
+    let mut wrote = false;
     loop {
         owed |= apply_controls(shared, &mut terminal)?;
+        owed |= request::heed(shared, &mut terminal, &mut selecting, &mut finding)?;
+        owed |= selecting.tick(&terminal)?;
+        let looking = finding.work(&mut terminal, std::mem::take(&mut wrote))?;
         let now = Instant::now();
         let wait = {
             let mut renderer = renderer.borrow_mut();
+            let found = finding.found()?;
+            owed |= std::mem::replace(&mut renderer.found, found) != found;
             // The terminal has no clock, so a hold that never ends is ended here.
             if renderer
                 .held
@@ -520,12 +524,20 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
                 }
             }
         };
+        // Looking goes on between one input and the next, and so does following
+        // a drag held past the top or the bottom, a row a frame.
+        let wait = match wait {
+            _ if looking => Some(Duration::ZERO),
+            _ if selecting.scrolling => Some(wait.unwrap_or(FRAME_INTERVAL).min(FRAME_INTERVAL)),
+            _ => wait,
+        };
         let Some(command) = input.next(wait) else {
             return Ok(());
         };
         let Command::Bytes(bytes) = command else {
             continue;
         };
+        wrote = true;
         for part in parser.feed(&bytes)? {
             match part {
                 Part::Output(bytes) => {
@@ -725,6 +737,8 @@ struct Renderer {
     read: Row,
     /// The colours of that frame. Ghostty marks nothing dirty when only they change.
     colors: Option<Colors>,
+    /// What the next frame is to say of the text looked for.
+    found: Option<(usize, usize)>,
     /// When the last new frame was drawn, when the last was drawn as a hold began,
     /// and since when its program has held frames back (synchronized output, DEC
     /// mode 2026).
@@ -743,6 +757,7 @@ impl Renderer {
             known: HashMap::new(),
             read: Row::default(),
             colors: None,
+            found: None,
             drawn: Instant::now() - FRAME_INTERVAL,
             caught: Instant::now() - FRAME_INTERVAL,
             held: None,
@@ -796,6 +811,7 @@ impl Renderer {
                     && old.mouse_tracking == mouse_tracking
                     && old.alternate_screen == alternate_screen
                     && old.alternate_scroll == alternate_scroll
+                    && old.found == self.found
             })
         {
             return Ok(None);
@@ -809,6 +825,10 @@ impl Renderer {
         let full = dirty == Dirty::Full || recolored;
         let mut lines = Vec::with_capacity(usize::from(rows));
         let mut known = HashMap::with_capacity(usize::from(rows));
+        // A row is asked what is selected of it only when something is, and its
+        // text is none the newer for that.
+        let selecting = terminal.selection()?.is_some();
+        let mut selected = Vec::new();
         let mut iterator = self.rows.update(&snapshot)?;
         while let Some(line) = iterator.next() {
             let id = line.id()?;
@@ -824,6 +844,12 @@ impl Renderer {
                         .unwrap_or_else(|| Arc::new(row.clone()))
                 }
             };
+            if selecting {
+                // Ghostty ends at the first half of a wide glyph, which is selected whole.
+                let tail = |x: u16| row.cells.get(usize::from(x)).is_some_and(|c| c.spacer_tail);
+                let part = line.selection()?.map(|part| (part.start_x, part.end_x + 1));
+                selected.push(part.map(|(start, end)| (start, end + u16::from(tail(end)))));
+            }
             known.insert(id, row.clone());
             lines.push(row);
         }
@@ -841,6 +867,8 @@ impl Renderer {
             cursor,
             cursor_color: colors.cursor.map(rgb).unwrap_or(fg),
             cursor_shape,
+            selected,
+            found: self.found,
         });
         snapshot.clean()?;
         self.previous = Some(frame.clone());

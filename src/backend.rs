@@ -1250,6 +1250,11 @@ impl<'a> Connection<'a> {
                 let wheel = json!({"x": x, "y": y, "delta_x": 0, "delta_y": lines});
                 (pane, "block.event", event("wheel", wheel), Some(false))
             }
+            // The server passes it on only to a program that asked to be told.
+            Action::Focus { pane, gained } => {
+                let focus = json!({"action": if gained { "in" } else { "out" }});
+                (pane, "block.event", event("focus", focus), Some(false))
+            }
             // Done by `perform`, or by the connection loop.
             _ => return Ok(()),
         };

@@ -1,6 +1,6 @@
 use super::*;
 
-fn terminal(cols: u16, rows: u16) -> Terminal<'static, 'static> {
+pub(crate) fn terminal(cols: u16, rows: u16) -> Terminal<'static, 'static> {
     Terminal::new(cols, rows).unwrap()
 }
 
@@ -9,17 +9,17 @@ pub(crate) fn render(terminal: &Terminal<'static, '_>) -> Arc<Frame> {
     Renderer::new().unwrap().frame(terminal).unwrap().unwrap()
 }
 
-fn encode(terminal: &mut Terminal) -> Vec<u8> {
+pub(crate) fn encode(terminal: &mut Terminal) -> Vec<u8> {
     let mut bytes = Vec::new();
     terminal.encode_snapshot(&mut bytes).unwrap();
     bytes
 }
 
-const WAIT: Duration = Duration::from_secs(3);
-const QUIET: Duration = Duration::from_millis(80);
+pub(crate) const WAIT: Duration = Duration::from_secs(3);
+pub(crate) const QUIET: Duration = Duration::from_millis(80);
 
 /// A worker fed these bytes, and the moment each of its frames was published.
-fn worker(bytes: Vec<u8>) -> (TerminalHandle, flume::Receiver<Instant>) {
+pub(crate) fn worker(bytes: Vec<u8>) -> (TerminalHandle, flume::Receiver<Instant>) {
     let (wake, wakes) = flume::unbounded();
     let notify = move || {
         let _ = wake.send(Instant::now());
@@ -29,19 +29,30 @@ fn worker(bytes: Vec<u8>) -> (TerminalHandle, flume::Receiver<Instant>) {
     (handle, wakes)
 }
 
-fn write(handle: &TerminalHandle, bytes: &[u8]) {
+pub(crate) fn write(handle: &TerminalHandle, bytes: &[u8]) {
     handle.input.send(Command::Bytes(bytes.to_vec())).unwrap();
 }
 
 /// The text of every row.
 fn text(frame: &Frame) -> String {
-    frame.selected_text(0, usize::MAX)
+    frame.text()
+}
+
+/// The text of one row of those.
+pub(crate) fn row(frame: &Frame, y: usize) -> String {
+    frame.lines[y].text(0, usize::MAX).trim_end().to_owned()
 }
 
 /// The text of the first row a worker last drew.
 fn top(handle: &TerminalHandle) -> String {
-    let frame = handle.latest().unwrap();
-    frame.selected_text(0, usize::from(frame.cols) - 1)
+    row(&handle.latest().unwrap(), 0)
+}
+
+/// Wait for a worker to draw until something is so.
+pub(crate) fn until(wakes: &flume::Receiver<Instant>, mut so: impl FnMut() -> bool) {
+    while !so() {
+        wakes.recv_timeout(WAIT).unwrap();
+    }
 }
 
 struct Fragmented<R>(R);
@@ -67,7 +78,7 @@ fn fragmented_snapshot_preserves_state_and_leaves_live_tail_unread() {
     input.read_to_end(&mut live).unwrap();
     restored.vt_write(&live);
     let frame = render(&restored);
-    assert_eq!(frame.selected_text(24, 31), "界 e\u{301}");
+    assert_eq!(row(&frame, 1), "界 e\u{301}");
     let last = &frame.lines[2];
     assert_eq!(last.text(4, 5), "X");
     assert_eq!(last.look(&last.cells[4]).fg, 0x010203);
@@ -96,7 +107,7 @@ fn restored_history_is_compressed_and_opens_when_scrolled_to() {
     let usage = restored.memory_usage().unwrap();
     assert!(usage.compression_supported && usage.primary_compressed_pages > 0);
     restored.scroll_viewport(ScrollViewport::Top);
-    assert_eq!(render(&restored).selected_text(0, 19), "line 0");
+    assert_eq!(row(&render(&restored), 0), "line 0");
 }
 
 #[test]
@@ -122,7 +133,7 @@ fn image_records_in_snapshot_do_not_break_text_restore() {
         Some(false)
     );
     let frame = render(&restored);
-    assert!(frame.selected_text(0, 59).contains("text after image"));
+    assert!(text(&frame).contains("text after image"));
 }
 
 #[test]
@@ -198,13 +209,12 @@ fn metadata_is_refused_when_malformed_or_past_its_cap() {
 }
 
 #[test]
-fn frames_reuse_unchanged_rows_and_copy_whole_graphemes() {
+fn frames_reuse_unchanged_rows() {
     let mut terminal = terminal(20, 3);
     terminal.vt_write("界 e\u{301}\r\nsecond\r\nthird".as_bytes());
     let mut renderer = Renderer::new().unwrap();
     let first = renderer.frame(&terminal).unwrap().unwrap();
-    assert_eq!(first.selected_text(1, 5), "界 e\u{301}");
-    assert_eq!(first.selected_text(0, 25), "界 e\u{301}\nsecond");
+    assert_eq!(text(&first), "界 e\u{301}\nsecond\nthird");
     assert!(renderer.frame(&terminal).unwrap().is_none());
     terminal.vt_write(b"\x1b[3;1HX");
     let second = renderer.frame(&terminal).unwrap().unwrap();
@@ -360,14 +370,6 @@ fn a_theme_keeps_none_of_the_colours_a_program_set() {
     assert_eq!(rgb(terminal.color_palette().unwrap().0[1]), 0xaabbcc);
     terminal.vt_write(b"\x1b]104;1\x1b\\");
     assert_ne!(rgb(terminal.color_palette().unwrap().0[1]), 0xaabbcc);
-}
-
-#[test]
-fn copying_soft_wrapped_lines_does_not_insert_newlines() {
-    let mut terminal = terminal(5, 3);
-    terminal.vt_write(b"abcdefgh\r\nlast");
-    let frame = render(&terminal);
-    assert_eq!(frame.selected_text(0, 14), "abcdefgh\nlast");
 }
 
 #[test]

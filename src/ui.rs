@@ -2,6 +2,7 @@
 //! along the top, and the terminal. Terminal content never becomes an egui widget tree.
 mod borders;
 mod close;
+mod find;
 mod heard;
 mod input;
 mod keys;
@@ -32,6 +33,7 @@ use crate::{
     notify::{Desktop, Herald},
 };
 use close::Closing;
+use find::Find;
 use heard::Heard;
 use input::Keyboard;
 use raise::Raise;
@@ -98,6 +100,8 @@ pub struct App {
     font_size: f32,
     toast: Toast,
     rename: Option<Rename>,
+    /// The field that finds text in a pane, while it is open.
+    find: Option<Find>,
     remembered: Remembered,
     /// The session the window's title names.
     title: String,
@@ -143,6 +147,7 @@ impl App {
             font_size: kept.font_size,
             toast: Toast::default(),
             rename: None,
+            find: None,
             remembered,
             title: String::new(),
             heard: HashMap::new(),
@@ -177,7 +182,7 @@ impl App {
 
     /// Something other than a terminal is taking what is typed.
     fn busy(&self, ctx: &egui::Context) -> bool {
-        self.rename.is_some() || egui::Popup::is_any_open(ctx)
+        self.rename.is_some() || self.find.is_some() || egui::Popup::is_any_open(ctx)
     }
 
     /// Home names the other servers. Keep a connection to each, and to no others.
@@ -336,6 +341,7 @@ impl eframe::App for App {
         if !panes.iter().any(|p| Some(&p.id) == self.focused.as_ref()) {
             self.focused = window.and_then(Window::front).map(|p| p.id.clone());
         }
+        self.window_focus(&ctx);
         // Whether this frame's keys were pressed for something other than a terminal.
         let busy = self.busy(&ctx);
         // A program copies to the clipboard only from the pane the user is at, in
@@ -408,6 +414,11 @@ impl eframe::App for App {
             && !std::mem::take(&mut rename.shown)
         {
             self.rename = None;
+        }
+        if let Some(find) = &mut self.find
+            && !std::mem::take(&mut find.shown)
+        {
+            self.find_close();
         }
         // A tab that has closed needs no remembering. Which those are is known only
         // with every server heard from.

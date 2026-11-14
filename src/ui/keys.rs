@@ -42,6 +42,21 @@ impl App {
                 paste();
             }
         }
+        // Provisional, until these are rows of the table of commands. They come
+        // before the rest so that the next match can be asked for from the field.
+        if let Some(pane) = self.focused.clone() {
+            if pressed(chord, Key::F) {
+                self.find(&pane);
+            }
+            if pressed(chord, Key::A) {
+                self.select_all(&pane);
+            }
+            if pressed(Modifiers::SHIFT, Key::F3) {
+                self.find_previous(&pane);
+            } else if pressed(Modifiers::NONE, Key::F3) {
+                self.find_next(&pane);
+            }
+        }
         if self.busy(ctx) {
             return;
         }
@@ -57,7 +72,7 @@ impl App {
         if (pressed(chord, Key::C) || pressed(Modifiers::NONE, Key::Copy))
             && let Some(pane) = &self.focused
         {
-            self.copy(ctx, pane);
+            self.copy(pane);
         }
         if pressed(chord, Key::V) || pressed(Modifiers::NONE, Key::Paste) {
             paste();

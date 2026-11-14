@@ -55,12 +55,6 @@ impl Grid {
         )
     }
 
-    /// The same cell as a flat index, as selections use.
-    pub fn index_at(&self, pos: Pos2, frame: &Frame) -> usize {
-        let (x, y) = self.cell_at(pos, frame);
-        usize::from(y) * usize::from(frame.cols).max(1) + usize::from(x)
-    }
-
     /// The screen area of columns `start..end` in one row.
     pub fn span(&self, row: usize, start: usize, end: usize) -> Rect {
         Rect::from_min_size(
@@ -70,23 +64,11 @@ impl Grid {
     }
 }
 
-/// A selection holds the frame it was made on until it is cleared.
-pub struct Selection {
-    /// Inclusive flat cell bounds, in the order they were dragged.
-    pub range: (usize, usize),
-    pub frame: Arc<Frame>,
-}
-
-impl Selection {
-    pub fn text(&self) -> String {
-        self.frame.selected_text(self.range.0, self.range.1)
-    }
-}
-
 #[derive(Default)]
 pub struct PaneView {
     pub last_size: Option<Size>,
-    pub selection: Option<Selection>,
+    /// The button that selects is down, on a press this pane took.
+    pub selecting: bool,
     pub wheel: f32,
     pub mouse_button: Option<egui::PointerButton>,
     pub mouse_cell: Option<(u16, u16)>,
@@ -125,8 +107,6 @@ impl PaneView {
         }
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(grid.rect));
         let (fg, bg) = (rgb(frame.fg), rgb(frame.bg));
-        let cols = usize::from(frame.cols);
-        let selection = self.selection.as_ref().map(|s| s.range);
         let visible = ((grid.rect.height() / grid.cell.y).ceil() as usize).min(frame.lines.len());
         // A row keeps its shaped text wherever on screen it moves to, and loses it
         // when it is shown no more.
@@ -142,16 +122,9 @@ impl PaneView {
                     painter.rect_filled(grid.span(y, start, end), 0, color);
                 }
             }
-            if let Some((a, b)) = selection {
-                let start = a.min(b).max(y * cols);
-                let end = a.max(b).saturating_add(1).min((y + 1) * cols);
-                if start < end {
-                    painter.rect_filled(
-                        grid.span(y, start - y * cols, end - y * cols),
-                        0,
-                        style::ACCENT.gamma_multiply(0.4),
-                    );
-                }
+            if let Some(&Some((start, end))) = frame.selected.get(y) {
+                let fill = style::ACCENT.gamma_multiply(0.4);
+                painter.rect_filled(grid.span(y, start.into(), end.into()), 0, fill);
             }
             for glyph in &cached.glyphs {
                 let cells = grid.span(y, glyph.column, glyph.column + glyph.width);
@@ -207,19 +180,7 @@ impl PaneView {
                 }
             }
         }
-        if selection.is_some() {
-            let text = painter.layout_no_wrap(
-                "Selection · Esc to resume".into(),
-                FontId::proportional(style::SMALL),
-                style::TEXT,
-            );
-            let rect = Rect::from_min_size(
-                grid.rect.right_top() - egui::vec2(text.size().x + 20.0, 0.0),
-                text.size() + egui::vec2(20.0, 10.0),
-            );
-            painter.rect_filled(rect, rect.height() / 2.0, style::POPOVER);
-            painter.galley(rect.min + egui::vec2(10.0, 5.0), text, style::TEXT);
-        } else if let Some((x, y)) = frame.cursor {
+        if let Some((x, y)) = frame.cursor {
             let rect = grid.span(y.into(), x.into(), usize::from(x) + 1);
             let color = rgb(frame.cursor_color);
             let outline = Stroke::new(1.0, color);
@@ -325,26 +286,6 @@ impl CachedRow {
         }
         result
     }
-}
-
-/// The inclusive bounds of the word, or the run of blanks, around a flat cell index.
-pub fn word_at(frame: &Frame, index: usize) -> (usize, usize) {
-    let cols = usize::from(frame.cols).max(1);
-    let y = index / cols;
-    let Some(row) = frame.lines.get(y) else {
-        return (index, index);
-    };
-    let x = (index % cols).min(row.cells.len().saturating_sub(1));
-    let blank = |at: usize| row.text(at, at + 1).trim().is_empty();
-    let kind = blank(x);
-    let (mut start, mut end) = (x, x);
-    while start > 0 && blank(start - 1) == kind {
-        start -= 1;
-    }
-    while end + 1 < row.cells.len() && blank(end + 1) == kind {
-        end += 1;
-    }
-    (y * cols + start, y * cols + end)
 }
 
 #[cfg(test)]

@@ -1,14 +1,15 @@
 //! What the pointer does over a terminal: a program's mouse, a selection, the wheel.
-use std::sync::Arc;
-
-use eframe::egui::{self, PointerButton};
+use eframe::egui;
 
 use super::{
     input::Keyboard,
     pane::Scroll,
-    render::{self, Grid, PaneView, Selection},
+    render::{Grid, PaneView},
 };
-use crate::{model::Action, terminal::Frame};
+use crate::{
+    model::Action,
+    terminal::{Frame, Request, TerminalHandle},
+};
 
 /// The lines of history one notch of a wheel moves through.
 const NOTCH: f32 = 3.0;
@@ -67,7 +68,9 @@ pub struct Pointer<'a> {
     pub response: &'a egui::Response,
     pub events: &'a [egui::Event],
     pub grid: Grid,
-    pub frame: &'a Arc<Frame>,
+    pub frame: &'a Frame,
+    /// The pane's worker, unless its connection is lost.
+    pub terminal: Option<&'a TerminalHandle>,
     pub pane: &'a str,
     pub keyboard: &'a Keyboard,
     /// The program in the pane has captured the mouse.
@@ -101,8 +104,10 @@ impl Pointer<'_> {
                             modifiers: self.keyboard.bits(*modifiers),
                         });
                         state.mouse_button = pressed.then_some(*button);
-                        if *pressed {
-                            state.selection = None;
+                        // A program that is told of a press may do anything with
+                        // what was selected.
+                        if let (true, Some(terminal)) = (*pressed, self.terminal) {
+                            terminal.ask(Request::Deselect);
                         }
                     }
                 }
@@ -130,39 +135,52 @@ impl Pointer<'_> {
         }
     }
 
-    /// Drag to select cells; double-click to select a word.
+    /// Tell the pane's worker what the first button does to its selection: a
+    /// press, twice for a word and three times for a line, with Shift to reach
+    /// to where it is; a drag, by columns with Ctrl and Alt held; and its release.
     pub fn select(&self, state: &mut PaneView) {
-        let (response, grid, frame) = (self.response, self.grid, self.frame);
-        let selection = |range| {
-            let frame = frame.clone();
-            Some(Selection { range, frame })
+        let Some(terminal) = self.terminal else {
+            return;
         };
-        if state.mouse_button.is_none() {
-            let origin = self.ui.input(|i| i.pointer.press_origin());
-            if response.drag_started()
-                && let Some(pos) = origin.or_else(|| response.interact_pointer_pos())
-            {
-                let index = grid.index_at(pos, frame);
-                state.selection = selection((index, index));
-            }
-            if response.dragged()
-                && let Some(pos) = response.interact_pointer_pos()
-                && let Some(selection) = &mut state.selection
-            {
-                selection.range.1 = grid.index_at(pos, frame);
+        // In cells, and past the grid's edges when the pointer is.
+        let at = |pos: egui::Pos2| ((pos - self.grid.rect.min) / self.grid.cell).into();
+        // The button is read from the events: a tap's press and its release come
+        // in one frame, and two taps may.
+        for event in self.events {
+            let egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers,
+            } = event
+            else {
+                continue;
+            };
+            // Hovered, as a press for a program is: what lies over the pane keeps its own.
+            if *pressed && self.response.hovered() {
+                state.selecting = true;
+                let (at, extend) = (at(*pos), modifiers.shift);
+                terminal.ask(Request::Press { at, extend });
+            } else if !pressed && std::mem::take(&mut state.selecting) {
+                terminal.ask(Request::Release);
             }
         }
-        if response.double_clicked()
-            && let Some(pos) = response.interact_pointer_pos()
+        let (down, moved, latest, held) = self.ui.input(|i| {
+            let moved = i.pointer.delta() != egui::Vec2::ZERO;
+            let (down, latest) = (i.pointer.primary_down(), i.pointer.latest_pos());
+            (down, moved, latest, i.modifiers)
+        });
+        if state.selecting
+            && down
+            && moved
+            && let Some(pos) = latest
         {
-            state.selection = selection(render::word_at(frame, grid.index_at(pos, frame)));
+            let (at, block) = (at(pos), held.ctrl && held.alt);
+            terminal.ask(Request::Drag { at, block });
         }
-        // Made, it is the desktop's to paste with a middle click, in any program.
-        if (response.drag_stopped_by(PointerButton::Primary) || response.double_clicked())
-            && let Some(selection) = &state.selection
-        {
-            let made = egui::OutputCommand::TextSelectionSettled(selection.text());
-            self.ui.ctx().send_cmd(made);
+        // The pointer left with the button down, and its release was not seen.
+        if !down && std::mem::take(&mut state.selecting) {
+            terminal.ask(Request::Release);
         }
     }
 
@@ -199,7 +217,6 @@ impl Pointer<'_> {
                 vec![Action::Wheel { pane, x, y, lines }]
             }
         };
-        state.selection = None;
         actions.extend(std::iter::repeat_n(turn, steps.unsigned_abs() as usize).flatten());
         None
     }

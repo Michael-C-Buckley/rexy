@@ -17,7 +17,7 @@ use super::{
 use crate::{
     link,
     model::{Action, Pane, Window},
-    terminal::Frame,
+    terminal::{Copied, Frame, Request},
 };
 
 const PANE_HEADER: f32 = 28.0;
@@ -111,12 +111,19 @@ impl App {
             ui.painter().galley(corner, title, color);
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
-        // A selection keeps showing the frame it was made on, including on the
-        // frame of the click that clears it.
-        let selected = state.selection.as_ref().map(|s| s.frame.clone());
-        let frame = selected.or_else(|| pane.frame.clone());
-        if let Some(frame) = &frame {
+        let frame = pane.frame.as_ref();
+        if let Some(frame) = frame {
             ui.painter().rect_filled(terminal_rect, 0, rgb(frame.bg));
+        }
+        // The pane's worker, which keeps its selection. A lost connection has none.
+        let terminal = self.servers[self.current].client.terminal(&pane.id).ok();
+        // The selected text it was asked for has come: for the clipboard, or
+        // for the desktop to paste with a middle click, in any program.
+        for copied in terminal.iter().flat_map(|terminal| terminal.copied()) {
+            ui.ctx().send_cmd(match copied {
+                Copied::Clipboard(text) => egui::OutputCommand::CopyText(text),
+                Copied::Selection(text) => egui::OutputCommand::TextSelectionSettled(text),
+            });
         }
         let grid = Grid::new(
             ui.ctx(),
@@ -140,7 +147,7 @@ impl App {
         }
         // With Ctrl held, a link under the pointer is there to be followed, even in
         // a program that takes the mouse for itself.
-        let link = frame.as_ref().and_then(|frame| {
+        let link = frame.and_then(|frame| {
             let pointer = response
                 .hover_pos()
                 .filter(|_| ui.input(|i| i.modifiers.ctrl))?;
@@ -175,8 +182,7 @@ impl App {
             }
         }
         // Shift overrides a program's mouse capture.
-        let tracking =
-            frame.as_ref().is_some_and(|f| f.mouse_tracking) && !ui.input(|i| i.modifiers.shift);
+        let tracking = frame.is_some_and(|f| f.mouse_tracking) && !ui.input(|i| i.modifiers.shift);
         // A middle click pastes the desktop's last selection, made in any program,
         // unless a program that tracks the mouse has the click.
         let paste = |event: &egui::Event| match event {
@@ -196,14 +202,15 @@ impl App {
                 });
             }
         }
-        if pressed {
-            state.selection = None;
-        }
         if let Some(text) = paste {
+            // What is pasted is typed, and typing lets go of what is selected.
+            if let Some(terminal) = &terminal {
+                terminal.ask(Request::Deselect);
+            }
             let pane = pane.id.clone();
             actions.push(Action::Paste { pane, text });
         }
-        if let Some(frame) = &frame {
+        if let Some(frame) = frame {
             let events = ui.input(|i| i.events.clone());
             let pointer = Pointer {
                 ui,
@@ -211,12 +218,15 @@ impl App {
                 events: &events,
                 grid,
                 frame,
+                terminal: terminal.as_ref(),
                 pane: &pane.id,
                 keyboard: &self.keyboard,
                 tracking: tracking && link.is_none(),
             };
             pointer.forward(state, &mut actions);
-            if !tracking {
+            // A selection under way is seen through, whatever its program asks
+            // for meanwhile.
+            if !tracking || state.selecting {
                 pointer.select(state);
             }
             scroll = pointer.wheel(Wheel::of(frame, tracking), state, &mut actions);
@@ -278,10 +288,11 @@ impl App {
         if !tracking {
             asking(&response).show(|ui| {
                 let copy = egui::Button::new("Copy selection");
-                if ui.add_enabled(state.selection.is_some(), copy).clicked()
-                    && let Some(selection) = &state.selection
+                let selected = frame.is_some_and(|frame| !frame.selected.is_empty());
+                if ui.add_enabled(selected, copy).clicked()
+                    && let Some(terminal) = &terminal
                 {
-                    ui.ctx().copy_text(selection.text());
+                    terminal.ask(Request::Copy);
                     ui.close();
                 }
                 if ui.button("Paste").clicked() {
@@ -311,6 +322,7 @@ impl App {
                 close |= closer(ui, "Close Pane", ask);
             });
         }
+        self.finding(ui, pane, grid.rect);
         self.wait(ui, rect, &response, ask);
         // Asked to close, it asks back from where its close button is, or would
         // be: it may have been asked with a key, and may have no header.
@@ -330,30 +342,58 @@ impl App {
         }
     }
 
-    /// Whether anything is selected in a pane.
-    pub(super) fn selected(&self, pane: &str) -> bool {
-        let state = self.panes.get(pane);
-        state.is_some_and(|state| state.selection.is_some())
-    }
-
-    /// Let go of what is selected in a pane.
-    pub(super) fn deselect(&mut self, pane: &str) {
-        if let Some(state) = self.panes.get_mut(pane) {
-            state.selection = None;
+    /// Ask something of the worker of a pane on show.
+    pub(super) fn ask(&self, pane: &str, request: Request) {
+        if let Ok(terminal) = self.servers[self.current].client.terminal(pane) {
+            terminal.ask(request);
         }
     }
 
-    /// Copy what is selected in a pane to the clipboard.
-    pub(super) fn copy(&self, ctx: &egui::Context, pane: &str) {
-        if let Some(selection) = self.panes.get(pane).and_then(|s| s.selection.as_ref()) {
-            ctx.copy_text(selection.text());
+    /// Whether anything is selected in a pane, as of its last frame.
+    pub(super) fn selected(&self, pane: &str) -> bool {
+        let terminal = self.servers[self.current].client.terminal(pane);
+        let frame = terminal.ok().and_then(|terminal| terminal.latest());
+        frame.is_some_and(|frame| !frame.selected.is_empty())
+    }
+
+    /// Let go of what is selected in a pane. Its worker is not woken for nothing:
+    /// this is asked at every key typed.
+    pub(super) fn deselect(&mut self, pane: &str) {
+        if self.selected(pane) {
+            self.ask(pane, Request::Deselect);
+        }
+    }
+
+    /// Copy what is selected in a pane to the clipboard. Its worker hands the
+    /// text back, and the pane passes it on when next drawn.
+    pub(super) fn copy(&self, pane: &str) {
+        self.ask(pane, Request::Copy);
+    }
+
+    /// Select all that a pane holds, its history too.
+    pub(super) fn select_all(&mut self, pane: &str) {
+        self.ask(pane, Request::SelectAll);
+    }
+
+    /// Tell the pane with the keyboard when this window stops being the one in
+    /// use, and when it is again, for a program there that asked to be told (DEC
+    /// mode 1004). When the keyboard moves from one pane to another the server
+    /// tells both of itself.
+    pub(super) fn window_focus(&self, ctx: &egui::Context) {
+        let turned = |event: &egui::Event| match event {
+            egui::Event::WindowFocused(gained) => Some(*gained),
+            _ => None,
+        };
+        let gained = ctx.input(|i| i.events.iter().rev().find_map(turned));
+        if let (Some(gained), Some(pane)) = (gained, self.focused.clone()) {
+            // A server that is not there is not told, and nothing is said of that.
+            let client = &self.servers[self.current].client;
+            let _ = client.try_send(Action::Focus { pane, gained });
         }
     }
 
     /// Move a pane's view through its history. No server is told.
     pub(super) fn scroll(&mut self, pane: &str, to: Scroll) {
-        // A selection holds the pane to the frame it was made on.
-        self.deselect(pane);
         let terminal = self.servers[self.current].client.terminal(pane);
         let moved = terminal.and_then(|terminal| {
             let moved = match to {

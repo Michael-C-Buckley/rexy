@@ -404,6 +404,12 @@ pub enum Action {
         y: u16,
         lines: i32,
     },
+    /// The window has become the one in use, or has stopped being it, for a
+    /// program in the pane that asked to be told (DEC mode 1004).
+    Focus {
+        pane: String,
+        gained: bool,
+    },
     /// Without a name, the server chooses one.
     CreateSession(Option<String>),
     /// A new tab in a session.

@@ -34,7 +34,7 @@ fn frame<'a>(view: &'a View, pane: &str) -> Option<&'a Arc<Frame>> {
 
 fn screen(view: &View, pane: &str) -> String {
     frame(view, pane)
-        .map(|frame| frame.selected_text(0, usize::MAX))
+        .map(|frame| frame.text())
         .unwrap_or_default()
 }
 
