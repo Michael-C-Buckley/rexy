@@ -24,9 +24,10 @@ impl App {
         // No wider than leaves the terminal half the window, however it was left.
         let [least, most] = SIDEBAR_RANGE;
         let most = (root_ui.available_width() / 2.0).clamp(least, most);
-        self.sidebar_width = self.sidebar_width.clamp(least, most);
+        let width = &mut self.remembered.kept.sidebar_width;
+        *width = width.clamp(least, most);
         egui::Panel::left("sessions")
-            .exact_size(self.sidebar_width)
+            .exact_size(*width)
             .resizable(false)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(SIDEBAR))
@@ -59,7 +60,7 @@ impl App {
     /// for last of all, or the terminal beside it and the scroll bar within it
     /// would have the pointer there first.
     pub(super) fn edge(&mut self, root_ui: &egui::Ui) {
-        let x = root_ui.max_rect().left() + self.sidebar_width;
+        let x = root_ui.max_rect().left() + self.remembered.kept.sidebar_width;
         let height = root_ui.max_rect().y_range();
         let grab = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, height);
         // It takes clicks too, or a press there would be the terminal's to drag.
@@ -73,7 +74,7 @@ impl App {
         }
         // The next drawing holds it to its least and its most.
         if let Some(pointer) = edge.interact_pointer_pos().filter(|_| edge.dragged()) {
-            self.sidebar_width = pointer.x - root_ui.max_rect().left();
+            self.remembered.kept.sidebar_width = pointer.x - root_ui.max_rect().left();
         }
     }
 

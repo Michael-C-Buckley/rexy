@@ -1,15 +1,13 @@
 use std::fmt::Write as _;
 
-use libghostty_vt::Terminal;
-
 use super::*;
-use crate::terminal::tests::render;
+use crate::terminal::tests::{render, terminal};
 
 const SIZE: f32 = 14.0;
 
 /// What a pane shows once a program has written these bytes.
 fn frame(cols: u16, rows: u16, bytes: &[u8]) -> Arc<Frame> {
-    let mut terminal = Terminal::new(cols, rows).unwrap();
+    let mut terminal = terminal(cols, rows);
     terminal.vt_write(bytes);
     render(&terminal)
 }

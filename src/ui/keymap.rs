@@ -78,12 +78,16 @@ impl Keymap {
     /// This client's own keys, which are all there is until a server has answered.
     /// A server tries the later of one layer's bindings first, and so does this.
     pub fn own() -> Self {
-        let mut own = commands::request()["defaults"][0].take();
-        own["bindings"]
-            .as_array_mut()
-            .into_iter()
-            .for_each(|bound| bound.reverse());
-        Self::parse(&own)
+        let bound = |(key, name): &(&str, &str)| Binding {
+            keys: vec![(*key).to_owned()],
+            mode: None,
+            name: (*name).to_owned(),
+            args: Value::Null,
+        };
+        Self {
+            bindings: commands::KEYS.iter().rev().map(bound).collect(),
+            ..Self::default()
+        }
     }
 
     pub fn has_mode(&self, name: &str) -> bool {
@@ -215,21 +219,10 @@ impl Keys {
         }
     }
 
-    /// What a repeat of a key does, if the key is held from a press that was
-    /// taken from the terminal: what the press did, or nothing.
-    pub fn again(&self, chord: &str) -> Option<Option<&Binding>> {
-        let held = self.held.as_ref().filter(|held| held.0 == chord);
-        held.map(|held| held.1.as_ref())
-    }
-
     /// Go by a server's answer, or by none. Modes and a sequence under way belong
     /// to the keymap they began in, and end with it.
     pub fn follow(&mut self, reply: Option<&Arc<Value>>) {
-        let same = match (reply, &self.reply) {
-            (Some(new), Some(held)) => Arc::ptr_eq(new, held),
-            (new, held) => new.is_none() && held.is_none(),
-        };
-        if !same {
+        if reply.map(Arc::as_ptr) != self.reply.as_ref().map(Arc::as_ptr) {
             *self = Self::of(reply);
         }
     }

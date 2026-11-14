@@ -289,6 +289,19 @@ fn raster(drawing: &str, pixels: usize) -> egui::ColorImage {
     egui::ColorImage::new([pixels; 2], colors.collect())
 }
 
+/// The window's icon, for a desktop that takes it from the window. One that goes
+/// by the desktop entry draws the same picture.
+pub fn icon() -> egui::IconData {
+    const SIDE: usize = 128;
+    let image = raster(include_str!("../../assets/dev.rex-lite.client.svg"), SIDE);
+    let rgba = image.pixels.iter().flat_map(Color32::to_srgba_unmultiplied);
+    egui::IconData {
+        rgba: rgba.collect(),
+        width: SIDE as u32,
+        height: SIDE as u32,
+    }
+}
+
 /// A flat button that draws its own symbol.
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
     button(ui, 32.0, icon, tip)

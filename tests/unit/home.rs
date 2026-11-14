@@ -16,15 +16,3 @@ fn home_is_the_one_rex_follows() {
     assert_eq!(home(None, Some("{}".into())), None);
     assert_eq!(home(None, Some("not JSON".into())), None);
 }
-
-#[test]
-fn the_icon_is_drawn() {
-    let icon = icon();
-    assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
-    // Its corners are clear, and its middle is not.
-    let alpha = |x: u32, y: u32| icon.rgba[((y * icon.width + x) * 4 + 3) as usize];
-    assert_eq!(
-        (alpha(0, 0), alpha(icon.width / 2, icon.height / 2)),
-        (0, 255)
-    );
-}

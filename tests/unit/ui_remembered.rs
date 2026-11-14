@@ -45,25 +45,17 @@ fn what_changed_is_saved_after_a_moment_and_read_back() {
 }
 
 #[test]
-fn a_damaged_file_starts_afresh_and_the_old_muted_tabs_are_kept() {
+fn a_damaged_file_starts_afresh() {
     let directory = directory("damaged");
     std::fs::create_dir_all(&directory).unwrap();
     let open = || Remembered::open(Some(directory.clone())).kept.clone();
-    let write = |file: &str, text: &str| std::fs::write(directory.join(file), text).unwrap();
-    // Before this file there was one of muted tabs alone.
-    write("muted", "window:a\nwindow:b");
-    let old = Kept {
-        muted: HashSet::from(["window:a".to_owned(), "window:b".to_owned()]),
-        ..fresh()
-    };
-    assert_eq!(open(), old);
-    write("state.json", "{\"font_size\": 18, \"sideb");
-    assert_eq!(open(), old);
-    // What a file has wrong is as at first, and what it has right is kept. Once
-    // it holds the muted tabs, the old file is read no more.
+    let write = |text: &str| std::fs::write(directory.join("state.json"), text).unwrap();
+    write("{\"font_size\": 18, \"sideb");
+    assert_eq!(open(), fresh());
+    // What a file has wrong is as at first, and what it has right is kept.
     let odd = r#"{"font_size": 500, "sidebar": "yes", "sidebar_width": 300,
         "window": [10, 1e9], "shown": [], "muted": ["window:c"]}"#;
-    write("state.json", odd);
+    write(odd);
     let kept = open();
     assert_eq!((kept.font_size, kept.sidebar), (32.0, true));
     assert_eq!((kept.sidebar_width, kept.window), (300.0, [640.0, 16384.0]));
@@ -81,12 +73,7 @@ fn a_damaged_file_starts_afresh_and_the_old_muted_tabs_are_kept() {
 fn a_window_returns_to_where_it_was_if_that_is_still_there() {
     let tab = |id: &str| Window {
         id: id.into(),
-        label: None,
-        focus: None,
-        zoomed: false,
-        panes: Vec::new(),
-        hidden: Vec::new(),
-        borders: Vec::new(),
+        ..Window::default()
     };
     let session = |id: &str, tabs: &[&str]| Session {
         id: id.into(),

@@ -1,6 +1,7 @@
 //! One pane of the tab on show: its header, its terminal, and what the
 //! pointer does there.
 use eframe::egui::{self, Align, Align2, FontId, Layout, Rect, Sense, Stroke, UiBuilder};
+use serde_json::Value;
 
 use super::{
     App,
@@ -16,32 +17,24 @@ use super::{
 };
 use crate::{
     link,
-    model::{Action, Pane, Window},
-    terminal::{Copied, Frame, Request},
+    model::{Action, Pane, View, Window},
+    terminal::{Copied, Frame, Request, Scroll},
 };
 
 const PANE_HEADER: f32 = 28.0;
 
-/// A move through a pane's history. Negative is up.
-pub enum Scroll {
-    Lines(i32),
-    Pages(i32),
-    /// From one shell prompt to another, where the shell marks them (OSC 133).
-    Prompts(i32),
-    Bottom,
-}
-
 impl App {
-    /// A pane of the tab on show. One that is not `live` shows the last screen of
-    /// a connection that was lost.
+    /// A pane of the tab on show. In a view that is not connected it shows the
+    /// last screen of a connection that was lost.
     pub(super) fn terminal_pane(
         &mut self,
         ui: &mut egui::Ui,
+        view: &View,
         window: &Window,
         pane: &Pane,
         rect: Rect,
-        live: bool,
     ) {
+        let live = view.connected;
         let active = self.focused.as_deref() == Some(&pane.id);
         // The focused pane holds the keyboard whenever nothing else is taking it.
         let keyboard = active && !self.busy(ui.ctx());
@@ -56,6 +49,11 @@ impl App {
         // Its view is to move through its history.
         let mut scroll = None;
         let mut terminal_rect = rect;
+        // The way back from a pane that fills the tab is where the way to it was.
+        let (zoom_icon, zoom) = match window.zoomed {
+            true => (Icon::Restore, "Restore Panes"),
+            false => (Icon::Zoom, title("pane.zoom")),
+        };
         // One pane of several has a header, and so has one that fills the tab in
         // place of the rest.
         if window.split() {
@@ -85,14 +83,11 @@ impl App {
                 let tip = self.keys.map.tip(title("pane.close"), "pane.close");
                 close = small_button(&mut buttons, Icon::Close, &tip).clicked();
             }
-            let (zoom, tip) = if window.zoomed {
-                (Icon::Restore, "Restore Panes")
-            } else {
-                (Icon::Zoom, title("pane.zoom"))
-            };
-            let tip = self.keys.map.tip(tip, "pane.zoom");
-            if (over || window.zoomed) && small_button(&mut buttons, zoom, &tip).clicked() {
-                self.todo.push(("pane.zoom", Some(pane.id.clone())));
+            if over || window.zoomed {
+                let tip = self.keys.map.tip(zoom, "pane.zoom");
+                if small_button(&mut buttons, zoom_icon, &tip).clicked() {
+                    self.todo.push(("pane.zoom", Some(pane.id.clone())));
+                }
             }
             header.max.x -= 2.0 * SMALL_BUTTON + 4.0;
             // What it has to say sits ahead of them, as on its tab.
@@ -128,7 +123,7 @@ impl App {
         let grid = Grid::new(
             ui.ctx(),
             terminal_rect.shrink2(egui::vec2(12.0, 8.0)),
-            self.font_size,
+            self.remembered.kept.font_size,
         );
         let id = ui.scope_id().with(("terminal", &pane.id));
         let response = ui.interact(terminal_rect, id, Sense::click_and_drag());
@@ -287,34 +282,22 @@ impl App {
         }
         if !tracking {
             asking(&response).show(|ui| {
-                let copy = egui::Button::new("Copy selection");
-                let selected = frame.is_some_and(|frame| !frame.selected.is_empty());
-                if ui.add_enabled(selected, copy).clicked()
-                    && let Some(terminal) = &terminal
-                {
-                    terminal.ask(Request::Copy);
-                    ui.close();
-                }
-                if ui.button("Paste").clicked() {
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
-                    self.focused = Some(pane.id.clone());
-                    ui.close();
-                }
-                ui.separator();
-                let zoom = match window.zoomed {
-                    true => "Restore Panes",
-                    false => title("pane.zoom"),
-                };
                 let entries = [
-                    (title("pane.split.right"), true, "pane.split.right"),
-                    (title("pane.split.down"), true, "pane.split.down"),
-                    (zoom, window.split(), "pane.zoom"),
+                    ("Copy selection", "pane.copy"),
+                    ("Paste", "pane.paste"),
+                    (title("pane.split.right"), "pane.split.right"),
+                    (title("pane.split.down"), "pane.split.down"),
+                    (zoom, "pane.zoom"),
                 ];
-                for (label, enabled, name) in entries {
+                for (label, name) in entries {
+                    if name == "pane.split.right" {
+                        ui.separator();
+                    }
+                    // Each is there to be taken when it can be done to this pane.
+                    let plan = self.standing(view).plan(name, &Value::Null, Some(&pane.id));
                     let keys = self.keys.map.shortcut(name);
                     let entry = egui::Button::new(label).shortcut_text(keys);
-                    if ui.add_enabled(enabled, entry).clicked() {
+                    if ui.add_enabled(plan.is_ok(), entry).clicked() {
                         self.todo.push((name, Some(pane.id.clone())));
                         ui.close();
                     }
@@ -334,32 +317,17 @@ impl App {
             self.send(action);
         }
         if let Some(to) = scroll {
-            self.scroll(&pane.id, to);
+            self.ask(&pane.id, Request::Scroll(to));
         }
         if close {
             self.todo.push(("pane.close", Some(pane.id.clone())));
         }
     }
 
-    /// Ask something of the worker of a pane on show.
+    /// Ask something of the worker of a pane on show, which no server is told of.
     pub(super) fn ask(&self, pane: &str, request: Request) {
         if let Ok(terminal) = self.servers[self.current].client.terminal(pane) {
             terminal.ask(request);
-        }
-    }
-
-    /// Whether anything is selected in a pane, as of its last frame.
-    pub(super) fn selected(&self, pane: &str) -> bool {
-        let terminal = self.servers[self.current].client.terminal(pane);
-        let frame = terminal.ok().and_then(|terminal| terminal.latest());
-        frame.is_some_and(|frame| !frame.selected.is_empty())
-    }
-
-    /// Let go of what is selected in a pane. Its worker is not woken for nothing:
-    /// this is asked at every key typed.
-    pub(super) fn deselect(&mut self, pane: &str) {
-        if self.selected(pane) {
-            self.ask(pane, Request::Deselect);
         }
     }
 
@@ -377,26 +345,6 @@ impl App {
             // A server that is not there is not told, and nothing is said of that.
             let client = &self.servers[self.current].client;
             let _ = client.try_send(Action::Focus { pane, gained });
-        }
-    }
-
-    /// Move a pane's view through its history. No server is told.
-    pub(super) fn scroll(&mut self, pane: &str, to: Scroll) {
-        let terminal = self.servers[self.current].client.terminal(pane);
-        let moved = terminal.and_then(|terminal| {
-            let moved = match to {
-                Scroll::Lines(lines) => terminal.scroll(lines),
-                Scroll::Pages(pages) => terminal.scroll_pages(pages),
-                Scroll::Prompts(prompts) => terminal.scroll_prompts(prompts),
-                Scroll::Bottom => {
-                    terminal.scroll_to_bottom();
-                    Ok(())
-                }
-            };
-            moved.map_err(|error| error.to_string())
-        });
-        if let Err(error) = moved {
-            self.toast.say(error);
         }
     }
 }

@@ -5,18 +5,17 @@ use eframe::egui::{self, Popup};
 use serde_json::{Value, json};
 
 use super::{
-    App, DEFAULT_FONT_SIZE,
+    App, DEFAULT_FONT_SIZE, FONT_SIZES,
     close::doomed,
     input,
     keymap::Keys,
     palette,
-    pane::Scroll,
     rows::{Choice, Target},
     style::{Icon, icon_button},
 };
 use crate::{
     model::{Action, Direction, Edit, View, Window},
-    terminal::Request,
+    terminal::{Request, Scroll},
 };
 
 /// A command: the name and the title that Rex's action reference gives it, and
@@ -87,7 +86,7 @@ const DIRECTED: [Command; 3] = [
 /// The keys this client has for them until a server says otherwise, as Rex
 /// spells keys. They are a Linux keyboard's: Ctrl alone belongs to the terminal's
 /// programs. Of several for one action the last is tried first, and is the one shown.
-const KEYS: &[(&str, &str)] = &[
+pub(super) const KEYS: &[(&str, &str)] = &[
     ("ctrl+shift+n", "session.new"),
     ("ctrl+k", "session.switch"),
     ("ctrl+shift+t", "client.tab.new"),
@@ -180,15 +179,16 @@ pub(super) enum Deed {
     Ask(Action),
     /// Taking the keyboard to a pane.
     Focus(String),
-    Scroll(String, Scroll),
     Font(f32),
     Sidebar,
     Palette,
-    /// Asking something of a pane's own terminal, which no server is told of.
+    /// Asking something of a pane's own terminal, which no server is told of:
+    /// about what is selected or looked for in it, or to move through its history.
     Tell(String, Request),
     /// Opening the field that finds text in a pane.
     Find(String),
-    Paste,
+    /// Pasting what the desktop's clipboard holds into a pane.
+    Paste(String),
     /// Closing a pane by an action, unless programs may be lost by it and this
     /// is the first asking: by its name, and whether nothing would be lost.
     Close(egui::Id, bool, Action),
@@ -278,20 +278,21 @@ impl Standing<'_> {
             "client.mode.exit" | "client.mode.exit_all" if !self.keys.modes.is_empty() => {
                 Deed::Exit(name.ends_with("all"))
             }
-            "pane.copy" => Deed::Tell(pane?.id.clone(), Request::Copy),
+            // The rest is done by a server, or by a terminal kept up by one.
+            _ if !view.connected => return None,
+            "pane.copy" => {
+                let frame = pane?.frame.as_ref();
+                frame.filter(|frame| !frame.selected.is_empty())?;
+                Deed::Tell(pane?.id.clone(), Request::Copy)
+            }
             "pane.select_all" => Deed::Tell(pane?.id.clone(), Request::SelectAll),
             "client.find.open" => Deed::Find(pane?.id.clone()),
             // The match before the one shown, or the one after it, of a search
             // under way.
             "client.find.next" | "client.find.previous" => {
                 pane?.frame.as_ref()?.found?;
-                let step = match on {
-                    true => Request::FindNext,
-                    false => Request::FindPrevious,
-                };
-                Deed::Tell(pane?.id.clone(), step)
+                Deed::Tell(pane?.id.clone(), Request::Step { older: on })
             }
-            _ if !view.connected => return None,
             "session.new" => Deed::Ask(Action::CreateSession(None)),
             "session.select" => {
                 let listed = |id: &String| view.sessions.iter().any(|session| &session.id == id);
@@ -360,14 +361,14 @@ impl Standing<'_> {
                 let (what, spared, pane) = (doomed(&pane?.id), pane?.idle, pane?.id.clone());
                 Deed::Close(what, spared, Action::ClosePane { pane })
             }
-            "pane.paste" if pane.is_some() => Deed::Paste,
+            "pane.paste" => Deed::Paste(pane?.id.clone()),
             "pane.send_key" => Deed::Ask(input::press(&pane?.id, args["key"].as_str()?)?),
             // What is left moves through a pane's history: unless its program has
             // the whole screen, which keeps none.
             _ => {
                 let frame = pane?.frame.as_ref();
                 let pane = pane.filter(|_| frame.is_some_and(|frame| !frame.alternate_screen))?;
-                Deed::Scroll(pane.id.clone(), scroll(name)?)
+                Deed::Tell(pane.id.clone(), Request::Scroll(scroll(name)?))
             }
         })
     }
@@ -378,8 +379,8 @@ impl App {
         Standing {
             view,
             focused: self.focused.as_deref(),
-            font_size: self.font_size,
-            sidebar: self.sidebar,
+            font_size: self.remembered.kept.font_size,
+            sidebar: self.remembered.kept.sidebar,
             keys: &self.keys,
         }
     }
@@ -416,9 +417,10 @@ impl App {
                 self.focused = Some(pane.clone());
                 self.send(Action::FocusPane { pane });
             }
-            Deed::Scroll(pane, to) => self.scroll(&pane, to),
-            Deed::Font(size) => self.font_size = size.clamp(9.0, 32.0),
-            Deed::Sidebar => self.sidebar = !self.sidebar,
+            Deed::Font(size) => {
+                self.remembered.kept.font_size = size.clamp(FONT_SIZES[0], FONT_SIZES[1]);
+            }
+            Deed::Sidebar => self.remembered.kept.sidebar ^= true,
             // It opens with nothing typed.
             Deed::Palette => {
                 self.filter.clear();
@@ -427,7 +429,11 @@ impl App {
             }
             Deed::Tell(pane, request) => self.ask(&pane, request),
             Deed::Find(pane) => self.find(&pane),
-            Deed::Paste => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+            // The clipboard answers in a moment, to the pane with the keyboard.
+            Deed::Paste(pane) => {
+                self.focused = Some(pane);
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
             Deed::Close(what, spared, action) => self.close(what, spared, near, server, action),
             Deed::CloseTab(session, window, spared) => {
                 let target = row(session, Some(window));

@@ -1,37 +1,21 @@
 use super::*;
-use crate::{
-    model::{Activity, Pane, Session},
-    program::Program,
-};
+use crate::model::{Pane, Session};
 use std::collections::HashSet;
 
 fn pane(id: &str) -> Pane {
     Pane {
         id: id.into(),
         title: id.to_uppercase(),
-        program: Program::default(),
-        activity: Activity::Idle,
-        message: String::new(),
-        x: 0.0,
-        y: 0.0,
-        width: 1.0,
-        height: 1.0,
-        frame: None,
-        status: String::new(),
-        owner: true,
         idle: id == "idle",
+        ..Pane::default()
     }
 }
 
 fn tab(id: &str, panes: &[&str]) -> Window {
     Window {
         id: id.into(),
-        label: None,
-        focus: None,
-        zoomed: false,
         panes: panes.iter().map(|id| pane(id)).collect(),
-        hidden: Vec::new(),
-        borders: Vec::new(),
+        ..Window::default()
     }
 }
 
@@ -218,10 +202,17 @@ fn a_command_is_refused_where_it_has_nothing_to_act_on() {
     assert!(matches!(named("a"), Err("refused")));
     let rename = standing(&view).plan("session.rename", &Value::Null, None);
     assert!(matches!(rename, Ok(Deed::Rename(..))));
+    // What is pasted goes to the pane named. Where nothing is selected there is
+    // nothing to copy.
+    let paste = standing(&view).plan("pane.paste", &Value::Null, Some("c"));
+    assert!(matches!(paste, Ok(Deed::Paste(pane)) if pane == "c"));
+    let copy = standing(&view).plan("pane.copy", &Value::Null, None);
+    assert!(matches!(copy, Err("refused")));
     // A key bound to what cannot be done is still the window's, unless a
     // program is to have it: one that moves through history where there is none.
     let keeps = |name| standing(&view).keeps(name, &Value::Null);
     assert!(keeps("client.mode.exit") && keeps("client.tab.goto") && keeps("pane.zoom"));
+    assert!(keeps("pane.copy"));
     assert!(!keeps("client.scroll.page_up") && !keeps("client.settings"));
     // A tab of one pane has nothing to zoom, and a first tab nowhere to move back to.
     view.selected_window = Some("t1".into());

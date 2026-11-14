@@ -46,20 +46,34 @@ fn send(client: &Client, action: Action) {
     client.try_send(action).unwrap();
 }
 
+/// A key going down in a pane or coming up, alone.
+fn key(pane: &str, key: &str, code: &str, modifiers: u8, pressed: bool) -> Action {
+    Action::Key {
+        pane: pane.into(),
+        key: key.into(),
+        code: code.into(),
+        modifiers,
+        pressed,
+        repeat: false,
+        prefix: Vec::new(),
+    }
+}
+
 fn enter(client: &Client, pane: &str) {
     for pressed in [true, false] {
-        send(
-            client,
-            Action::Key {
-                pane: pane.into(),
-                key: "\n".into(),
-                code: "enter".into(),
-                modifiers: 0,
-                pressed,
-                repeat: false,
-            },
-        );
+        send(client, key(pane, "\n", "enter", 0, pressed));
     }
+}
+
+/// A client of the server, with the keys a window has.
+fn open(endpoint: &str, herald: Herald) -> Client {
+    let keymap = Some(rex_lite::ui::commands::request());
+    Client::spawn(vec![endpoint.to_owned()], Arc::new(|| {}), herald, keymap)
+}
+
+/// A terminal has been drawn.
+fn drawn(view: &View) -> bool {
+    view.panes().any(|pane| pane.frame.is_some())
 }
 
 /// The server to test against, which must be one made for it.
@@ -74,11 +88,22 @@ fn endpoint() -> String {
     endpoint
 }
 
-/// Run the `rex` command against that server and no other.
-fn rex(endpoint: &str, args: &[&str]) -> std::process::Output {
+/// Run the `rex` command against that server and no other: what it printed, or
+/// what it said had gone wrong.
+fn rex(endpoint: &str, args: &[&str]) -> Result<String, String> {
     let mut rex = std::process::Command::new("rex");
     let rex = rex.args(["-S", endpoint, "--autostart=false"]).args(args);
-    rex.output().unwrap()
+    let rex = rex.output().unwrap();
+    match rex.status.success() {
+        true => Ok(String::from_utf8(rex.stdout).unwrap()),
+        false => Err(String::from_utf8_lossy(&rex.stderr).into_owned()),
+    }
+}
+
+/// Ask that server something as the command line does.
+fn call(endpoint: &str, method: &str, payload: Value) -> Result<Value, String> {
+    let reply = rex(endpoint, &["api", "call", method, &payload.to_string()])?;
+    Ok(serde_json::from_str(&reply).unwrap())
 }
 
 #[test]
@@ -86,16 +111,14 @@ fn rex(endpoint: &str, args: &[&str]) -> std::process::Output {
 fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let endpoint = endpoint();
     let (herald, notes) = Herald::new();
-    let client = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), herald);
+    let client = open(&endpoint, herald);
     // A connection comes with every session's tabs, and with no session shown
     // unasked. A window asks for the first, of the server it shows.
     let listed = wait(&client, "a connection", |v| v.connected);
     assert!(listed.sessions.iter().all(|s| !s.windows.is_empty()));
     assert!(listed.selected_session.is_none() && listed.windows().is_empty());
     send(&client, listed.unshown().unwrap());
-    let initial = wait(&client, "initial Ghostty snapshot", |v| {
-        v.panes().any(|p| p.frame.is_some())
-    });
+    let initial = wait(&client, "initial Ghostty snapshot", drawn);
     let session = initial.selected_session.clone().unwrap();
     let window = initial.selected_window.clone().unwrap();
     let pane = initial.current_window().unwrap().panes[0].id.clone();
@@ -164,16 +187,8 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         let (pane, lines) = (id.clone(), -1);
         send(&client, Action::Wheel { pane, x, y, lines });
     }
-    for (key, code) in [("\t", "tab"), ("\n", "enter")] {
-        let key = Action::Key {
-            pane: pane.clone(),
-            key: key.into(),
-            code: code.into(),
-            modifiers: model::SHIFT,
-            pressed: true,
-            repeat: false,
-        };
-        send(&client, key);
+    for (text, code) in [("\t", "tab"), ("\n", "enter")] {
+        send(&client, key(&pane, text, code, model::SHIFT, true));
     }
     wait(&client, "the mouse and shifted keys reported", |v| {
         let screen = screen(v, &pane);
@@ -235,12 +250,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     divided(0.5);
     // The server is told some things from outside: this window types only into
     // what it shows, and makes no floating layers.
-    let rex = |args: &[&str]| {
-        let rex = rex(&endpoint, args);
-        let error = String::from_utf8_lossy(&rex.stderr);
-        assert!(rex.status.success(), "{error}");
-        String::from_utf8(rex.stdout).unwrap()
-    };
+    let rex = |args: &[&str]| rex(&endpoint, args).unwrap();
     // A pane fills its tab in place of the rest, and gives it back to them.
     for (label, zoomed, panes) in [("a pane zoomed", true, 1), ("a pane restored", false, 2)] {
         send(&client, Action::Zoom { pane: pane.clone() });
@@ -269,10 +279,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     }
     // A pane of a floating layer that has been put away runs on out of sight too,
     // and comes back, with the keyboard, when it is revealed.
-    let call = |method: &str, payload: Value| -> Value {
-        let reply = rex(&["api", "call", method, &payload.to_string()]);
-        serde_json::from_str(&reply).unwrap()
-    };
+    let call = |method: &str, payload: Value| call(&endpoint, method, payload).unwrap();
     let layout = json!({"block": {"flavor": "com.superlogical.terminal.shell"}});
     let bounds = [0.2, 0.2, 0.5, 0.5];
     let layer =
@@ -432,7 +439,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     send(&client, Action::CreateSession(Some("Second".into())));
     let second = wait(&client, "a named session", |v| {
         let shown = v.session().is_some_and(|s| s.name == "Second");
-        shown && v.panes().any(|p| p.frame.is_some())
+        shown && drawn(v)
     });
     let second = second.selected_session.unwrap();
     // The tabs of the session left behind are still listed.
@@ -450,12 +457,12 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     // A window that opens is shown the server's first session, and asks at once
     // to be where it last was instead. That is where it comes to be.
-    let again = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), Herald::new().0);
+    let again = open(&endpoint, Herald::new().0);
     let opened = wait(&again, "a window opened again", |v| v.connected);
     send(&again, opened.unshown().unwrap());
     send(&again, show(&window));
     wait(&again, "a window back where it was", |v| {
-        v.selected_window.as_ref() == Some(&window) && v.panes().any(|p| p.frame.is_some())
+        v.selected_window.as_ref() == Some(&window) && drawn(v)
     });
     drop(again);
     // Its last tab closed, a session remains, empty.
@@ -470,7 +477,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     send(&client, ended.unshown().unwrap());
     wait(&client, "the first session shown in its place", |v| {
-        v.selected_session.as_ref() == Some(&session) && v.panes().any(|p| p.frame.is_some())
+        v.selected_session.as_ref() == Some(&session) && drawn(v)
     });
     // A tab of a session shown again is shown with it.
     send(&client, show(&tab));
@@ -483,12 +490,10 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
 
     // A second window on the same session takes nothing from the first by showing it.
-    let other = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), Herald::new().0);
+    let other = open(&endpoint, Herald::new().0);
     wait(&other, "another connection", |v| v.connected);
     send(&other, Action::SelectSession(session.clone()));
-    wait(&other, "a session shown on request", |v| {
-        v.panes().any(|p| p.frame.is_some())
-    });
+    wait(&other, "a session shown on request", drawn);
     // Each goes by this machine's name, which tells it from one on another.
     let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap();
     let clients = || {
@@ -548,14 +553,8 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
 #[ignore = "requires REX_LITE_TEST_SERVER pointing to a disposable Rex server"]
 fn live_keymap_actions_and_requests() {
     let endpoint = endpoint();
-    let call = |method: &str, payload: Value| -> Result<Value, String> {
-        let rex = rex(&endpoint, &["api", "call", method, &payload.to_string()]);
-        match rex.status.success() {
-            true => Ok(serde_json::from_slice(&rex.stdout).unwrap()),
-            false => Err(String::from_utf8_lossy(&rex.stderr).into_owned()),
-        }
-    };
-    let client = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), Herald::new().0);
+    let call = |method: &str, payload: Value| call(&endpoint, method, payload);
+    let client = open(&endpoint, Herald::new().0);
     let keymap = |label: &str, ready: &dyn Fn(&Value) -> bool| {
         let view = wait(&client, label, |v| v.keymap.as_deref().is_some_and(ready));
         view.keymap.unwrap()
@@ -599,9 +598,7 @@ fn live_keymap_actions_and_requests() {
     // What another client asks of this one reaches it, and the answer reaches
     // the other: that it was done, or that it was not and why.
     send(&client, client.snapshot().unshown().unwrap());
-    let shown = wait(&client, "a terminal", |v| {
-        v.panes().any(|p| p.frame.is_some())
-    });
+    let shown = wait(&client, "a terminal", drawn);
     let session = shown.selected_session.clone().unwrap();
     let pane = shown.current_window().unwrap().panes[0].id.clone();
     let clients = call("client.list", json!({})).unwrap();
@@ -664,12 +661,7 @@ fn live_keymap_actions_and_requests() {
         rex.bind("only/z", "client.mode.exit")
     "#;
     std::fs::write(path, config).unwrap();
-    let reload = rex(&endpoint, &["config", "reload"]);
-    assert!(
-        reload.status.success(),
-        "{}",
-        String::from_utf8_lossy(&reload.stderr)
-    );
+    rex(&endpoint, &["config", "reload"]).unwrap();
     let zoom = json!(["ctrl+shift+d"]);
     let changed = keymap("a keymap read again", &|map| bound(map, &zoom, "pane.zoom"));
     let bindings = list(&changed["bindings"]);
@@ -712,21 +704,18 @@ fn live_keymap_actions_and_requests() {
 
     // The last key of a sequence goes to the function bound to it with the keys
     // before it, and without them to the terminal.
-    let key = |modifiers| Action::Key {
-        pane: pane.clone(),
-        key: "s".into(),
-        code: "key_s".into(),
-        modifiers,
-        pressed: true,
-        repeat: false,
-    };
-    let (prefix, last) = (vec!["ctrl+x".into()], Box::new(key(model::CTRL)));
-    send(&client, Action::After { prefix, key: last });
+    let mut last = key(&pane, "s", "key_s", model::CTRL, true);
+    if let Action::Key { prefix, .. } = &mut last {
+        *prefix = vec!["ctrl+x".into()];
+    }
+    send(&client, last);
     wait(&client, "a sequence answered by a function", |v| {
         v.session().is_some_and(|s| s.name == "after ctrl+x")
     });
-    send(&client, key(0));
-    wait(&client, "a key typed", |v| screen(v, &pane).contains('s'));
+    let typed = |v: &View| screen(v, &pane).matches('s').count();
+    let before = typed(&client.snapshot());
+    send(&client, key(&pane, "s", "key_s", 0, true));
+    wait(&client, "a key typed", |v| typed(v) > before);
     enter(&client, &pane);
 
     // An action of the configuration's is done by the server, and what it asks
@@ -767,5 +756,5 @@ fn live_keymap_actions_and_requests() {
     assert_eq!(session, client.snapshot().selected_session.unwrap());
     // The configuration is left as it was found.
     std::fs::write(path, "").unwrap();
-    assert!(rex(&endpoint, &["config", "reload"]).status.success());
+    rex(&endpoint, &["config", "reload"]).unwrap();
 }

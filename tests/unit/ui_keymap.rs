@@ -147,23 +147,3 @@ fn modes_and_a_sequence_end_with_the_keymap_they_began_in() {
     keys.follow(None);
     assert!(keys.modes.is_empty() && !keys.map.bindings.is_empty());
 }
-
-#[test]
-fn a_key_held_down_does_again_only_what_is_the_better_for_it() {
-    let mut keys = Keys::default();
-    let next = keys
-        .map
-        .bindings
-        .iter()
-        .find(|bound| bound.name == "client.tab.next");
-    let next = next.unwrap().clone();
-    let again = |name: &str| keys.map.repeats(name).then(|| next.clone());
-    // Holding the keys for the next tab goes on through the tabs. Holding those
-    // for a new one makes one, and its repeats go nowhere.
-    keys.held = Some(("ctrl+tab".into(), again("client.tab.next")));
-    assert_eq!(keys.again("ctrl+tab"), Some(Some(&next)));
-    // With Ctrl let go, the key is no longer the one that was taken.
-    assert_eq!(keys.again("tab"), None);
-    keys.held = Some(("ctrl+shift+t".into(), again("client.tab.new")));
-    assert_eq!(keys.again("ctrl+shift+t"), Some(None));
-}

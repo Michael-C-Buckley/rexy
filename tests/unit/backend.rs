@@ -9,19 +9,26 @@ fn split(rect: [f32; 4], before: Value, after: Value) -> Value {
     json!({"rect": rect, "split": {"before": before, "after": after}})
 }
 
+/// One pane down the left, and two on the right, one above the other.
+fn three() -> Value {
+    let mut right = split(
+        [0.6, 0., 0.4, 1.],
+        leaf([0.6, 0., 0.4, 0.25], "b"),
+        leaf([0.6, 0.25, 0.4, 0.75], "c"),
+    );
+    right["split"]["direction"] = json!("vertical");
+    let mut layout = split(FULL, leaf([0., 0., 0.6, 1.], "a"), right);
+    layout["split"]["direction"] = json!("horizontal");
+    layout
+}
+
 fn windows(view: &Value) -> Vec<Window> {
     parse_windows(view, "me", &mut Vec::new())
 }
 
 #[test]
 fn panes_sit_where_the_server_puts_them() {
-    let right = split(
-        [0.6, 0., 0.4, 1.],
-        leaf([0.6, 0., 0.4, 0.25], "b"),
-        leaf([0.6, 0.25, 0.4, 0.75], "c"),
-    );
-    let layout = split(FULL, leaf([0., 0., 0.6, 1.], "a"), right);
-    let view = json!({"windows": [{"window_id": "w", "layers": [{"layout": layout}]}]});
+    let view = json!({"windows": [{"window_id": "w", "layers": [{"layout": three()}]}]});
     let window = &windows(&view)[0];
     let placed = |pane: &Pane| (pane.id.clone(), [pane.x, pane.y, pane.width, pane.height]);
     let panes: Vec<_> = window.panes.iter().map(placed).collect();
@@ -38,22 +45,7 @@ fn panes_sit_where_the_server_puts_them() {
 
 #[test]
 fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
-    let direction = |mut node: Value, direction: &str| {
-        node["split"]["direction"] = json!(direction);
-        node
-    };
-    // One pane down the left, and two on the right, one above the other.
-    let right = split(
-        [0.6, 0., 0.4, 1.],
-        leaf([0.6, 0., 0.4, 0.25], "b"),
-        leaf([0.6, 0.25, 0.4, 0.75], "c"),
-    );
-    let left = leaf([0., 0., 0.6, 1.], "a");
-    let layout = direction(
-        split(FULL, left, direction(right, "vertical")),
-        "horizontal",
-    );
-    let tiled = json!({"kind": "tiled", "layout": layout});
+    let tiled = json!({"kind": "tiled", "layout": three()});
     let tab = |layers: Value| json!({"windows": [{"window_id": "w", "layers": layers}]});
     let borders = |view: &Value| windows(view).remove(0).borders;
     let border = |before: &str, after: &str, upright, room, at| Border {
@@ -428,12 +420,7 @@ fn what_is_asked_to_be_shown_is_shown_at_once_and_numbered() {
     let (client, mut queue) = client();
     let tab = |id: &str| Window {
         id: id.into(),
-        label: None,
-        focus: None,
-        zoomed: false,
-        panes: Vec::new(),
-        hidden: Vec::new(),
-        borders: Vec::new(),
+        ..Window::default()
     };
     let session = |id: &str, active: &str| Session {
         id: id.into(),

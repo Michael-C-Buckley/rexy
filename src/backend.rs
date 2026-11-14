@@ -12,7 +12,7 @@ use crate::{
     notify::Herald,
     program::Program,
     ssh,
-    terminal::{Notify, TerminalHandle},
+    terminal::{Notify, Request, Scroll, TerminalHandle},
     wire::{self, Control, ENDED, Ended, Event, News, Rpc},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -123,7 +123,14 @@ impl Client {
     /// Connect to a server at the first of its endpoints that answers, and keep
     /// connected. None of its sessions is shown until one is asked for.
     /// What its panes have to say to someone not looking goes to `herald`.
-    pub fn spawn(endpoints: Vec<String>, wake: Notify, herald: Herald) -> Self {
+    /// `keymap` is what the server's keymap is asked with: what a window can do
+    /// itself, and by which keys. A client with none asks for no keymap.
+    pub fn spawn(
+        endpoints: Vec<String>,
+        wake: Notify,
+        herald: Herald,
+        keymap: Option<Value>,
+    ) -> Self {
         let (ended, done) = flume::bounded(0);
         let shared = Shared {
             state: Arc::default(),
@@ -144,7 +151,7 @@ impl Client {
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(run(endpoints, receiver, worker)),
+                    Ok(runtime) => runtime.block_on(run(endpoints, keymap, receiver, worker)),
                     Err(error) => {
                         worker.status(format!("Cannot start network runtime: {error}"), false)
                     }
@@ -278,9 +285,16 @@ struct Link {
     target: Option<wire::Target>,
     /// What is known of every terminal on the server, shown or not.
     blocks: HashMap<String, Block>,
+    /// What each connection asks the server's keymap with, if this client has keys.
+    keymap: Option<Value>,
 }
 
-async fn run(endpoints: Vec<String>, mut actions: mpsc::Receiver<(Action, u64)>, shared: Shared) {
+async fn run(
+    endpoints: Vec<String>,
+    keymap: Option<Value>,
+    mut actions: mpsc::Receiver<(Action, u64)>,
+    shared: Shared,
+) {
     let socket = |endpoint: &String| {
         matches!(
             wire::targets(endpoint).as_deref(),
@@ -288,7 +302,10 @@ async fn run(endpoints: Vec<String>, mut actions: mpsc::Receiver<(Action, u64)>,
         )
     };
     let near = endpoints.iter().all(socket);
-    let mut link = Link::default();
+    let mut link = Link {
+        keymap,
+        ..Link::default()
+    };
     // Tries in a row that never connected.
     let mut failures = 0;
     loop {
@@ -666,11 +683,12 @@ impl<'a> Connection<'a> {
         }
     }
 
-    /// Ask what this client's keys do: its own, which the window's table of
-    /// commands names, as changed by the account's configuration.
+    /// Ask what this client's keys do: its own, as changed by the account's
+    /// configuration.
     async fn ask_keymap(&mut self) {
-        let request = crate::ui::commands::request();
-        self.ask(Reply::Keymap, "client.keymap", request).await;
+        if let Some(request) = self.link.keymap.clone() {
+            self.ask(Reply::Keymap, "client.keymap", request).await;
+        }
     }
 
     /// Ask it several things, to be answered together: by a list, with nothing in
@@ -1277,10 +1295,6 @@ impl<'a> Connection<'a> {
     async fn input(&mut self, action: Action) -> Result<()> {
         let event =
             |kind: &str, payload: Value| json!({"event": {"type": kind, "payload": payload}});
-        let (action, prefix) = match action {
-            Action::After { prefix, key } => (*key, Some(prefix)),
-            action => (action, None),
-        };
         // Input that engages the terminal takes ownership and returns to live
         // output. A size engages nothing, and is taken by a terminal not yet seen.
         let (pane, method, mut payload, engage) = match action {
@@ -1307,13 +1321,17 @@ impl<'a> Connection<'a> {
                 modifiers,
                 pressed,
                 repeat,
+                prefix,
             } => {
                 let stroke = match (pressed, repeat) {
                     (false, _) => "release",
                     (true, false) => "press",
                     (true, true) => "repeat",
                 };
-                let payload = json!({"key": key_payload(&key, &code, modifiers, stroke)});
+                let mut payload = json!({"key": key_payload(&key, &code, modifiers, stroke)});
+                if !prefix.is_empty() {
+                    payload["prefix"] = json!(prefix);
+                }
                 // A modifier held alone asks nothing of the terminal.
                 let engage = pressed && !model::is_modifier(&code);
                 (pane, "client.key", payload, Some(engage))
@@ -1367,9 +1385,6 @@ impl<'a> Connection<'a> {
         let session = block.session.clone();
         payload["session_id"] = json!(session);
         payload["block_id"] = json!(pane);
-        if let Some(prefix) = prefix {
-            payload["prefix"] = json!(prefix);
-        }
         if let Some(engage) = engage {
             let ready = self
                 .shared
@@ -1383,7 +1398,7 @@ impl<'a> Connection<'a> {
             };
             if engage {
                 self.claim(&session, &pane).await;
-                terminal.scroll_to_bottom();
+                terminal.ask(Request::Scroll(Scroll::Bottom));
             }
         }
         self.ask(Reply::Input, method, payload).await;
@@ -1563,7 +1578,11 @@ fn divide(rpc: Rpc, shared: Shared) -> watch::Sender<Value> {
         // Until the connection is dropped, and the asking with it.
         while asked.changed().await.is_ok() {
             let request = asked.borrow_and_update().clone();
-            if let Err(error) = rpc.call("session.resize_pane", request).await {
+            // What the server would not do is said. That the connection ended
+            // is said already, above its last screen.
+            if let Err(error) = rpc.call("session.resize_pane", request).await
+                && error.to_string() != ENDED
+            {
                 shared.fail(format!("{error:#}"));
             }
         }
@@ -1811,7 +1830,7 @@ fn shell() -> Value {
 
 /// Read-only connectivity probe used by --probe: no sessions are created and no input is sent.
 pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
-    let client = Client::spawn(vec![endpoint], Arc::new(|| {}), Herald::new().0);
+    let client = Client::spawn(vec![endpoint], Arc::new(|| {}), Herald::new().0, None);
     let started = std::time::Instant::now();
     loop {
         let view = client.snapshot();

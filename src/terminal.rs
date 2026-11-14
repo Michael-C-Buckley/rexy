@@ -17,7 +17,6 @@ use libghostty_vt::{
     screen::{CellContentTag, CellWide, Screen},
     snapshot,
     style::{Style, StyleColor},
-    terminal::ScrollViewport,
 };
 use serde_json::Value;
 use std::{
@@ -25,16 +24,13 @@ use std::{
     collections::HashMap,
     io::{self, Read},
     rc::Rc,
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicI32, Ordering::Relaxed},
-    },
+    sync::{Arc, Mutex, RwLock},
     thread,
     time::{Duration, Instant},
 };
 
 use find::Finding;
-pub use request::{Copied, Request};
+pub use request::{Copied, Request, Scroll};
 use select::Selecting;
 
 const CHUNK_BYTES: usize = 64 * 1024;
@@ -161,9 +157,6 @@ enum Command {
 struct Shared {
     frame: RwLock<Option<Arc<Frame>>>,
     error: Mutex<Option<String>>,
-    scroll: AtomicI32,
-    prompts: AtomicI32,
-    bottom: AtomicBool,
     asks: Mutex<Vec<Request>>,
     copied: Mutex<Vec<Copied>>,
     repaint: Notify,
@@ -183,9 +176,6 @@ impl TerminalHandle {
         let shared = Arc::new(Shared {
             frame: RwLock::new(None),
             error: Mutex::new(None),
-            scroll: AtomicI32::new(0),
-            prompts: AtomicI32::new(0),
-            bottom: AtomicBool::new(false),
             asks: Mutex::default(),
             copied: Mutex::default(),
             repaint,
@@ -233,31 +223,9 @@ impl TerminalHandle {
         self.shared.error.lock().unwrap().clone()
     }
 
-    /// Negative is up. Wheel deltas are coalesced, so output cannot starve scroll.
-    pub fn scroll(&self, lines: i32) -> Result<()> {
-        self.nudge(&self.shared.scroll, lines)
-    }
-
-    /// Negative is up, a screenful at a time.
-    pub fn scroll_pages(&self, pages: i32) -> Result<()> {
-        let rows = self.latest().map_or(0, |frame| i32::from(frame.rows));
-        self.scroll(pages.saturating_mul(rows))
-    }
-
-    /// To the shell prompt before the view when negative, or after it, where the
-    /// shell marks its prompts (OSC 133).
-    pub fn scroll_prompts(&self, prompts: i32) -> Result<()> {
-        self.nudge(&self.shared.prompts, prompts)
-    }
-
-    pub fn scroll_to_bottom(&self) {
-        self.shared.bottom.store(true, Relaxed);
-        self.shared.scroll.store(0, Relaxed);
-        self.shared.prompts.store(0, Relaxed);
-        self.wake();
-    }
-
-    /// Nothing is said of a worker that has stopped: its pane says so.
+    /// Ask the worker to move its view, or about what is selected or looked for.
+    /// What is asked waits apart from the terminal's output, which cannot hold it
+    /// up. Nothing is said of a worker that has stopped: its pane says so.
     pub fn ask(&self, request: Request) {
         self.shared.asks.lock().unwrap().push(request);
         self.wake();
@@ -266,13 +234,6 @@ impl TerminalHandle {
     /// The selected text handed back since this was last asked.
     pub fn copied(&self) -> Vec<Copied> {
         std::mem::take(&mut self.shared.copied.lock().unwrap())
-    }
-
-    fn nudge(&self, control: &AtomicI32, by: i32) -> Result<()> {
-        ensure!(!self.input.is_disconnected(), "terminal worker stopped");
-        control.update(Relaxed, Relaxed, |old| old.saturating_add(by));
-        self.wake();
-        Ok(())
     }
 
     fn wake(&self) {
@@ -425,27 +386,6 @@ fn configure(terminal: &mut Terminal) -> Result<()> {
     Ok(())
 }
 
-/// Scroll as the handle asked. True when the view moved.
-fn apply_controls(shared: &Shared, terminal: &mut Terminal) -> Result<bool> {
-    let bottom = shared.bottom.swap(false, Relaxed);
-    let prompts = shared.prompts.swap(0, Relaxed);
-    let lines = shared.scroll.swap(0, Relaxed);
-    if !bottom && prompts == 0 && lines == 0 {
-        return Ok(false);
-    }
-    let before = terminal.scrollbar()?.offset;
-    if bottom {
-        terminal.scroll_viewport(ScrollViewport::Bottom);
-    }
-    if prompts != 0 {
-        terminal.scroll_viewport(ScrollViewport::DeltaPrompt(prompts as isize));
-    }
-    if lines != 0 {
-        terminal.scroll_viewport(ScrollViewport::Delta(lines as isize));
-    }
-    Ok(terminal.scrollbar()?.offset != before)
-}
-
 fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u64) -> Result<()> {
     let mut input = Input {
         receiver,
@@ -494,7 +434,6 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
     // The terminal has been written to since text was last looked for in it.
     let mut wrote = false;
     loop {
-        owed |= apply_controls(shared, &mut terminal)?;
         owed |= request::heed(shared, &mut terminal, &mut selecting, &mut finding)?;
         owed |= selecting.tick(&terminal)?;
         let looking = finding.work(&mut terminal, std::mem::take(&mut wrote))?;

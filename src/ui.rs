@@ -43,9 +43,12 @@ use raise::Raise;
 pub use remembered::{LEAST_WINDOW, Remembered, state_home};
 use render::{PaneView, rgb};
 use rows::Rename;
+pub use style::icon;
 use style::{BODY, DIM, HOVER, POPOVER, RED, SMALL, TEXT, VIEW, fitted, suggested};
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
+/// The least and the most the keys take it to.
+const FONT_SIZES: [f32; 2] = [9.0, 32.0];
 
 /// A server and the connection kept to it.
 struct Server {
@@ -59,7 +62,12 @@ impl Server {
         let wake = Arc::new(move || ctx.request_repaint());
         let herald = herald.of(&host.label);
         Self {
-            client: Client::spawn(host.endpoints.clone(), wake, herald),
+            client: Client::spawn(
+                host.endpoints.clone(),
+                wake,
+                herald,
+                Some(commands::request()),
+            ),
             host,
         }
     }
@@ -93,9 +101,6 @@ pub struct App {
     current: usize,
     /// Home's address, as typed.
     endpoint: String,
-    /// With the sidebar, tabs are listed in it. Without, they run along the top.
-    sidebar: bool,
-    sidebar_width: f32,
     /// The pane that has the keyboard, while one is on screen.
     focused: Option<String>,
     panes: HashMap<String, PaneView>,
@@ -105,7 +110,6 @@ pub struct App {
     /// What the buttons and menus have asked for since the window last drew, each
     /// by its name in the table of commands and the pane it was asked of, if one.
     todo: Vec<(&'static str, Option<String>)>,
-    font_size: f32,
     toast: Toast,
     rename: Option<Rename>,
     /// The field that finds text in a pane, while it is open.
@@ -142,20 +146,16 @@ impl App {
             }
             ctx.request_repaint();
         });
-        let kept = &remembered.kept;
-        desktop.mute(kept.muted.clone());
+        desktop.mute(remembered.kept.muted.clone());
         Self {
             servers: vec![Server::home(&cc.egui_ctx, &endpoint, &herald)],
             current: 0,
             endpoint,
-            sidebar: kept.sidebar,
-            sidebar_width: kept.sidebar_width,
             focused: None,
             panes: HashMap::new(),
             keyboard: Keyboard::default(),
             keys: Keys::default(),
             todo: Vec::new(),
-            font_size: kept.font_size,
             toast: Toast::default(),
             rename: None,
             find: None,
@@ -338,11 +338,6 @@ impl eframe::App for App {
         }
         self.hear(&ctx, &mut views);
         let made = views[self.current].made.take();
-        let asked = |(server, view): (usize, &mut View)| {
-            let asked = std::mem::take(&mut view.asked).into_iter();
-            asked.map(move |request| (server, request))
-        };
-        let asked = views.iter_mut().enumerate().flat_map(asked).collect();
         let copied = views[self.current].copied.take();
         let view = &views[self.current];
         let window = view.current_window();
@@ -370,7 +365,9 @@ impl eframe::App for App {
             ctx.copy_text(text);
         }
         self.shortcuts(&ctx, view);
-        if self.sidebar {
+        // With the sidebar, tabs are listed in it. Without, they run along the top.
+        let sidebar = self.remembered.kept.sidebar;
+        if sidebar {
             self.sidebar(root_ui, &views);
         }
         let terminal = panes.iter().find_map(|p| p.frame.as_ref());
@@ -380,7 +377,7 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(ground))
             .show(root_ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                if !self.sidebar {
+                if !sidebar {
                     self.toolbar(ui, &views);
                 }
                 let Some(window) = window.filter(|window| !window.panes.is_empty()) else {
@@ -397,28 +394,30 @@ impl eframe::App for App {
                     let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
                     let size = area.size() * egui::vec2(pane.width, pane.height);
                     let rect = Rect::from_min_size(min, size);
-                    self.terminal_pane(ui, window, pane, rect, view.connected);
+                    self.terminal_pane(ui, view, window, pane, rect);
                 }
                 if view.connected {
                     self.borders(ui, window, area);
                 }
                 area
             });
-        if self.sidebar {
+        if sidebar {
             self.edge(root_ui);
         }
-        self.answer(&ctx, &views, asked);
+        self.answer(&ctx, &views);
+        self.palette(&ctx, &views);
         self.toast.show(&ctx, shown.inner);
         // One more drawing when the wait to be asked again to close is over, and
         // none until then.
         if let Some(left) = self.closing.lapse(Instant::now()) {
             ctx.request_repaint_after(left);
         }
+        let typed = self.focused.as_deref().and_then(|id| view.pane(id));
         if view.connected
             && !busy
-            && let Some(pane) = self.focused.clone()
+            && let Some(pane) = typed
         {
-            self.terminal_keys(&ctx, &pane);
+            self.terminal_keys(&ctx, pane);
         }
         self.panes.retain(|id, _| view.pane(id).is_some());
         // A connection that returns is told every size again.

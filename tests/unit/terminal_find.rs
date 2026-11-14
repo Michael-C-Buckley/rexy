@@ -1,7 +1,7 @@
 use super::*;
 use crate::terminal::{
-    Request, configure, restore, select,
-    tests::{encode, render, row, terminal, until, worker, write},
+    Request, select,
+    tests::{encode, long, render, row, terminal, until, worker, write},
 };
 
 /// What is selected, which a match found is.
@@ -17,13 +17,7 @@ fn find(finding: &mut Finding, terminal: &mut Terminal<'static, '_>, text: &str)
 
 #[test]
 fn text_is_found_through_all_of_history_and_its_matches_walked() {
-    let mut original = terminal(20, 3);
-    configure(&mut original).unwrap();
-    for line in 0..10_000 {
-        original.vt_write(format!("line {line}\r\n").as_bytes());
-    }
-    // Restored, most of its history is compressed.
-    let mut terminal = restore(encode(&mut original).as_slice()).unwrap();
+    let mut terminal = long();
     let mut finding = Finding::default();
     assert_eq!(finding.found().unwrap(), None);
     // The row of the match selected, which is brought into view.
@@ -71,7 +65,7 @@ fn a_worker_finds_as_asked_and_says_how_many_in_its_frames() {
     handle.ask(Request::Find("line 7".into()));
     // Lines 7, 70 to 79 and 700 on, of which there are none.
     until(&wakes, || found() == Some((1, 11)));
-    handle.ask(Request::FindNext);
+    handle.ask(Request::Step { older: true });
     until(&wakes, || found() == Some((2, 11)));
     let frame = handle.latest().unwrap();
     assert!(frame.scroll_offset > 0 && frame.text().contains("line 78"));

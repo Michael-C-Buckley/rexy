@@ -81,6 +81,7 @@ impl Keyboard {
             modifiers,
             pressed,
             repeat,
+            prefix: Vec::new(),
         };
         for (index, event) in events.iter().enumerate() {
             match event {
@@ -137,14 +138,13 @@ impl Keyboard {
                         code,
                         modifiers: bits,
                     };
-                    let pressed = key_action(&held, bits, true, *repeat);
-                    actions.push(match self.prefix.take_if(|(key, _)| *key == identity) {
-                        Some((_, prefix)) => Action::After {
-                            prefix,
-                            key: Box::new(pressed),
-                        },
-                        None => pressed,
-                    });
+                    let mut pressed = key_action(&held, bits, true, *repeat);
+                    if let Action::Key { prefix, .. } = &mut pressed
+                        && let Some(before) = self.prefix.take_if(|(key, _)| *key == identity)
+                    {
+                        *prefix = before.1;
+                    }
+                    actions.push(pressed);
                     self.held.insert(identity, held);
                 }
                 Event::Text(text) if !used_text.contains(&index) && !text.is_empty() => {
@@ -246,6 +246,7 @@ pub fn press(pane: &str, chord: &str) -> Option<Action> {
         modifiers: modifiers.sum::<Option<u8>>()?,
         pressed: true,
         repeat: false,
+        prefix: Vec::new(),
     })
 }
 

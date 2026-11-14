@@ -1,7 +1,7 @@
-//! What the UI asks of a pane's worker about its selection and the text looked
-//! for in it, and the selected text the worker hands back.
+//! What the UI asks of a pane's worker: to move its view, and about its selection
+//! and the text looked for in it. And the selected text the worker hands back.
 use anyhow::Result;
-use libghostty_vt::Terminal;
+use libghostty_vt::{Terminal, terminal::ScrollViewport};
 
 use super::{
     Shared,
@@ -36,9 +36,23 @@ pub enum Request {
     /// Look for this text and select the match nearest the end, or with no text
     /// stop looking.
     Find(String),
-    /// Select the match before the one selected, or the one after it.
-    FindNext,
-    FindPrevious,
+    /// Select the match before the one selected, which is the `older`, or the
+    /// one after it.
+    Step {
+        older: bool,
+    },
+    /// Move the view through the pane's history.
+    Scroll(Scroll),
+}
+
+/// A move through a pane's history. Negative is up.
+pub enum Scroll {
+    Lines(i32),
+    /// A screenful at a time.
+    Pages(i32),
+    /// From one shell prompt to another, where the shell marks them (OSC 133).
+    Prompts(i32),
+    Bottom,
 }
 
 /// Selected text a worker hands back: for the clipboard, or as the desktop's
@@ -49,7 +63,8 @@ pub enum Copied {
     Selection(String),
 }
 
-/// Do what the handle asked, in the order asked. True when anything was.
+/// Do what the handle asked, in the order asked. True when a frame may come of
+/// it: every key typed asks for the bottom, where the view mostly is already.
 pub fn heed(
     shared: &Shared,
     terminal: &mut Terminal<'static, '_>,
@@ -57,8 +72,13 @@ pub fn heed(
     finding: &mut Finding,
 ) -> Result<bool> {
     let asks = std::mem::take(&mut *shared.asks.lock().unwrap());
-    let any = !asks.is_empty();
+    if asks.is_empty() {
+        return Ok(false);
+    }
+    let before = terminal.scrollbar()?.offset;
+    let mut owed = false;
     for request in asks {
+        owed |= !matches!(request, Request::Scroll(_));
         // What is selected once it is done is handed back, where it is wanted.
         let wanted: Option<fn(String) -> Copied> = match request {
             Request::Release | Request::SelectAll => Some(Copied::Selection),
@@ -76,8 +96,16 @@ pub fn heed(
             Request::Deselect => drop(terminal.set_selection(None)?),
             Request::Copy => {}
             Request::Find(text) => finding.look(terminal, &text)?,
-            Request::FindNext => finding.step(terminal, true)?,
-            Request::FindPrevious => finding.step(terminal, false)?,
+            Request::Step { older } => finding.step(terminal, older)?,
+            Request::Scroll(to) => {
+                let rows = terminal.rows()? as isize;
+                terminal.scroll_viewport(match to {
+                    Scroll::Lines(lines) => ScrollViewport::Delta(lines as isize),
+                    Scroll::Pages(pages) => ScrollViewport::Delta(pages as isize * rows),
+                    Scroll::Prompts(prompts) => ScrollViewport::DeltaPrompt(prompts as isize),
+                    Scroll::Bottom => ScrollViewport::Bottom,
+                });
+            }
         }
         if let Some(wanted) = wanted
             && let Some(text) = text(terminal)?
@@ -86,5 +114,5 @@ pub fn heed(
             (shared.repaint)();
         }
     }
-    Ok(any)
+    Ok(owed || terminal.scrollbar()?.offset != before)
 }

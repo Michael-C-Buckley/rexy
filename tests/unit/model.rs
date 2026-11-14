@@ -3,18 +3,11 @@ use super::*;
 fn pane(id: &str, [x, y, width, height]: [f32; 4]) -> Pane {
     Pane {
         id: id.into(),
-        title: String::new(),
-        program: Program::default(),
-        activity: Activity::Idle,
-        message: String::new(),
         x,
         y,
         width,
         height,
-        frame: None,
-        status: String::new(),
-        owner: false,
-        idle: false,
+        ..Pane::default()
     }
 }
 
@@ -23,17 +16,13 @@ fn the_pane_beside_another_is_the_nearest_alongside_it() {
     // One pane down the left, and three on the right: one above two side by side.
     let window = Window {
         id: "w".into(),
-        label: None,
-        focus: None,
-        zoomed: false,
-        hidden: Vec::new(),
-        borders: Vec::new(),
         panes: vec![
             pane("left", [0.0, 0.0, 0.6, 1.0]),
             pane("top", [0.6, 0.0, 0.4, 0.25]),
             pane("low", [0.6, 0.25, 0.2, 0.75]),
             pane("corner", [0.8, 0.25, 0.2, 0.75]),
         ],
+        ..Window::default()
     };
     let beside = |pane, toward| window.beside(pane, toward).map(|pane| pane.id.as_str());
     let [left, right, up, down] = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]];
@@ -64,12 +53,10 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
     };
     let tab = |panes, hidden| Window {
         id: "w".into(),
-        label: None,
-        focus: None,
         zoomed: true,
         panes,
         hidden,
-        borders: Vec::new(),
+        ..Window::default()
     };
     // One out of sight is heard too, and of two as pressing, the first.
     let hidden = vec![
@@ -98,12 +85,7 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
 fn tab(id: &str) -> Window {
     Window {
         id: id.into(),
-        label: None,
-        focus: None,
-        zoomed: false,
-        panes: Vec::new(),
-        hidden: Vec::new(),
-        borders: Vec::new(),
+        ..Window::default()
     }
 }
 

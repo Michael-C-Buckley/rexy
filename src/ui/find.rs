@@ -80,12 +80,8 @@ impl App {
             Some(Request::Find(find.text.clone()))
         } else if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             field.request_focus();
-            let back = ui.input(|i| i.modifiers.shift);
-            Some(if back {
-                Request::FindPrevious
-            } else {
-                Request::FindNext
-            })
+            let older = !ui.input(|i| i.modifiers.shift);
+            Some(Request::Step { older })
         } else if field.lost_focus() {
             return self.find_close();
         } else {

@@ -148,7 +148,7 @@ impl Session {
 }
 
 /// A tab.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Window {
     pub id: String,
     /// The name it was given, if it was given one.
@@ -311,7 +311,7 @@ pub fn line(first: &str, second: &str) -> String {
 }
 
 /// Geometry is a fraction of the tab area.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Pane {
     pub id: String,
     /// The terminal's title, as its program set it.
@@ -393,6 +393,9 @@ pub enum Action {
         pressed: bool,
         /// Pressed by being held down.
         repeat: bool,
+        /// The keys before it, as Rex spells them, if it ends a sequence that a
+        /// function on the server is bound to.
+        prefix: Vec<String>,
     },
     Text {
         pane: String,
@@ -459,12 +462,6 @@ pub enum Action {
         edit: Edit,
     },
     Reconnect,
-    /// The key that ends a sequence which a function on the server is bound to,
-    /// with the keys before it as Rex spells them.
-    After {
-        prefix: Vec<String>,
-        key: Box<Action>,
-    },
     /// Do one of the server's own actions, from its configuration or of a
     /// terminal: to a pane, if one has the keyboard. `origin` is `key` or `palette`.
     Perform {

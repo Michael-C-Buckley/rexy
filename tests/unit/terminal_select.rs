@@ -4,7 +4,7 @@ use libghostty_vt::terminal::ScrollViewport;
 
 use super::*;
 use crate::terminal::{
-    Copied, Renderer, Request,
+    Copied, Renderer, Request, TerminalHandle,
     tests::{QUIET, encode, render, terminal, until, worker, write},
 };
 
@@ -22,6 +22,23 @@ fn drag(selecting: &mut Selecting, terminal: &Terminal, from: (u16, u16), to: (u
     let at = |(x, y): (u16, u16), within: f32| [f32::from(x) + within, f32::from(y) + 0.5];
     selecting.press(terminal, at(from, 0.1), false).unwrap();
     selecting.drag(terminal, at(to, 0.9), false).unwrap();
+}
+
+/// Ask a worker for a press at one place and a drag to another, in cells.
+fn drag_asked(handle: &TerminalHandle, from: [f32; 2], to: [f32; 2]) {
+    let (extend, block) = (false, false);
+    handle.ask(Request::Press { at: from, extend });
+    handle.ask(Request::Drag { at: to, block });
+}
+
+/// The selected text a worker hands back next.
+fn handed(handle: &TerminalHandle, wakes: &flume::Receiver<Instant>) -> Copied {
+    let mut copied = Vec::new();
+    until(wakes, || {
+        copied.extend(handle.copied());
+        !copied.is_empty()
+    });
+    copied.remove(0)
 }
 
 /// What copying would copy.
@@ -103,16 +120,13 @@ fn wide_glyphs_and_clusters_at_a_selections_edges_are_copied_whole_and_once() {
 }
 
 #[test]
-fn a_block_is_selected_by_columns_and_all_is_all_of_history() {
+fn a_block_is_selected_by_columns() {
     let mut terminal = terminal(10, 2);
     terminal.vt_write(b"abcd\r\nefgh\r\nijkl");
     let mut selecting = Selecting::new().unwrap();
     selecting.press(&terminal, [1.1, 0.5], false).unwrap();
     selecting.drag(&terminal, [2.9, 1.5], true).unwrap();
     assert_eq!(copied(&terminal), "fg\njk");
-    let all = terminal.select_all().unwrap();
-    terminal.set_selection(all.as_ref()).unwrap();
-    assert_eq!(copied(&terminal), "abcd\nefgh\nijkl");
 }
 
 #[test]
@@ -121,32 +135,16 @@ fn a_worker_selects_as_asked_and_hands_back_the_text() {
     server.vt_write(b"one\r\ntwo\r\nthree");
     let (handle, wakes) = worker(encode(&mut server));
     let selected = || handle.latest().map(|frame| frame.selected.clone());
-    handle.ask(Request::Press {
-        at: [0.1, 1.5],
-        extend: false,
-    });
-    handle.ask(Request::Drag {
-        at: [2.9, 1.5],
-        block: false,
-    });
+    drag_asked(&handle, [0.1, 1.5], [2.9, 1.5]);
     until(&wakes, || {
         selected() == Some(vec![None, Some((0, 3)), None])
     });
     assert_eq!(handle.copied(), []);
     // Let go, it is the desktop's selection. Copying is asked for.
     handle.ask(Request::Release);
-    let mut copied = Vec::new();
-    until(&wakes, || {
-        copied.extend(handle.copied());
-        !copied.is_empty()
-    });
-    assert_eq!(copied, [Copied::Selection("two".into())]);
+    assert_eq!(handed(&handle, &wakes), Copied::Selection("two".into()));
     handle.ask(Request::Copy);
-    until(&wakes, || {
-        copied.extend(handle.copied());
-        copied.len() == 2
-    });
-    assert_eq!(copied[1], Copied::Clipboard("two".into()));
+    assert_eq!(handed(&handle, &wakes), Copied::Clipboard("two".into()));
     // The pane goes on while something is selected in it.
     write(&handle, b"\r\nfour");
     until(&wakes, || {
@@ -158,11 +156,8 @@ fn a_worker_selects_as_asked_and_hands_back_the_text() {
     // Nothing selected is nothing to copy. All of it is the desktop's selection too.
     handle.ask(Request::Copy);
     handle.ask(Request::SelectAll);
-    until(&wakes, || {
-        copied.extend(handle.copied());
-        copied.len() == 3
-    });
-    assert_eq!(copied[2], Copied::Selection("one\ntwo\nthree\nfour".into()));
+    let all = Copied::Selection("one\ntwo\nthree\nfour".into());
+    assert_eq!(handed(&handle, &wakes), all);
 }
 
 #[test]
@@ -172,25 +167,13 @@ fn a_drag_held_past_the_top_scrolls_back_and_goes_on_selecting() {
         server.vt_write(format!("\r\nline {line}").as_bytes());
     }
     let (handle, wakes) = worker(encode(&mut server));
-    handle.ask(Request::Press {
-        at: [3.9, 1.5],
-        extend: false,
-    });
-    handle.ask(Request::Drag {
-        at: [0.0, -2.0],
-        block: false,
-    });
+    drag_asked(&handle, [3.9, 1.5], [0.0, -2.0]);
     let offset = || handle.latest().map_or(0, |frame| frame.scroll_offset);
     until(&wakes, || offset() >= 5);
     handle.ask(Request::Release);
-    let mut copied = Vec::new();
-    until(&wakes, || {
-        copied.extend(handle.copied());
-        !copied.is_empty()
-    });
     // Every row it passed is selected, down to where it began.
-    let Copied::Selection(text) = &copied[0] else {
-        panic!("{copied:?}");
+    let Copied::Selection(text) = handed(&handle, &wakes) else {
+        panic!("not the desktop's selection");
     };
     assert!(
         text.lines().count() > 5 && text.ends_with("line 37\nline"),

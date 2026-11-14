@@ -1,4 +1,5 @@
 use super::*;
+use libghostty_vt::terminal::ScrollViewport;
 
 pub(crate) fn terminal(cols: u16, rows: u16) -> Terminal<'static, 'static> {
     Terminal::new(cols, rows).unwrap()
@@ -13,6 +14,17 @@ pub(crate) fn encode(terminal: &mut Terminal) -> Vec<u8> {
     let mut bytes = Vec::new();
     terminal.encode_snapshot(&mut bytes).unwrap();
     bytes
+}
+
+/// A terminal restored with a long history: more of Ghostty's pages than the
+/// one the screen is on, and most of them compressed.
+pub(crate) fn long() -> Terminal<'static, 'static> {
+    let mut original = terminal(20, 3);
+    configure(&mut original).unwrap();
+    for line in 0..10_000 {
+        original.vt_write(format!("line {line}\r\n").as_bytes());
+    }
+    restore(encode(&mut original).as_slice()).unwrap()
 }
 
 pub(crate) const WAIT: Duration = Duration::from_secs(3);
@@ -31,11 +43,6 @@ pub(crate) fn worker(bytes: Vec<u8>) -> (TerminalHandle, flume::Receiver<Instant
 
 pub(crate) fn write(handle: &TerminalHandle, bytes: &[u8]) {
     handle.input.send(Command::Bytes(bytes.to_vec())).unwrap();
-}
-
-/// The text of every row.
-fn text(frame: &Frame) -> String {
-    frame.text()
 }
 
 /// The text of one row of those.
@@ -97,13 +104,7 @@ fn snapshot_rejects_crc_damage_and_one_cut_short() {
 
 #[test]
 fn restored_history_is_compressed_and_opens_when_scrolled_to() {
-    let mut original = terminal(20, 3);
-    configure(&mut original).unwrap();
-    // More of Ghostty's pages than the one the screen is on.
-    for line in 0..10_000 {
-        original.vt_write(format!("line {line}\r\n").as_bytes());
-    }
-    let mut restored = restore(encode(&mut original).as_slice()).unwrap();
+    let mut restored = long();
     let usage = restored.memory_usage().unwrap();
     assert!(usage.compression_supported && usage.primary_compressed_pages > 0);
     restored.scroll_viewport(ScrollViewport::Top);
@@ -133,7 +134,7 @@ fn image_records_in_snapshot_do_not_break_text_restore() {
         Some(false)
     );
     let frame = render(&restored);
-    assert!(text(&frame).contains("text after image"));
+    assert!(frame.text().contains("text after image"));
 }
 
 #[test]
@@ -214,7 +215,7 @@ fn frames_reuse_unchanged_rows() {
     terminal.vt_write("界 e\u{301}\r\nsecond\r\nthird".as_bytes());
     let mut renderer = Renderer::new().unwrap();
     let first = renderer.frame(&terminal).unwrap().unwrap();
-    assert_eq!(text(&first), "界 e\u{301}\nsecond\nthird");
+    assert_eq!(first.text(), "界 e\u{301}\nsecond\nthird");
     assert!(renderer.frame(&terminal).unwrap().is_none());
     terminal.vt_write(b"\x1b[3;1HX");
     let second = renderer.frame(&terminal).unwrap().unwrap();
@@ -231,14 +232,14 @@ fn a_row_that_only_moved_is_kept_and_one_that_also_changed_is_not() {
     // Output scrolls the screen by a row, and in the same write changes another.
     terminal.vt_write(b"\r\nfive\x1b[2;1Hthr33");
     let second = renderer.frame(&terminal).unwrap().unwrap();
-    assert_eq!(text(&second), "two\nthr33\nfour\nfive");
+    assert_eq!(second.text(), "two\nthr33\nfour\nfive");
     assert!(Arc::ptr_eq(&first.lines[1], &second.lines[0]));
     assert!(!Arc::ptr_eq(&first.lines[2], &second.lines[1]));
     assert!(Arc::ptr_eq(&first.lines[3], &second.lines[2]));
     // The user scrolls back a row.
     terminal.scroll_viewport(ScrollViewport::Delta(-1));
     let back = renderer.frame(&terminal).unwrap().unwrap();
-    assert_eq!(text(&back), "one\ntwo\nthr33\nfour");
+    assert_eq!(back.text(), "one\ntwo\nthr33\nfour");
     for y in 1..4 {
         assert!(Arc::ptr_eq(&back.lines[y], &second.lines[y - 1]));
     }
@@ -246,7 +247,7 @@ fn a_row_that_only_moved_is_kept_and_one_that_also_changed_is_not() {
     terminal.scroll_viewport(ScrollViewport::Bottom);
     terminal.vt_write(b"\x1b[2J\x1b[H\x1b[34mtwo");
     let blue = renderer.frame(&terminal).unwrap().unwrap();
-    assert_eq!(text(&blue), "two\n\n\n");
+    assert_eq!(blue.text(), "two\n\n\n");
     assert!(!Arc::ptr_eq(&blue.lines[0], &second.lines[0]));
     assert_eq!(blue.lines[0].look(&blue.lines[0].cells[0]).fg, 0x81a2be);
 }
@@ -275,7 +276,7 @@ fn a_cell_holds_the_whole_of_a_cluster_and_a_wide_glyph_has_its_spare_half() {
     assert_eq!((spare(13), row.wrapped), ((false, true), true));
     assert_eq!(frame.lines[1].text(0, 2), "界");
     let all = format!("{flag}{family}e\u{301}e\u{302}aa界界y界");
-    assert_eq!(text(&frame), all);
+    assert_eq!(frame.text(), all);
 }
 
 #[test]
@@ -302,7 +303,7 @@ fn looks_are_reversed_hidden_and_laid_on_a_colour_of_their_own() {
     assert_eq!(colours(4, 1), (frame.fg, frame.bg));
     let line = (look(6, 1).style.underline, look(6, 1).underline_color);
     assert_eq!(line, (libghostty_vt::style::Underline::Single, Some(red)));
-    assert_eq!(text(&frame), "abcd\n      u");
+    assert_eq!(frame.text(), "abcd\n      u");
 }
 
 #[test]
@@ -319,7 +320,7 @@ fn a_link_covers_the_cells_it_was_written_over_and_no_others() {
         .map(|(start, end, target)| (*start, *end, &**target))
         .collect();
     assert_eq!(links, [(2, 4, first), (4, 6, second)]);
-    assert_eq!(text(&frame), "xxxxxxxx");
+    assert_eq!(frame.text(), "xxxxxxxx");
 }
 
 #[test]
@@ -409,7 +410,6 @@ fn what_stops_a_worker_is_told_by_its_handle() {
             }
         };
         assert!(status.contains(cause), "{status}");
-        assert!(handle.scroll(1).is_err());
     }
 }
 
@@ -489,9 +489,9 @@ fn scrolling_draws_through_a_hold_and_staying_put_does_not() {
     let began = Instant::now();
     write(&handle, b"\x1b[?2026h\rheld");
     // Every key press asks for the bottom, where the view already is.
-    handle.scroll_to_bottom();
+    handle.ask(Request::Scroll(Scroll::Bottom));
     assert!(wakes.recv_timeout(QUIET).is_err());
-    handle.scroll(-1).unwrap();
+    handle.ask(Request::Scroll(Scroll::Lines(-1)));
     let drawn = wakes.recv_timeout(WAIT).unwrap();
     assert!(drawn.duration_since(began) < RENDER_HOLD_LIMIT);
     assert_eq!(handle.latest().unwrap().scroll_offset, 1);
@@ -510,21 +510,16 @@ fn the_view_moves_by_pages_and_by_shell_prompts() {
     }
     let (handle, wakes) = worker(encode(&mut server));
     wakes.recv_timeout(WAIT).unwrap();
-    let after = |asked: Result<()>| {
-        asked.unwrap();
+    let after = |to: Scroll| {
+        handle.ask(Request::Scroll(to));
         wakes.recv_timeout(WAIT).unwrap();
         (handle.latest().unwrap().scroll_offset, top(&handle))
     };
-    assert_eq!(after(handle.scroll_prompts(-1)), (2, "p3".into()));
-    assert_eq!(after(handle.scroll_pages(-1)), (4, "cmd".into()));
-    assert_eq!(after(handle.scroll_prompts(-1)), (5, "p2".into()));
-    assert_eq!(after(handle.scroll_prompts(1)), (2, "p3".into()));
-    handle.scroll_to_bottom();
-    wakes.recv_timeout(WAIT).unwrap();
-    assert_eq!(
-        (handle.latest().unwrap().scroll_offset, top(&handle)),
-        (0, "out".into())
-    );
+    assert_eq!(after(Scroll::Prompts(-1)), (2, "p3".into()));
+    assert_eq!(after(Scroll::Pages(-1)), (4, "cmd".into()));
+    assert_eq!(after(Scroll::Prompts(-1)), (5, "p2".into()));
+    assert_eq!(after(Scroll::Prompts(1)), (2, "p3".into()));
+    assert_eq!(after(Scroll::Bottom), (0, "out".into()));
 }
 
 #[test]
@@ -563,7 +558,7 @@ fn output_under_a_view_scrolled_back_is_drawn_only_where_it_shows() {
         let new = drawn.is_some();
         shown = drawn.or(shown.take());
         let (shown, afresh) = (shown.as_ref().unwrap(), render(terminal));
-        assert_eq!(text(shown), text(&afresh));
+        assert_eq!(shown.text(), afresh.text());
         assert_eq!(shown.cursor, afresh.cursor);
         assert_eq!(shown.scroll_offset == 0, afresh.scroll_offset == 0);
         new

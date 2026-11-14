@@ -47,27 +47,6 @@ fn default_endpoint() -> String {
     format!("unix:{}", runtime.join("rex/server.sock").display())
 }
 
-/// The window's icon, for a desktop that takes it from the window. One that goes
-/// by the desktop entry draws the same picture.
-fn icon() -> egui::IconData {
-    use resvg::{tiny_skia, usvg};
-    const SIDE: u32 = 128;
-    let drawing = include_str!("../assets/dev.rex-lite.client.svg");
-    let tree = usvg::Tree::from_str(drawing, &usvg::Options::default());
-    let tree = tree.expect("the icon is sound");
-    let mut canvas = tiny_skia::Pixmap::new(SIDE, SIDE).expect("the icon has a size");
-    let scale = SIDE as f32 / tree.size().width();
-    let scale = tiny_skia::Transform::from_scale(scale, scale);
-    resvg::render(&tree, scale, &mut canvas.as_mut());
-    let colors = canvas.pixels().iter().map(|pixel| pixel.demultiply());
-    let rgba = colors.flat_map(|color| [color.red(), color.green(), color.blue(), color.alpha()]);
-    egui::IconData {
-        rgba: rgba.collect(),
-        width: SIDE,
-        height: SIDE,
-    }
-}
-
 fn main() -> eframe::Result {
     let mut endpoint = None;
     let mut probe = false;
@@ -113,7 +92,7 @@ fn main() -> eframe::Result {
             .with_inner_size(remembered.kept.window)
             .with_min_inner_size(rex_lite::ui::LEAST_WINDOW)
             .with_app_id(rex_lite::notify::APP_ID)
-            .with_icon(icon()),
+            .with_icon(rex_lite::ui::icon()),
         renderer: eframe::Renderer::Glow,
         // Ctrl+C, X and V belong to terminal programs; the UI maps the clipboard itself.
         clipboard_shortcuts: false,

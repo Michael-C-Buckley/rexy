@@ -8,7 +8,10 @@ use super::{
     keymap::{self, Binding, FORWARD, Step},
     palette,
 };
-use crate::model::{Action, Asked, View};
+use crate::{
+    model::{Action, Pane, View},
+    terminal::Request,
+};
 
 impl App {
     /// Take this frame's key presses that the keymap binds, and do what they are
@@ -31,22 +34,20 @@ impl App {
         self.keys
             .follow(view.keymap.as_ref().filter(|_| view.connected));
         self.keyboard.prefix = None;
-        let presses = |event: &egui::Event| match *event {
+        let press = |(index, event): (usize, &egui::Event)| match *event {
             egui::Event::Key {
                 key,
                 physical_key,
                 pressed: true,
                 repeat,
                 modifiers,
-            } => Some((key, physical_key, repeat, modifiers)),
+            } => Some((index, key, physical_key, repeat, modifiers)),
             _ => None,
         };
-        let presses: Vec<_> = ctx.input(|i| i.events.iter().map(presses).collect());
+        let presses: Vec<_> =
+            ctx.input(|i| i.events.iter().enumerate().filter_map(press).collect());
         let mut taken = Vec::new();
-        for (index, press) in presses.into_iter().enumerate() {
-            let Some((key, physical, repeat, modifiers)) = press else {
-                continue;
-            };
+        for (index, key, physical, repeat, modifiers) in presses {
             let modifiers = self.keyboard.bits(modifiers);
             let spelled = input::spellings(key, physical, modifiers);
             let key = physical.unwrap_or(key);
@@ -70,6 +71,18 @@ impl App {
         spelled: Vec<String>,
     ) -> bool {
         let map = self.keys.map.clone();
+        let chord = spelled[0].clone();
+        // A key held down from a press that was the window's does again only what
+        // is the better for it, and nothing else: its repeats would answer for
+        // the user, or put away the palette it opened.
+        let held = self.keys.held.as_ref();
+        if let Some((_, again)) = held.filter(|held| repeat && held.0 == chord).cloned() {
+            if let Some(again) = again {
+                self.run(ctx, view, &again.name, &again.args, "key");
+            }
+            return true;
+        }
+        let again = |bound: &Binding| map.repeats(&bound.name).then(|| bound.clone());
         // A text field keeps its keys, but for those that are about the field
         // itself: what puts the palette away, and what finds the next match.
         if self.busy(ctx) {
@@ -78,23 +91,16 @@ impl App {
                 let puts_away = ["client.palette.toggle", "session.switch"].contains(&&*bound.name);
                 let finds = self.find.is_some() && bound.name.starts_with("client.find.");
                 ((palette && puts_away) || finds)
+                    && bound.mode.is_none()
                     && matches!(&bound.keys[..], [key] if spelled.contains(key))
             };
-            let Some(bound) = map.bindings.iter().find(about) else {
-                return false;
-            };
-            self.run(ctx, view, &bound.name, &bound.args, "key");
-            return true;
-        }
-        // A key held down does again only what is the better for it, and nothing
-        // else: its repeats would answer for the user.
-        if let Some(again) = self.keys.again(&spelled[0]).filter(|_| repeat) {
-            if let Some(again) = again.cloned() {
-                self.run(ctx, view, &again.name, &again.args, "key");
+            let bound = map.bindings.iter().find(about);
+            if let Some(bound) = bound {
+                self.run(ctx, view, &bound.name, &bound.args, "key");
             }
-            return true;
+            self.keys.held = bound.map(|bound| (chord, again(bound)));
+            return bound.is_some();
         }
-        let chord = spelled[0].clone();
         self.keys.pending.push(spelled);
         // A key that a function on the server answers to can always be sent there.
         let can = |bound: &Binding| {
@@ -106,7 +112,7 @@ impl App {
         if step != Step::Wait {
             self.keys.pending.clear();
         }
-        let (mut taken, mut again) = (true, None);
+        let (mut taken, mut repeated) = (true, None);
         match step {
             Step::Pass => taken = false,
             Step::Wait | Step::Void => {}
@@ -126,11 +132,11 @@ impl App {
                     taken = false;
                 } else {
                     self.run(ctx, view, &bound.name, &bound.args, "key");
-                    again = map.repeats(&bound.name).then(|| bound.clone());
+                    repeated = again(bound);
                 }
             }
         }
-        self.keys.held = taken.then_some((chord, again));
+        self.keys.held = taken.then_some((chord, repeated));
         taken
     }
 
@@ -158,14 +164,8 @@ impl App {
 
     /// Do what the buttons and menus asked for while they were drawn, and what
     /// was asked of this client from each server: by another client, which is
-    /// answered, or by an action of the server's that this client began. Then
-    /// show the palette, if it is open.
-    pub(super) fn answer(
-        &mut self,
-        ctx: &egui::Context,
-        views: &[View],
-        asked: Vec<(usize, Asked)>,
-    ) {
+    /// answered, or by an action of the server's that this client began.
+    pub(super) fn answer(&mut self, ctx: &egui::Context, views: &[View]) {
         for (name, pane) in std::mem::take(&mut self.todo) {
             let view = &views[self.current];
             if let Ok(deed) = self
@@ -175,38 +175,40 @@ impl App {
                 self.act(ctx, self.current, deed, true);
             }
         }
-        for (server, request) in asked {
-            let view = &views[server];
-            // A server's clients have no say over what another server's session
-            // shows, nor over a session that is not on show: but to have one shown.
-            let shown = request.session.is_none() || request.session == view.selected_session;
-            let plan = if request.name == "session.select" || (server == self.current && shown) {
-                self.standing(view)
-                    .plan(&request.name, &request.args, request.pane.as_deref())
-            } else {
-                Err("refused")
-            };
-            let error = plan.as_ref().err().copied();
-            // What asks the user first is answered now, not when the user decides.
-            if let Ok(deed) = plan {
-                self.act(ctx, server, deed, false);
-            }
-            if let Some(call) = request.call {
-                self.tell(server, Action::Reply { call, error });
+        for (server, view) in views.iter().enumerate() {
+            for request in &view.asked {
+                // A server's clients have no say over what another server's session
+                // shows, nor over a session that is not on show: but to have one shown.
+                let shown = request.session.is_none() || request.session == view.selected_session;
+                let ours = server == self.current && shown;
+                let plan = if request.name == "session.select" || ours {
+                    let (name, pane) = (&request.name, request.pane.as_deref());
+                    self.standing(view).plan(name, &request.args, pane)
+                } else {
+                    Err("refused")
+                };
+                let error = plan.as_ref().err().copied();
+                // What asks the user first is answered now, not when the user decides.
+                if let Ok(deed) = plan {
+                    self.act(ctx, server, deed, false);
+                }
+                if let Some(call) = request.call.clone() {
+                    self.tell(server, Action::Reply { call, error });
+                }
             }
         }
-        self.palette(ctx, views);
     }
 
     /// Send this frame's keyboard events to the focused pane.
-    pub(super) fn terminal_keys(&mut self, ctx: &egui::Context, pane: &str) {
+    pub(super) fn terminal_keys(&mut self, ctx: &egui::Context, pane: &Pane) {
+        let selected = pane.frame.as_ref().is_some_and(|f| !f.selected.is_empty());
         // Escape leaves a selection instead of reaching the program.
-        if self.selected(pane) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.deselect(pane);
-        }
-        let actions = ctx.input(|i| self.keyboard.translate(pane, &i.events));
-        if actions.iter().any(input::clears_selection) {
-            self.deselect(pane);
+        let left = selected && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        let actions = ctx.input(|i| self.keyboard.translate(&pane.id, &i.events));
+        // Typing lets go of one too. The pane's worker is not woken for nothing:
+        // this is asked at every key typed.
+        if selected && (left || actions.iter().any(input::clears_selection)) {
+            self.ask(&pane.id, Request::Deselect);
         }
         for action in actions {
             self.send(action);

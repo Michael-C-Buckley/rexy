@@ -239,7 +239,7 @@ impl App {
         let (response, button) = item(ui, size, row);
         // The list turns to the tab on show when another comes to be it, by
         // whatever means, and stays where the user turns it otherwise.
-        let list = id.with(self.sidebar);
+        let list = id.with(self.remembered.kept.sidebar);
         if selected && self.followed != Some(list) {
             self.followed = Some(list);
             response.scroll_to_me(None);

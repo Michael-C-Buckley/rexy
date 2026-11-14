@@ -11,7 +11,7 @@ use std::{
 use eframe::egui;
 use serde_json::{Value, from_value, json};
 
-use super::{App, DEFAULT_FONT_SIZE, sidebar::SIDEBAR_WIDTH};
+use super::{App, DEFAULT_FONT_SIZE, FONT_SIZES, sidebar::SIDEBAR_WIDTH};
 use crate::model::{Action, View};
 
 /// The window's size when nothing is remembered of it, and the least it may be.
@@ -46,8 +46,7 @@ impl Kept {
     fn read(saved: &Value) -> Self {
         let saved = |key: &str| saved[key].clone();
         let window: [f32; 2] = from_value(saved("window")).unwrap_or(WINDOW);
-        // No smaller and no larger than the keys take it.
-        let font = |size: f32| size.clamp(9.0, 32.0);
+        let font = |size: f32| size.clamp(FONT_SIZES[0], FONT_SIZES[1]);
         Self {
             font_size: from_value(saved("font_size")).map_or(DEFAULT_FONT_SIZE, font),
             sidebar: from_value(saved("sidebar")).unwrap_or(true),
@@ -103,17 +102,12 @@ impl Remembered {
 
     /// A file that is missing or damaged is no file: the window starts afresh.
     fn open(directory: Option<PathBuf>) -> Self {
-        let read = |file: &str| {
-            let file = directory.as_ref().map(|directory| directory.join(file));
-            file.and_then(|file| std::fs::read_to_string(file).ok())
-        };
-        let saved = read("state.json").and_then(|saved| serde_json::from_str(&saved).ok());
-        let saved: Value = saved.unwrap_or_default();
-        let mut kept = Kept::read(&saved);
-        // Muted tabs once had a file of their own, a tab to a line.
-        if let (true, Some(muted)) = (saved["muted"].is_null(), read("muted")) {
-            kept.muted = muted.lines().map(str::to_owned).collect();
-        }
+        let file = directory
+            .as_ref()
+            .map(|directory| directory.join("state.json"));
+        let saved = file.and_then(|file| std::fs::read_to_string(file).ok());
+        let saved = saved.and_then(|saved| serde_json::from_str(&saved).ok());
+        let kept = Kept::read(&saved.unwrap_or_default());
         Self {
             saved: kept.clone(),
             kept,
@@ -126,6 +120,8 @@ impl Remembered {
     /// then if it is not yet time.
     fn settle(&mut self, now: Instant) -> io::Result<Option<Duration>> {
         if self.kept == self.saved {
+            // What changed has been put back, and its wait is over.
+            self.due = None;
             return Ok(None);
         }
         let due = *self.due.get_or_insert(now + PAUSE);
@@ -181,8 +177,6 @@ impl App {
                 kept.shown.insert(address.clone(), place);
             }
         }
-        (kept.font_size, kept.sidebar) = (self.font_size, self.sidebar);
-        kept.sidebar_width = self.sidebar_width;
         // A window that fills the screen is not the size it is otherwise.
         let filling = ctx.input(|i| [i.viewport().maximized, i.viewport().fullscreen]);
         if !filling.contains(&Some(true)) {

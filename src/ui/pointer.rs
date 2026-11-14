@@ -3,12 +3,11 @@ use eframe::egui;
 
 use super::{
     input::Keyboard,
-    pane::Scroll,
     render::{Grid, PaneView},
 };
 use crate::{
     model::Action,
-    terminal::{Frame, Request, TerminalHandle},
+    terminal::{Frame, Request, Scroll, TerminalHandle},
 };
 
 /// The lines of history one notch of a wheel moves through.
@@ -208,6 +207,7 @@ impl Pointer<'_> {
                     modifiers: 0,
                     pressed,
                     repeat: false,
+                    prefix: Vec::new(),
                 })
                 .into(),
             // The server takes each for one step, however far it says it went.
