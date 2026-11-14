@@ -5,18 +5,20 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use libghostty_vt::{
     RenderState, Terminal,
-    color::Rgb,
+    color::{Palette, Rgb},
     mode::Mode,
     point::{Coordinate, Point},
-    render::{CellIterator, Colors, Cursor, CursorVisualStyle, Dirty, RowIterator},
-    screen::CellWide,
+    render::{CellIterator, Colors, CursorVisualStyle, Dirty, RowIterator},
+    screen::{CellWide, Screen},
     snapshot,
     style::{Style, StyleColor},
     terminal::ScrollViewport,
 };
 use serde_json::Value;
 use std::{
+    cell::RefCell,
     io::{self, Read},
+    rc::Rc,
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicI32, Ordering::Relaxed},
@@ -28,15 +30,11 @@ use std::{
 const CHUNK_BYTES: usize = 64 * 1024;
 const QUEUE_CHUNKS: usize = 16;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
-const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_APC_BYTES: usize = 1024 * 1024;
 const SCROLLBACK_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LINK_BYTES: usize = 2048;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 const RENDER_HOLD_LIMIT: Duration = Duration::from_secs(1);
-/// The snapshot envelope, and the header of each record after it, are ten bytes.
-const SNAPSHOT_ENVELOPE: &[u8; 10] = b"GHOSTSNP\x01\x00";
-const FINISH_RECORD: u16 = 6;
 
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
@@ -82,7 +80,13 @@ pub struct Frame {
     pub cursor_color: u32,
     pub cursor_shape: CursorShape,
     pub mouse_tracking: bool,
+    /// The alternate screen is showing, which keeps no history to scroll through.
+    pub alternate_screen: bool,
+    /// The program would have the wheel send arrow keys there (DEC mode 1007).
+    pub alternate_scroll: bool,
     /// Distance in rows from the active terminal, zero when following output.
+    /// Scrolled back, it is as of this frame: history that grows under a view
+    /// it leaves as it was draws no new one.
     pub scroll_offset: usize,
 }
 
@@ -153,6 +157,7 @@ struct Shared {
     frame: RwLock<Option<Arc<Frame>>>,
     error: Mutex<Option<String>>,
     scroll: AtomicI32,
+    prompts: AtomicI32,
     bottom: AtomicBool,
     repaint: Notify,
 }
@@ -172,6 +177,7 @@ impl TerminalHandle {
             frame: RwLock::new(None),
             error: Mutex::new(None),
             scroll: AtomicI32::new(0),
+            prompts: AtomicI32::new(0),
             bottom: AtomicBool::new(false),
             repaint,
         });
@@ -220,18 +226,33 @@ impl TerminalHandle {
 
     /// Negative is up. Wheel deltas are coalesced, so output cannot starve scroll.
     pub fn scroll(&self, lines: i32) -> Result<()> {
-        ensure!(!self.input.is_disconnected(), "terminal worker stopped");
-        self.shared
-            .scroll
-            .update(Relaxed, Relaxed, |old| old.saturating_add(lines));
-        self.wake();
-        Ok(())
+        self.nudge(&self.shared.scroll, lines)
+    }
+
+    /// Negative is up, a screenful at a time.
+    pub fn scroll_pages(&self, pages: i32) -> Result<()> {
+        let rows = self.latest().map_or(0, |frame| i32::from(frame.rows));
+        self.scroll(pages.saturating_mul(rows))
+    }
+
+    /// To the shell prompt before the view when negative, or after it, where the
+    /// shell marks its prompts (OSC 133).
+    pub fn scroll_prompts(&self, prompts: i32) -> Result<()> {
+        self.nudge(&self.shared.prompts, prompts)
     }
 
     pub fn scroll_to_bottom(&self) {
         self.shared.bottom.store(true, Relaxed);
         self.shared.scroll.store(0, Relaxed);
+        self.shared.prompts.store(0, Relaxed);
         self.wake();
+    }
+
+    fn nudge(&self, control: &AtomicI32, by: i32) -> Result<()> {
+        ensure!(!self.input.is_disconnected(), "terminal worker stopped");
+        control.update(Relaxed, Relaxed, |old| old.saturating_add(by));
+        self.wake();
+        Ok(())
     }
 
     fn wake(&self) {
@@ -246,6 +267,9 @@ struct Input {
     receiver: flume::Receiver<Command>,
     bytes: Vec<u8>,
     offset: usize,
+    /// How much more a snapshot may hold. Nothing but the snapshot is read
+    /// through `Read`, and Ghostty bounds its records but not their sum.
+    snapshot_left: usize,
 }
 
 impl Input {
@@ -283,83 +307,11 @@ impl Read for Input {
             }
         }
         let len = target.len().min(self.bytes.len() - self.offset);
+        let left = self.snapshot_left.checked_sub(len);
+        self.snapshot_left = left.ok_or(io::ErrorKind::FileTooLarge)?;
         target[..len].copy_from_slice(&self.bytes[self.offset..self.offset + len]);
         self.offset += len;
         Ok(len)
-    }
-}
-
-/// Bounds the wire envelope before Ghostty sees allocation-driving record
-/// lengths. Stops exactly at FINISH even if snapshot and live VT share a frame.
-struct SnapshotSource<R> {
-    inner: R,
-    header: [u8; 10],
-    header_used: usize,
-    envelope: bool,
-    /// Bytes left in the current record.
-    payload: usize,
-    /// The current record is FINISH; the snapshot ends with it.
-    finish: bool,
-    total: usize,
-}
-
-impl<R: Read> SnapshotSource<R> {
-    fn new(inner: R) -> Self {
-        Self {
-            inner,
-            header: [0; 10],
-            header_used: 0,
-            envelope: true,
-            payload: 0,
-            finish: false,
-            total: 0,
-        }
-    }
-}
-
-impl<R: Read> Read for SnapshotSource<R> {
-    fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
-        if target.is_empty() || (self.finish && self.payload == 0) {
-            return Ok(0);
-        }
-        if self.payload > 0 {
-            let len = target.len().min(self.payload);
-            let read = self.inner.read(&mut target[..len])?;
-            self.payload -= read;
-            self.total += read;
-            return Ok(read);
-        }
-        let len = target.len().min(10 - self.header_used);
-        let read = self.inner.read(&mut target[..len])?;
-        self.header[self.header_used..self.header_used + read].copy_from_slice(&target[..read]);
-        self.header_used += read;
-        self.total += read;
-        if self.header_used == 10 {
-            self.header_used = 0;
-            if self.envelope {
-                if &self.header != SNAPSHOT_ENVELOPE {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unsupported Ghostty snapshot",
-                    ));
-                }
-                self.envelope = false;
-            } else {
-                let length = u32::from_le_bytes(self.header[2..6].try_into().unwrap()) as usize;
-                if length > MAX_RECORD_BYTES
-                    || self.total.saturating_add(length) > MAX_SNAPSHOT_BYTES
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Ghostty snapshot exceeds memory limits",
-                    ));
-                }
-                self.payload = length;
-                let record = u16::from_le_bytes(self.header[..2].try_into().unwrap());
-                self.finish = record == FINISH_RECORD;
-            }
-        }
-        Ok(read)
     }
 }
 
@@ -432,13 +384,16 @@ impl ApcParser {
     }
 }
 
-/// Restore a terminal from a snapshot, reading no further than the snapshot's end.
-fn restore(input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt::Error> {
-    let mut source = SnapshotSource::new(input);
-    let mut decoder = snapshot::Decoder::new(&mut source)?;
+/// Restore a terminal from a snapshot. Ghostty checks the envelope and every
+/// record as it streams in, and reads no further than the snapshot's end.
+fn restore(mut input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt::Error> {
+    let mut decoder = snapshot::Decoder::new(&mut input)?;
     decoder.set_max_continuation_bytes(MAX_APC_BYTES)?;
     // Images are not shown, so those a snapshot carries are not kept either.
     decoder.set_kitty_image_storage_limit(0)?;
+    // History is kept compressed, a page at a time as it arrives. A page opens
+    // again when it is scrolled to.
+    decoder.set_compress_history_enabled(true)?;
     decoder.decode()
 }
 
@@ -453,24 +408,34 @@ fn configure(terminal: &mut Terminal) -> Result<()> {
     Ok(())
 }
 
-fn apply_controls(shared: &Shared, terminal: &mut Terminal) {
-    if shared.bottom.swap(false, Relaxed) {
+/// Scroll as the handle asked. True when the view moved.
+fn apply_controls(shared: &Shared, terminal: &mut Terminal) -> Result<bool> {
+    let bottom = shared.bottom.swap(false, Relaxed);
+    let prompts = shared.prompts.swap(0, Relaxed);
+    let lines = shared.scroll.swap(0, Relaxed);
+    if !bottom && prompts == 0 && lines == 0 {
+        return Ok(false);
+    }
+    let before = terminal.scrollbar()?.offset;
+    if bottom {
         terminal.scroll_viewport(ScrollViewport::Bottom);
     }
-    let scroll = shared.scroll.swap(0, Relaxed);
-    if scroll != 0 {
-        terminal.scroll_viewport(ScrollViewport::Delta(scroll as isize));
+    if prompts != 0 {
+        terminal.scroll_viewport(ScrollViewport::DeltaPrompt(prompts as isize));
     }
+    if lines != 0 {
+        terminal.scroll_viewport(ScrollViewport::Delta(lines as isize));
+    }
+    Ok(terminal.scrollbar()?.offset != before)
 }
 
-fn run_worker(receiver: flume::Receiver<Command>, shared: &Shared, nonce: u64) -> Result<()> {
+fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u64) -> Result<()> {
     let mut input = Input {
         receiver,
         bytes: Vec::new(),
         offset: 0,
+        snapshot_left: MAX_SNAPSHOT_BYTES,
     };
-    let mut renderer = Renderer::new()?;
-    let mut last_frame = Instant::now() - FRAME_INTERVAL;
     // The snapshot streams through bounded chunks on this worker, but the first
     // frame waits for the whole of it to validate.
     let mut terminal = match restore(&mut input) {
@@ -479,33 +444,61 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Shared, nonce: u64) -
         Err(error) => return Err(error).context("restoring terminal snapshot"),
     };
     configure(&mut terminal)?;
-    let mut parser = ApcParser::new(nonce);
-    let mut held_since = None;
-    loop {
-        apply_controls(shared, &mut terminal);
-        let now = Instant::now();
-        let mut deadline = last_frame + FRAME_INTERVAL;
-        if terminal.mode(Mode::SYNC_OUTPUT)? {
-            let since = *held_since.get_or_insert(now);
-            if now.duration_since(since) < RENDER_HOLD_LIMIT {
-                deadline = deadline.max(since + RENDER_HOLD_LIMIT);
-            } else {
-                terminal.set_mode(Mode::SYNC_OUTPUT, false)?;
-                held_since = None;
+    // The terminal calls back in the middle of a write, so the renderer is shared
+    // with that callback and never borrowed across a write or a resize.
+    let renderer = Rc::new(RefCell::new(Renderer::new()?));
+    // A snapshot can be taken inside a hold, of whose beginning nothing will tell.
+    renderer.borrow_mut().held = terminal.mode(Mode::SYNC_OUTPUT)?.then(Instant::now);
+    terminal.on_render_hold({
+        let (renderer, shared) = (renderer.clone(), shared.clone());
+        move |terminal, held| {
+            let Ok(mut renderer) = renderer.try_borrow_mut() else {
+                return;
+            };
+            renderer.held = held.then(Instant::now);
+            // As a hold begins the terminal is exactly the frame its program wants
+            // left on screen; what follows in the same write is the next one, half
+            // drawn. A program can begin holds without number in one write, so
+            // no more of them are drawn than of any other frame, and one that
+            // comes too soon after another waits for its hold to end. A failure
+            // here shows again when the worker next draws.
+            if held
+                && renderer.caught.elapsed() >= FRAME_INTERVAL
+                && renderer.publish(terminal, &shared).unwrap_or(false)
+            {
+                renderer.caught = renderer.drawn;
             }
-        } else {
-            held_since = None;
         }
-        // Sleep until the next frame is due; once it is published, until more input.
-        let wait = if now < deadline {
-            Some(deadline - now)
-        } else {
-            if let Some(frame) = renderer.frame(&terminal)? {
-                *shared.frame.write().unwrap() = Some(frame);
-                (shared.repaint)();
+    })?;
+    let mut parser = ApcParser::new(nonce);
+    // A frame is owed whatever a program holds back: the first after a restore,
+    // and where the user has scrolled to.
+    let mut owed = true;
+    loop {
+        owed |= apply_controls(shared, &mut terminal)?;
+        let now = Instant::now();
+        let wait = {
+            let mut renderer = renderer.borrow_mut();
+            // The terminal has no clock, so a hold that never ends is ended here.
+            if renderer
+                .held
+                .is_some_and(|since| now.duration_since(since) >= RENDER_HOLD_LIMIT)
+            {
+                terminal.set_mode(Mode::SYNC_OUTPUT, false)?;
+                renderer.held = None;
             }
-            last_frame = Instant::now();
-            None
+            let due = renderer.drawn + FRAME_INTERVAL;
+            // Sleep out a hold, or until the next frame is due; once that is
+            // published, until more input.
+            match renderer.held {
+                Some(since) if !owed => Some(since + RENDER_HOLD_LIMIT - now),
+                _ if now < due => Some(due - now),
+                _ => {
+                    renderer.publish(&terminal, shared)?;
+                    owed = false;
+                    None
+                }
+            }
         };
         let Some(command) = input.next(wait) else {
             return Ok(());
@@ -551,18 +544,17 @@ fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
             )?;
         }
         Some("theme") => {
-            terminal.set_default_fg_color(parse_color(value["foreground"].as_str()))?;
-            terminal.set_default_bg_color(parse_color(value["background"].as_str()))?;
-            terminal.set_default_cursor_color(parse_color(value["cursor"].as_str()))?;
+            // One left out, empty or unreadable is the built-in one.
+            let color = |key: &str| value[key].as_str().and_then(|v| Rgb::parse(v).ok());
+            terminal.set_default_fg_color(color("foreground"))?;
+            terminal.set_default_bg_color(color("background"))?;
+            terminal.set_default_cursor_color(color("cursor"))?;
             terminal.set_default_color_palette(None)?;
             if let Some(entries) = value["palette"].as_array() {
                 let mut palette = terminal.default_color_palette()?;
                 for entry in entries.iter().filter_map(Value::as_str) {
-                    if let Some((index, color)) = entry.split_once('=')
-                        && let (Ok(index), Some(color)) =
-                            (index.parse::<u8>(), parse_color(Some(color)))
-                    {
-                        palette.0[usize::from(index)] = color;
+                    if let Ok((index, color)) = Palette::parse_palette_entry(entry) {
+                        palette.set(index, color);
                     }
                 }
                 terminal.set_default_color_palette(Some(palette))?;
@@ -571,19 +563,6 @@ fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
         _ => {}
     }
     Ok(())
-}
-
-fn parse_color(value: Option<&str>) -> Option<Rgb> {
-    let value = value?.trim_start_matches('#');
-    if value.len() != 6 {
-        return None;
-    }
-    let color = u32::from_str_radix(value, 16).ok()?;
-    Some(Rgb {
-        r: (color >> 16) as u8,
-        g: (color >> 8) as u8,
-        b: color as u8,
-    })
 }
 
 fn rgb(color: Rgb) -> u32 {
@@ -595,10 +574,14 @@ struct Renderer {
     rows: RowIterator<'static>,
     cells: CellIterator<'static>,
     previous: Option<Arc<Frame>>,
-    /// The cursor and the colours of that frame. Ghostty marks nothing dirty when
-    /// only these change.
-    cursor: Option<Cursor>,
+    /// The colours of that frame. Ghostty marks nothing dirty when only they change.
     colors: Option<Colors>,
+    /// When the last new frame was drawn, when the last was drawn as a hold began,
+    /// and since when its program has held frames back (synchronized output, DEC
+    /// mode 2026).
+    drawn: Instant,
+    caught: Instant,
+    held: Option<Instant>,
 }
 
 impl Renderer {
@@ -608,9 +591,22 @@ impl Renderer {
             rows: RowIterator::new()?,
             cells: CellIterator::new()?,
             previous: None,
-            cursor: None,
             colors: None,
+            drawn: Instant::now() - FRAME_INTERVAL,
+            caught: Instant::now() - FRAME_INTERVAL,
+            held: None,
         })
+    }
+
+    /// Draw the terminal as it stands, and hand the UI the frame if it is a new one.
+    fn publish(&mut self, terminal: &Terminal<'static, '_>, shared: &Shared) -> Result<bool> {
+        let Some(frame) = self.frame(terminal)? else {
+            return Ok(false);
+        };
+        *shared.frame.write().unwrap() = Some(frame);
+        (shared.repaint)();
+        self.drawn = Instant::now();
+        Ok(true)
     }
 
     fn frame(&mut self, terminal: &Terminal<'static, '_>) -> Result<Option<Arc<Frame>>> {
@@ -620,15 +616,35 @@ impl Renderer {
             .total
             .saturating_sub(scrollbar.offset + scrollbar.len) as usize;
         let mouse_tracking = terminal.is_mouse_tracking()?;
+        let alternate_screen = terminal.active_screen()? == Screen::Alternate;
+        let alternate_scroll = terminal.mode(Mode::ALT_SCROLL)?;
         let dirty = snapshot.dirty()?;
         let cursor = snapshot.cursor()?;
+        let cursor_shape = match cursor.visual_style {
+            CursorVisualStyle::Bar => CursorShape::Bar,
+            CursorVisualStyle::Underline => CursorShape::Underline,
+            CursorVisualStyle::BlockHollow => CursorShape::Hollow,
+            _ => CursorShape::Block,
+        };
+        let cursor = cursor
+            .viewport
+            .filter(|_| cursor.visible)
+            .map(|p| (p.x, p.y));
         let colors = snapshot.colors()?;
         let recolored = self.colors.as_ref() != Some(&colors);
+        // Ghostty marks nothing dirty when only the cursor, the colours or a mode
+        // changes. It marks all of it dirty when the view moves, by the user's hand
+        // or because its history was cut away, and the rows a clear shifts. History
+        // that only grows under a view scrolled back changes how far back that is
+        // and nothing in it, so that alone is no new frame.
         if dirty == Dirty::Clean
             && !recolored
-            && self.cursor == Some(cursor)
             && self.previous.as_ref().is_some_and(|old| {
-                old.scroll_offset == scroll_offset && old.mouse_tracking == mouse_tracking
+                (old.cursor, old.cursor_shape) == (cursor, cursor_shape)
+                    && (old.scroll_offset == 0) == (scroll_offset == 0)
+                    && old.mouse_tracking == mouse_tracking
+                    && old.alternate_screen == alternate_screen
+                    && old.alternate_scroll == alternate_scroll
             })
         {
             return Ok(None);
@@ -725,21 +741,14 @@ impl Renderer {
             bg,
             scroll_offset,
             mouse_tracking,
-            cursor: cursor
-                .viewport
-                .filter(|_| cursor.visible)
-                .map(|p| (p.x, p.y)),
+            alternate_screen,
+            alternate_scroll,
+            cursor,
             cursor_color: colors.cursor.map(rgb).unwrap_or(fg),
-            cursor_shape: match cursor.visual_style {
-                CursorVisualStyle::Bar => CursorShape::Bar,
-                CursorVisualStyle::Underline => CursorShape::Underline,
-                CursorVisualStyle::BlockHollow => CursorShape::Hollow,
-                _ => CursorShape::Block,
-            },
+            cursor_shape,
         });
         snapshot.clean()?;
         self.previous = Some(frame.clone());
-        self.cursor = Some(cursor);
         self.colors = Some(colors);
         Ok(Some(frame))
     }
