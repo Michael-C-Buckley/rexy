@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+if [ -z "${ZIG:-}" ] && ! command -v zig >/dev/null 2>&1; then
+    local_zig="$PWD/work/toolchains/zig-x86_64-linux-0.17.1/zig"
+    if [ -x "$local_zig" ]; then
+        export ZIG="$local_zig"
+    fi
+fi
+if [ "$#" -eq 0 ]; then
+    set -- run
+fi
+exec cargo "$@"
