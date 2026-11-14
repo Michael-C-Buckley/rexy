@@ -38,4 +38,4 @@ Tabs show the tiles of Superlogical's Rex icon set, as converted by rex-rune. Th
 
 ## Libraries
 
-libghostty is used through the `ghostty-vt` Rust bindings. egui/eframe supplies the desktop interface, and resvg draws the icons. These and the remaining Cargo dependencies retain their respective upstream licenses; exact versions and sources are recorded in `Cargo.lock`.
+libghostty is used through the `libghostty-vt` Rust bindings of [libghostty-rs](https://github.com/Uzaaft/libghostty-rs), at a commit named in `Cargo.toml`: no release of them can yet restore a terminal snapshot. egui/eframe supplies the desktop interface, and resvg draws the icons. These and the remaining Cargo dependencies retain their respective upstream licenses; exact versions and sources are recorded in `Cargo.lock`.

@@ -12,7 +12,8 @@ base64 = "0.23"
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 flume = "0.12"
 futures-util = { version = "0.3", features = ["sink"] }
-ghostty-vt = "=0.8.0"
+# Ghostty's terminal. No release can restore a snapshot yet, so a commit is named.
+libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "483ea3d5247b214060da58ef6037a95f30ae89fb" }
 libc = "0.2"
 # Draws the program icons. This release shares tiny-skia with the title bar's.
 resvg = { version = "0.46", default-features = false }

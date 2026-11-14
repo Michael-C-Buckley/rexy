@@ -40,7 +40,7 @@ mise install
 mise exec -- cargo build --release --locked
 ```
 
-Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scripts/dev` also recognizes the verified local toolchain under the ignored `work/toolchains/` directory. The first build downloads the pinned Ghostty source and verifies its checksum. No Zig runtime is needed by the finished app.
+Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scripts/dev` also recognizes the verified local toolchain under the ignored `work/toolchains/` directory. The first build fetches Ghostty's source with `git`, at the commit its Rust bindings name, and builds it for speed whatever the Cargo profile (see `.cargo/config.toml`). No Zig runtime is needed by the finished app.
 
 ## Controls
 

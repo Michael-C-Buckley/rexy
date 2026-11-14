@@ -1,0 +1,4 @@
+[env]
+# Ghostty's terminal is built for speed in every profile, as the other
+# dependencies are: built for debugging, it is too slow to work in.
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"

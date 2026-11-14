@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
-use ghostty_vt::style::Underline;
+use libghostty_vt::style::Underline;
 
 use super::style;
 use crate::{

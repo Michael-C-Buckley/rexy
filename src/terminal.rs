@@ -3,13 +3,16 @@
 //! A pane starts with a streamed Ghostty snapshot, then carries VT output with
 //! nonce-tagged Rex metadata. Neither socket reads nor UI callbacks decode it.
 use anyhow::{Context, Result, anyhow, ensure};
-use ghostty_vt::{
+use libghostty_vt::{
     RenderState, Terminal,
+    color::Rgb,
+    mode::Mode,
+    point::{Coordinate, Point},
     render::{CellIterator, CursorVisualStyle, Dirty, RowIterator},
     screen::CellWide,
     snapshot,
-    style::{RgbColor, Style, StyleColor},
-    terminal::{Mode, Point, PointCoordinate, ScrollViewport},
+    style::{Style, StyleColor},
+    terminal::ScrollViewport,
 };
 use serde_json::Value;
 use std::{
@@ -429,14 +432,23 @@ impl ApcParser {
     }
 }
 
+/// Restore a terminal from a snapshot, reading no further than the snapshot's end.
+fn restore(input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt::Error> {
+    let mut source = SnapshotSource::new(input);
+    let mut decoder = snapshot::Decoder::new(&mut source)?;
+    decoder.set_max_continuation_bytes(MAX_APC_BYTES)?;
+    // Images are not shown, so those a snapshot carries are not kept either.
+    decoder.set_kitty_image_storage_limit(0)?;
+    decoder.decode()
+}
+
 fn configure(terminal: &mut Terminal) -> Result<()> {
     // A remote pane must never read local paths through an image escape. Images
     // are intentionally deferred; text and snapshot state remain supported.
     terminal.set_kitty_image_storage_limit(0)?;
     terminal.set_kitty_image_from_file_allowed(false)?;
     terminal.set_kitty_image_from_shared_mem_allowed(false)?;
-    // Do not call 0.8's temp-file getter/setter: its bool signature does not
-    // match GhosttyString in the pinned C API. Zero storage disables all media.
+    terminal.set_kitty_image_temp_file_dir(None)?;
     terminal.set_scrollback_max_bytes(Some(SCROLLBACK_BYTES))?;
     Ok(())
 }
@@ -459,17 +471,9 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Shared, nonce: u64) -
     };
     let mut renderer = Renderer::new()?;
     let mut last_frame = Instant::now() - FRAME_INTERVAL;
-    // The 0.8 Rust wrapper's next_page assumes every record is a history page;
-    // image records are legal too. Its complete decoder handles both correctly.
-    // The Read source still streams through bounded chunks on this worker, but
-    // the first frame waits for the complete snapshot to validate.
-    let restored = {
-        let source = SnapshotSource::new(&mut input);
-        let mut decoder = snapshot::Decoder::new(source)?;
-        decoder.set_max_continuation_bytes(MAX_APC_BYTES)?;
-        decoder.decode()
-    };
-    let mut terminal = match restored {
+    // The snapshot streams through bounded chunks on this worker, but the first
+    // frame waits for the whole of it to validate.
+    let mut terminal = match restore(&mut input) {
         Ok(terminal) => terminal,
         Err(_) if input.receiver.is_disconnected() => return Ok(()),
         Err(error) => return Err(error).context("restoring terminal snapshot"),
@@ -512,10 +516,9 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Shared, nonce: u64) -
         for part in parser.feed(&bytes)? {
             match part {
                 Part::Output(bytes) => {
+                    // The server owns side effects and answers device queries: what
+                    // the terminal would say or do of itself here goes unheard.
                     terminal.vt_write(&bytes);
-                    // The server owns side effects and answers device queries.
-                    // Draining prevents unused titles/bells/PTY replies accumulating.
-                    terminal.events().for_each(drop);
                 }
                 Part::Metadata(value) => apply_metadata(&mut terminal, &value)?,
             }
@@ -570,27 +573,27 @@ fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn parse_color(value: Option<&str>) -> Option<RgbColor> {
+fn parse_color(value: Option<&str>) -> Option<Rgb> {
     let value = value?.trim_start_matches('#');
     if value.len() != 6 {
         return None;
     }
     let color = u32::from_str_radix(value, 16).ok()?;
-    Some(RgbColor {
+    Some(Rgb {
         r: (color >> 16) as u8,
         g: (color >> 8) as u8,
         b: color as u8,
     })
 }
 
-fn rgb(color: RgbColor) -> u32 {
+fn rgb(color: Rgb) -> u32 {
     (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)
 }
 
 struct Renderer {
-    state: RenderState,
-    rows: RowIterator,
-    cells: CellIterator,
+    state: RenderState<'static>,
+    rows: RowIterator<'static>,
+    cells: CellIterator<'static>,
     previous: Option<Arc<Frame>>,
 }
 
@@ -604,7 +607,7 @@ impl Renderer {
         })
     }
 
-    fn frame(&mut self, terminal: &Terminal) -> Result<Option<Arc<Frame>>> {
+    fn frame(&mut self, terminal: &Terminal<'static, '_>) -> Result<Option<Arc<Frame>>> {
         let snapshot = self.state.update(terminal)?;
         let scrollbar = terminal.scrollbar()?;
         let scroll_offset = scrollbar
@@ -671,7 +674,7 @@ impl Renderer {
                 if raw.has_hyperlink()?
                     && let (Ok(x16), Ok(y)) = (u16::try_from(x), u32::try_from(y))
                 {
-                    let at = Point::Viewport(PointCoordinate { x: x16, y });
+                    let at = Point::Viewport(Coordinate { x: x16, y });
                     let mut target = [0; MAX_LINK_BYTES];
                     // One too long to hold is no link.
                     let length = terminal.grid_ref(at)?.hyperlink_uri(&mut target);

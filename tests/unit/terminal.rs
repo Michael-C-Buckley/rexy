@@ -1,16 +1,17 @@
 use super::*;
 
-fn terminal(cols: u16, rows: u16) -> Terminal {
-    Terminal::new(ghostty_vt::TerminalOptions {
-        cols,
-        rows,
-        ..Default::default()
-    })
-    .unwrap()
+fn terminal(cols: u16, rows: u16) -> Terminal<'static, 'static> {
+    Terminal::new(cols, rows).unwrap()
 }
 
-fn render(terminal: &Terminal) -> Arc<Frame> {
+fn render(terminal: &Terminal<'static, '_>) -> Arc<Frame> {
     Renderer::new().unwrap().frame(terminal).unwrap().unwrap()
+}
+
+fn encode(terminal: &mut Terminal) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    terminal.encode_snapshot(&mut bytes).unwrap();
+    bytes
 }
 
 struct Fragmented<R>(R);
@@ -26,15 +27,11 @@ fn fragmented_snapshot_preserves_state_and_leaves_live_tail_unread() {
     let mut original = terminal(24, 3);
     original.set_continuation_max_bytes(MAX_APC_BYTES).unwrap();
     original.vt_write("first\r\n界 e\u{301}\r\nlast\x1b[38;2;".as_bytes());
-    let mut bytes = snapshot::encode(&original).unwrap().to_vec();
+    let mut bytes = encode(&mut original);
     let snapshot_len = bytes.len();
     bytes.extend_from_slice(b"1;2;3mX");
     let mut input = io::Cursor::new(bytes);
-    let mut source = SnapshotSource::new(Fragmented(&mut input));
-    let mut restored = snapshot::Decoder::new(&mut source)
-        .unwrap()
-        .decode()
-        .unwrap();
+    let mut restored = restore(Fragmented(&mut input)).unwrap();
     assert_eq!(input.position() as usize, snapshot_len);
     let mut live = Vec::new();
     input.read_to_end(&mut live).unwrap();
@@ -47,14 +44,9 @@ fn fragmented_snapshot_preserves_state_and_leaves_live_tail_unread() {
 
 #[test]
 fn snapshot_rejects_crc_damage_and_oversized_records() {
-    let mut damaged = snapshot::encode(&terminal(20, 2)).unwrap().to_vec();
+    let mut damaged = encode(&mut terminal(20, 2));
     damaged[16] ^= 1;
-    assert!(
-        snapshot::Decoder::new(SnapshotSource::new(damaged.as_slice()))
-            .unwrap()
-            .decode()
-            .is_err()
-    );
+    assert!(restore(damaged.as_slice()).is_err());
     let mut oversized = b"GHOSTSNP\x01\x00".to_vec();
     oversized.extend_from_slice(&1u16.to_le_bytes());
     oversized.extend_from_slice(&((MAX_RECORD_BYTES + 1) as u32).to_le_bytes());
@@ -74,16 +66,21 @@ fn image_records_in_snapshot_do_not_break_text_restore() {
     // Raw RGB needs no PNG decoder or extra dependency.
     original.vt_write(b"\x1b_Ga=T,f=24,s=1,v=1,i=42;CQkJ\x1b\\\r\n");
     original.vt_write(b"text after image");
-    assert!(original.kitty_graphics().unwrap().image(42).is_some());
-    let bytes = snapshot::encode(&original).unwrap();
-    let mut restored = snapshot::Decoder::new(SnapshotSource::new(bytes.as_ref()))
-        .unwrap()
-        .decode()
-        .unwrap();
-    assert!(restored.kitty_graphics().unwrap().image(42).is_some());
+    let image = |terminal: &Terminal| {
+        let images = terminal.kitty_graphics().unwrap().unwrap();
+        images.image(42).is_some()
+    };
+    assert!(image(&original));
+    let bytes = encode(&mut original);
+    // The image is left behind, and none can be sent after.
+    let mut restored = restore(bytes.as_slice()).unwrap();
+    assert!(!image(&restored));
     configure(&mut restored).unwrap();
-    assert_eq!(restored.kitty_image_storage_limit().unwrap(), 0);
-    assert!(!restored.is_kitty_image_from_file_allowed().unwrap());
+    assert_eq!(restored.kitty_image_storage_limit().unwrap(), Some(0));
+    assert_eq!(
+        restored.is_kitty_image_from_file_allowed().unwrap(),
+        Some(false)
+    );
     let frame = render(&restored);
     assert!(frame.selected_text(0, 59).contains("text after image"));
 }
@@ -174,7 +171,7 @@ fn worker_wakes_for_output_and_sleeps_when_idle() {
     server.vt_write(b"hello");
     handle
         .input
-        .send(Command::Bytes(snapshot::encode(&server).unwrap().to_vec()))
+        .send(Command::Bytes(encode(&mut server)))
         .unwrap();
     wakes.recv_timeout(Duration::from_secs(3)).unwrap();
     assert_eq!(handle.latest().unwrap().selected_text(0, 4), "hello");
