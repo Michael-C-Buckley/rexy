@@ -68,8 +68,9 @@ fn fragmented_snapshot_preserves_state_and_leaves_live_tail_unread() {
     restored.vt_write(&live);
     let frame = render(&restored);
     assert_eq!(frame.selected_text(24, 31), "界 e\u{301}");
-    assert_eq!(frame.lines[2].cells[4].text, "X");
-    assert_eq!(frame.lines[2].cells[4].fg, 0x010203);
+    let last = &frame.lines[2];
+    assert_eq!(last.text(4, 5), "X");
+    assert_eq!(last.look(&last.cells[4]).fg, 0x010203);
 }
 
 #[test]
@@ -212,6 +213,106 @@ fn frames_reuse_unchanged_rows_and_copy_whole_graphemes() {
 }
 
 #[test]
+fn a_row_that_only_moved_is_kept_and_one_that_also_changed_is_not() {
+    let mut terminal = terminal(20, 4);
+    terminal.vt_write(b"one\r\n\x1b[31mtwo\x1b[m\r\nthree\r\nfour");
+    let mut renderer = Renderer::new().unwrap();
+    let first = renderer.frame(&terminal).unwrap().unwrap();
+    // Output scrolls the screen by a row, and in the same write changes another.
+    terminal.vt_write(b"\r\nfive\x1b[2;1Hthr33");
+    let second = renderer.frame(&terminal).unwrap().unwrap();
+    assert_eq!(text(&second), "two\nthr33\nfour\nfive");
+    assert!(Arc::ptr_eq(&first.lines[1], &second.lines[0]));
+    assert!(!Arc::ptr_eq(&first.lines[2], &second.lines[1]));
+    assert!(Arc::ptr_eq(&first.lines[3], &second.lines[2]));
+    // The user scrolls back a row.
+    terminal.scroll_viewport(ScrollViewport::Delta(-1));
+    let back = renderer.frame(&terminal).unwrap().unwrap();
+    assert_eq!(text(&back), "one\ntwo\nthr33\nfour");
+    for y in 1..4 {
+        assert!(Arc::ptr_eq(&back.lines[y], &second.lines[y - 1]));
+    }
+    // The same text in the same cells is another row in another colour.
+    terminal.scroll_viewport(ScrollViewport::Bottom);
+    terminal.vt_write(b"\x1b[2J\x1b[H\x1b[34mtwo");
+    let blue = renderer.frame(&terminal).unwrap().unwrap();
+    assert_eq!(text(&blue), "two\n\n\n");
+    assert!(!Arc::ptr_eq(&blue.lines[0], &second.lines[0]));
+    assert_eq!(blue.lines[0].look(&blue.lines[0].cells[0]).fg, 0x81a2be);
+}
+
+#[test]
+fn a_cell_holds_the_whole_of_a_cluster_and_a_wide_glyph_has_its_spare_half() {
+    let mut terminal = terminal(14, 2);
+    // Characters that belong together share a cell where a program asks for it.
+    terminal.vt_write("\x1b[?2027h🇯🇵👨\u{200d}👩\u{200d}👧e\u{301}e\u{302}aa界界y界".as_bytes());
+    let frame = render(&terminal);
+    let row = &frame.lines[0];
+    let shown: Vec<&str> = (0..14).map(|x| row.text(x, x + 1)).collect();
+    let flag = "🇯🇵";
+    let family = "👨\u{200d}👩\u{200d}👧";
+    // Two clusters side by side that begin alike, and two cells that are alike.
+    let wanted = [
+        flag, "", family, "", "e\u{301}", "e\u{302}", "a", "a", "界", "", "界", "", "y", "",
+    ];
+    assert_eq!(shown, wanted);
+    let spare = |x: usize| (row.cells[x].spacer_tail, row.cells[x].spacer_head);
+    assert_eq!(
+        [spare(0), spare(1), spare(9), spare(12)],
+        [(false, false), (true, false), (true, false), (false, false)]
+    );
+    // The last column is too narrow for a wide glyph, which goes to the next row.
+    assert_eq!((spare(13), row.wrapped), ((false, true), true));
+    assert_eq!(frame.lines[1].text(0, 2), "界");
+    let all = format!("{flag}{family}e\u{301}e\u{302}aa界界y界");
+    assert_eq!(text(&frame), all);
+}
+
+#[test]
+fn looks_are_reversed_hidden_and_laid_on_a_colour_of_their_own() {
+    let mut terminal = terminal(12, 2);
+    terminal.vt_write(b"\x1b[31;44mab\x1b[7mcd\x1b[27;8mef\x1b[m\x1b[42m\x1b[K\r\n");
+    // Two cells erased to one colour, two to another, two left alone.
+    terminal.vt_write(b"\x1b[48;2;1;2;3m\x1b[2X\x1b[2C\x1b[42m\x1b[2X\x1b[m\x1b[4C");
+    terminal.vt_write(b"\x1b[4;58;5;1mu");
+    let frame = render(&terminal);
+    let look = |x: usize, y: usize| *frame.lines[y].look(&frame.lines[y].cells[x]);
+    let colours = |x, y| (look(x, y).fg, look(x, y).bg);
+    let (red, blue, green) = (0xcc6666, 0x81a2be, 0xb5bd68);
+    assert_eq!([colours(0, 0), colours(2, 0)], [(red, blue), (blue, red)]);
+    // Hidden text is not there to draw or to copy, and its cells still are.
+    assert_eq!(
+        (colours(4, 0), frame.lines[0].text(4, 6)),
+        ((red, blue), "")
+    );
+    // A cell a program erased holds the colour it was erased to, and no style.
+    let erased = [colours(6, 0), colours(11, 0), colours(1, 1), colours(2, 1)];
+    let ground = |color| (frame.fg, color);
+    assert_eq!(erased, [green, green, 0x010203, green].map(ground));
+    assert_eq!(colours(4, 1), (frame.fg, frame.bg));
+    let line = (look(6, 1).style.underline, look(6, 1).underline_color);
+    assert_eq!(line, (libghostty_vt::style::Underline::Single, Some(red)));
+    assert_eq!(text(&frame), "abcd\n      u");
+}
+
+#[test]
+fn a_link_covers_the_cells_it_was_written_over_and_no_others() {
+    let mut terminal = terminal(20, 1);
+    let link = |target: &str| format!("\x1b]8;;{target}\x1b\\");
+    let (first, second) = ("https://a.example/", "https://b.example/");
+    // Cells that are alike in all but where they lead.
+    let bytes = format!("xx{}xx{}xx{}xx", link(first), link(second), link(""));
+    terminal.vt_write(bytes.as_bytes());
+    let frame = render(&terminal);
+    let links = frame.lines[0].links.iter();
+    let links: Vec<_> = links
+        .map(|(start, end, target)| (*start, *end, &**target))
+        .collect();
+    assert_eq!(links, [(2, 4, first), (4, 6, second)]);
+    assert_eq!(text(&frame), "xxxxxxxx");
+}
+
+#[test]
 fn a_cursor_that_only_moved_and_colours_that_changed_are_drawn() {
     let mut terminal = terminal(20, 3);
     terminal.vt_write(b"\x1b[31mred\x1b[m plain");
@@ -237,10 +338,10 @@ fn a_cursor_that_only_moved_and_colours_that_changed_are_drawn() {
     assert!(Arc::ptr_eq(&first.lines[0], &shaped.lines[0]));
     let colored = drawn(&mut terminal, b"\x1b]12;#0a0b0c\x1b\\");
     assert_eq!(colored.cursor_color, 0x0a0b0c);
-    // The colours cells fall back on are held by every cell.
+    // The colours cells fall back on are held by every look.
     let ground = drawn(&mut terminal, b"\x1b]10;#f0f0f0\x1b\\\x1b]11;#102030\x1b\\");
     assert_eq!((ground.fg, ground.bg), (0xf0f0f0, 0x102030));
-    let plain = &ground.lines[0].cells[5];
+    let plain = ground.lines[0].look(&ground.lines[0].cells[5]);
     assert_eq!((plain.fg, plain.bg), (0xf0f0f0, 0x102030));
     let reversed = drawn(&mut terminal, b"\x1b[?5h");
     assert_eq!((reversed.fg, reversed.bg), (0x102030, 0xf0f0f0));
@@ -537,4 +638,182 @@ fn links_are_those_marked_and_those_written_out() {
     assert_eq!((link(4, 1), link(10, 2), link(11, 2)), (None, None, None));
     // A file is never followed, and a name without its kind is no address.
     assert_eq!((link(0, 3), link(5, 3)), (None, None));
+}
+
+/// Counts what each thread asks of the allocator, for the benchmarks.
+struct Counting;
+
+thread_local! {
+    /// How many times this thread has asked for memory, and for how many bytes.
+    static ASKED: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+unsafe impl std::alloc::GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        ASKED.set((ASKED.get().0 + 1, ASKED.get().1 + layout.size() as u64));
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, memory: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(memory, layout) }
+    }
+
+    unsafe fn realloc(&self, memory: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        ASKED.set((ASKED.get().0 + 1, ASKED.get().1 + size as u64));
+        unsafe { std::alloc::System.realloc(memory, layout, size) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+/// The time and the memory that the measured part of a benchmark's frames took.
+#[derive(Default)]
+pub(crate) struct Meter {
+    spent: Duration,
+    asked: (u64, u64),
+}
+
+impl Meter {
+    pub(crate) fn time<T>(&mut self, work: impl FnOnce() -> T) -> T {
+        let (before, began) = (ASKED.get(), Instant::now());
+        let done = work();
+        self.spent += began.elapsed();
+        let after = ASKED.get();
+        self.asked.0 += after.0 - before.0;
+        self.asked.1 += after.1 - before.1;
+        done
+    }
+}
+
+/// Run rounds of frames and print what one frame costs. The first round is not counted.
+pub(crate) fn measure(name: &str, mut frame: impl FnMut(&mut Meter)) {
+    const FRAMES: u32 = 200;
+    let mut round = || {
+        let mut meter = Meter::default();
+        (0..FRAMES).for_each(|_| frame(&mut meter));
+        meter
+    };
+    round();
+    let mut rounds: Vec<Meter> = (0..5).map(|_| round()).collect();
+    rounds.sort_by_key(|meter| meter.spent);
+    let micros = |meter: &Meter| meter.spent.as_secs_f64() * 1e6 / f64::from(FRAMES);
+    let (count, bytes) = rounds[2].asked;
+    println!(
+        "{name:<42}{:8.1} µs a frame at best, {:8.1} at the median; {:6} allocations, {:5} KB",
+        micros(&rounds[0]),
+        micros(&rounds[2]),
+        count / u64::from(FRAMES),
+        bytes / 1024 / u64::from(FRAMES),
+    );
+}
+
+/// A row of coloured words, 200 columns of them, unlike any other line's.
+fn coloured(line: usize) -> String {
+    use std::fmt::Write as _;
+    let mut row = String::new();
+    for word in line * 20..line * 20 + 20 {
+        let look = ["", "", ";1", "", ";4", ";48;5;236", "", ";3"][word % 8];
+        let ink = word % 200 + 20;
+        let text = word * 2_654_435_761 % 0xf_ffff_ffff;
+        write!(row, "\x1b[0;38;5;{ink}{look}m{text:<9x} ").unwrap();
+    }
+    row
+}
+
+/// A row of wide glyphs and of cells that hold several characters.
+fn clustered(line: usize) -> String {
+    const WORDS: [&str; 8] = [
+        "界面テスト ",
+        "👨\u{200d}👩\u{200d}👧 ",
+        "e\u{301}a\u{308}o\u{302} ",
+        "한국어 ",
+        "🇯🇵🇫🇷 ",
+        "🙂👍🏽 ",
+        "plain ",
+        "日本語の文章 ",
+    ];
+    // Short of the last column, so that no glyph wraps.
+    (line..line + 22).map(|word| WORDS[word % 8]).collect()
+}
+
+/// What a program writes for the nth frame of a screen.
+pub(crate) type Program = fn(usize) -> String;
+
+/// The screens the benchmarks draw, 200 columns by 60 rows, each with its name.
+pub(crate) const SCREENS: [(&str, Program); 4] = [
+    ("coloured text, all redrawn", |frame| {
+        let rows: Vec<String> = (frame * 60..frame * 60 + 60).map(coloured).collect();
+        format!("\x1b[H{}", rows.join("\r\n"))
+    }),
+    ("coloured text, one line scrolls", |frame| {
+        format!("\r\n{}", coloured(frame))
+    }),
+    ("wide glyphs and clusters", |frame| {
+        let rows: Vec<String> = (frame..frame + 60).map(clustered).collect();
+        format!("\x1b[H\x1b[J{}", rows.join("\r\n"))
+    }),
+    ("a shell's short lines, all redrawn", |frame| {
+        let prompt = "\x1b[32muser@host\x1b[m:\x1b[34m~/src\x1b[m$";
+        let line = |line: usize| format!("{prompt} make {:x}\x1b[K", line * 2_654_435_761);
+        let rows: Vec<String> = (frame * 60..frame * 60 + 60).map(line).collect();
+        format!("\x1b[H{}", rows.join("\r\n"))
+    }),
+];
+
+/// One of those screens, a frame at a time.
+pub(crate) struct Bench {
+    terminal: Terminal<'static, 'static>,
+    renderer: Renderer,
+    write: Program,
+    frame: usize,
+}
+
+impl Bench {
+    pub(crate) fn new(write: Program) -> Self {
+        let mut terminal = terminal(200, 60);
+        configure(&mut terminal).unwrap();
+        // Characters that belong together share a cell, as a shell asks of Rex.
+        terminal.vt_write(b"\x1b[?2027h");
+        let renderer = Renderer::new().unwrap();
+        let mut screen = Self {
+            terminal,
+            renderer,
+            write,
+            frame: 0,
+        };
+        // Enough frames that a screen which scrolls is full.
+        (0..60).for_each(|_| drop(screen.next(&mut Meter::default())));
+        screen
+    }
+
+    /// Have the program write its next frame, and draw it. Only the drawing is timed.
+    pub(crate) fn next(&mut self, meter: &mut Meter) -> Arc<Frame> {
+        self.terminal.vt_write((self.write)(self.frame).as_bytes());
+        self.frame += 1;
+        let drawn = meter.time(|| self.renderer.frame(&self.terminal));
+        drawn.unwrap().expect("a frame unlike the last")
+    }
+}
+
+#[test]
+#[ignore = "a benchmark: run it alone, with --release and --nocapture"]
+fn bench_frames() {
+    for (name, write) in SCREENS {
+        let mut screen = Bench::new(write);
+        let mut last = screen.next(&mut Meter::default());
+        let (mut frames, mut new) = (0, 0);
+        measure(name, |meter| {
+            let frame = screen.next(meter);
+            let old = |row: &&Arc<Row>| last.lines.iter().any(|old| Arc::ptr_eq(old, row));
+            new += frame.lines.len() - frame.lines.iter().filter(old).count();
+            frames += 1;
+            last = frame;
+        });
+        println!(
+            "{:42}{:8.1} rows a frame are new",
+            "",
+            new as f64 / frames as f64
+        );
+    }
 }

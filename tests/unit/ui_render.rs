@@ -71,7 +71,10 @@ fn rows_are_shaped_again_when_the_scale_or_the_font_atlas_changes() {
     let ctx = context();
     let frame = frame(20, 2, b"hello");
     let mut view = PaneView::default();
-    let galley = |view: &PaneView| Arc::clone(&view.cached_rows[0].glyphs[0].galley);
+    let galley = |view: &PaneView| {
+        let mut rows = view.cached_rows.values();
+        Arc::clone(&rows.find_map(|row| row.glyphs.first()).unwrap().galley)
+    };
 
     paint(&ctx, &mut view, &frame, 1.0);
     let first = galley(&view);
@@ -89,6 +92,37 @@ fn rows_are_shaped_again_when_the_scale_or_the_font_atlas_changes() {
 }
 
 #[test]
+fn a_row_that_moves_on_screen_keeps_its_shaped_text_and_is_drawn_where_it_is() {
+    let ctx = context();
+    let first = frame(20, 3, b"one\r\ntwo\r\nthree");
+    // The same rows a row further up, as output that scrolls leaves them.
+    let rows = [&first.lines[1], &first.lines[2], &first.lines[0]];
+    let mut moved = (*first).clone();
+    moved.lines = rows.map(Arc::clone).to_vec();
+    let mut view = PaneView::default();
+    // How far down the screen a pass draws a text.
+    let mut top = |frame: &Frame, text: &str| {
+        let output = paint(&ctx, &mut view, frame, 1.0);
+        let shapes = output.shapes.iter().map(|clipped| &clipped.shape);
+        let at = |shape: &Shape| match shape {
+            Shape::Text(shape) if shape.galley.text() == text => Some(shape.pos.y),
+            _ => None,
+        };
+        shapes.filter_map(at).next().unwrap()
+    };
+    assert!(top(&first, "one") < top(&first, "two"));
+    let shaped = ctx.fonts(|fonts| fonts.num_galleys_in_cache());
+    assert!(top(&moved, "two") < top(&moved, "one"));
+    // egui forgets a text that a whole pass did not ask it for, as it has all three
+    // rows: none was shaped again.
+    assert_eq!(ctx.fonts(|fonts| fonts.num_galleys_in_cache()), shaped - 3);
+    // A row that is shown no more is forgotten here.
+    moved.lines.truncate(2);
+    top(&moved, "two");
+    assert_eq!(view.cached_rows.len(), 2);
+}
+
+#[test]
 fn each_kind_of_underline_is_drawn_as_itself() {
     let ctx = context();
     let kinds = b"\x1b[4:3mcurly\x1b[4:4mdotted\x1b[4:5mdashed\x1b[4:2mdouble\x1b[4:1msingle";
@@ -103,4 +137,31 @@ fn each_kind_of_underline_is_drawn_as_itself() {
     let lines = count(|shape| matches!(shape, Shape::LineSegment { .. }));
     assert_eq!((waves, dots, lines), (1, 12, 6 + 2 + 1));
     assert_eq!(ctx.tessellate(output.shapes, 1.0).len(), 1);
+}
+
+#[test]
+#[ignore = "a benchmark: run it alone, with --release and --nocapture"]
+fn bench_rows() {
+    use crate::terminal::tests::{Bench, Meter, SCREENS, measure};
+    for (name, write) in SCREENS {
+        let ctx = context();
+        let mut view = PaneView::default();
+        // egui has no fonts until its first pass.
+        paint(&ctx, &mut view, &frame(2, 1, b""), 1.0);
+        let mut screen = Bench::new(write);
+        measure(&format!("shape: {name}"), |meter| {
+            let frame = screen.next(&mut Meter::default());
+            meter.time(|| {
+                for row in &frame.lines {
+                    CachedRow::new(&ctx, row, SIZE);
+                }
+            });
+        });
+        // A pass of egui's own, which forgets the text that the pass before did not show.
+        let mut screen = Bench::new(write);
+        measure(&format!("paint: {name}"), |meter| {
+            let frame = screen.next(&mut Meter::default());
+            meter.time(|| paint(&ctx, &mut view, &frame, 1.0));
+        });
+    }
 }

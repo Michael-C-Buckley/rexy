@@ -55,10 +55,9 @@ fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
             if cell.spacer_tail || cell.spacer_head {
                 continue;
             }
-            let text = if cell.text.is_empty() {
-                " "
-            } else {
-                &cell.text
+            let text = match cells.text(column, column + 1) {
+                "" => " ",
+                text => text,
             };
             line.extend(text.chars().map(|c| (c, row, column)));
         }

@@ -8,8 +8,8 @@ use libghostty_vt::{
     color::{Palette, Rgb},
     mode::Mode,
     point::{Coordinate, Point},
-    render::{CellIterator, Colors, CursorVisualStyle, Dirty, RowIterator},
-    screen::{CellWide, Screen},
+    render::{CellIterator, Colors, CursorVisualStyle, Dirty, RowId, RowIteration, RowIterator},
+    screen::{CellContentTag, CellWide, Screen},
     snapshot,
     style::{Style, StyleColor},
     terminal::ScrollViewport,
@@ -17,6 +17,7 @@ use libghostty_vt::{
 use serde_json::Value;
 use std::{
     cell::RefCell,
+    collections::HashMap,
     io::{self, Read},
     rc::Rc,
     sync::{
@@ -46,13 +47,21 @@ pub enum CursorShape {
     Hollow,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Cell {
-    pub text: String,
+    /// Where its text begins in its row's, which is where the cell before ends.
+    at: u32,
+    /// Which of its row's looks is its own. Cells side by side share one.
+    pub look: u16,
     /// The trailing cell of a wide glyph: do not draw text.
     pub spacer_tail: bool,
     /// An unused last column when a wide glyph wraps to the following row.
     pub spacer_head: bool,
+}
+
+/// How a run of cells is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
     /// Effective colors: reverse-video has already been applied.
     pub fg: u32,
     pub bg: u32,
@@ -60,13 +69,29 @@ pub struct Cell {
     pub style: Style,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Row {
     pub cells: Vec<Cell>,
+    /// What its cells show, one after another: most of them a character, a blank
+    /// one nothing, a few a cluster of several.
+    text: String,
+    looks: Vec<Look>,
     pub wrapped: bool,
     /// The links its programs have marked: columns from one up to another, and
     /// where they lead.
     pub links: Vec<(usize, usize, Arc<str>)>,
+}
+
+impl Row {
+    /// What the columns from one up to another show.
+    pub fn text(&self, start: usize, end: usize) -> &str {
+        let at = |x: usize| self.cells.get(x).map_or(self.text.len(), |c| c.at as usize);
+        &self.text[at(start)..at(end)]
+    }
+
+    pub fn look(&self, cell: &Cell) -> &Look {
+        &self.looks[usize::from(cell.look)]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -126,12 +151,11 @@ impl Frame {
                 cols - 1
             };
             let mut line = String::new();
-            for cell in row.cells.iter().take(right + 1).skip(left) {
+            for (x, cell) in row.cells.iter().enumerate().take(right + 1).skip(left) {
                 if !cell.spacer_tail && !cell.spacer_head {
-                    if cell.text.is_empty() {
-                        line.push(' ');
-                    } else {
-                        line.push_str(&cell.text);
+                    match row.text(x, x + 1) {
+                        "" => line.push(' '),
+                        text => line.push_str(text),
                     }
                 }
             }
@@ -565,11 +589,140 @@ fn rgb(color: Rgb) -> u32 {
     (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)
 }
 
+/// Read a row as Ghostty holds it. What a cell is asked, it is asked across a call
+/// into Ghostty, and those calls are most of what a frame costs: so the row is
+/// asked what none of its cells need be, and a cell only what the one before it
+/// does not tell.
+fn read(
+    line: &RowIteration<'static, '_>,
+    cells: &mut CellIterator<'static>,
+    terminal: &Terminal,
+    colors: &Colors,
+    row: &mut Row,
+) -> Result<()> {
+    let about = line.raw_row()?;
+    let styled = about.is_styled()?;
+    let clustered = about.has_grapheme_cluster()?;
+    let linked = about.has_hyperlink()?;
+    row.cells.clear();
+    row.text.clear();
+    row.looks.clear();
+    row.links.clear();
+    row.wrapped = about.is_wrapped()?;
+    let mut asked = cells.update(line)?;
+    // What the last look was taken from, whether it hides its text, and a cell
+    // that has it.
+    let (mut from, mut hidden, mut like) = (None, false, Cell::default());
+    // The cell before, where one just like it is drawn just like it.
+    let mut before = None;
+    let mut cluster = String::new();
+    let mut address = [0; MAX_LINK_BYTES];
+    for (x, raw) in (0u16..).zip(line.cells_raw()?) {
+        let at = row.text.len() as u32;
+        // The blank rest of a row is one cell over and over.
+        if before == Some(raw)
+            && let Some(cell) = row.cells.last().copied()
+        {
+            if cell.at < at {
+                row.text.extend_from_within(cell.at as usize..);
+            }
+            row.cells.push(Cell { at, ..cell });
+            continue;
+        }
+        let codepoint = raw.codepoint()?;
+        let blank = codepoint == 0;
+        let style = styled.then(|| raw.style_id()).transpose()?;
+        // And most of the others hold one character, in the style of the cell
+        // before.
+        if !(blank || clustered || linked || hidden)
+            && from == Some((style, None))
+            && let Some(shown) = char::from_u32(codepoint)
+        {
+            row.text.push(shown);
+            row.cells.push(Cell { at, ..like });
+            before = Some(raw);
+            continue;
+        }
+        let tag = if blank || clustered {
+            raw.content_tag()?
+        } else {
+            CellContentTag::Codepoint
+        };
+        // Cells of one style look alike, but for a blank one that holds a colour
+        // of its own to lie on.
+        let ground = (blank && tag != CellContentTag::Codepoint).then_some(raw);
+        if from != Some((style, ground)) {
+            from = Some((style, ground));
+            asked.select(x)?;
+            let style = asked.style()?;
+            let (mut fg, mut bg) = (
+                rgb(asked.fg_color()?.unwrap_or(colors.foreground)),
+                rgb(asked.bg_color()?.unwrap_or(colors.background)),
+            );
+            if style.inverse {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            let underline_color = match style.underline_color {
+                StyleColor::None => None,
+                StyleColor::Palette(index) => Some(rgb(colors.palette[usize::from(index.0)])),
+                StyleColor::Rgb(color) => Some(rgb(color)),
+            };
+            hidden = style.invisible;
+            like.look = row.looks.len() as u16;
+            row.looks.push(Look {
+                fg,
+                bg,
+                underline_color,
+                style,
+            });
+        }
+        if blank || hidden {
+        } else if tag == CellContentTag::CodepointGrapheme {
+            asked.select(x)?;
+            asked.graphemes_utf8(&mut cluster)?;
+            row.text.push_str(&cluster);
+        } else if let Some(shown) = char::from_u32(codepoint) {
+            row.text.push(shown);
+        }
+        // Only a blank cell is the unused half of a wide glyph.
+        let wide = if blank { raw.wide()? } else { CellWide::Narrow };
+        let link = linked && raw.has_hyperlink()?;
+        if link && let Ok(y) = u32::try_from(line.viewport_y()?) {
+            let cell = Point::Viewport(Coordinate { x, y });
+            // One too long to hold is no link.
+            let length = terminal.grid_ref(cell)?.hyperlink_uri(&mut address);
+            let length = length.ok().filter(|length| *length > 0);
+            let target = length.map(|length| &address[..length]);
+            if let Some(Ok(target)) = target.map(str::from_utf8) {
+                let x = usize::from(x);
+                match row.links.last_mut() {
+                    Some((_, end, last)) if *end == x && **last == *target => *end += 1,
+                    _ => row.links.push((x, x + 1, target.into())),
+                }
+            }
+        }
+        row.cells.push(Cell {
+            at,
+            spacer_tail: wide == CellWide::SpacerTail,
+            spacer_head: wide == CellWide::SpacerHead,
+            ..like
+        });
+        // What a cluster holds beside its first character, and where a link
+        // leads, the cell itself does not say.
+        before = (tag != CellContentTag::CodepointGrapheme && !link).then_some(raw);
+    }
+    Ok(())
+}
+
 struct Renderer {
     state: RenderState<'static>,
     rows: RowIterator<'static>,
     cells: CellIterator<'static>,
     previous: Option<Arc<Frame>>,
+    /// The rows of that frame, by what Ghostty knows each as wherever it moves to.
+    known: HashMap<RowId, Arc<Row>>,
+    /// Where a row is read into, so that one found unchanged asks for no memory.
+    read: Row,
     /// The colours of that frame. Ghostty marks nothing dirty when only they change.
     colors: Option<Colors>,
     /// When the last new frame was drawn, when the last was drawn as a hold began,
@@ -587,6 +740,8 @@ impl Renderer {
             rows: RowIterator::new()?,
             cells: CellIterator::new()?,
             previous: None,
+            known: HashMap::new(),
+            read: Row::default(),
             colors: None,
             drawn: Instant::now() - FRAME_INTERVAL,
             caught: Instant::now() - FRAME_INTERVAL,
@@ -649,86 +804,30 @@ impl Renderer {
         let bg = rgb(colors.background);
         let cols = snapshot.cols()?;
         let rows = snapshot.rows()?;
-        // Every cell holds the colours it is drawn in, so new ones are new cells.
+        // Every look holds the colours it is drawn in, so new ones are new rows.
         // A cursor that only moved leaves every row as it was.
-        let full = dirty == Dirty::Full
-            || recolored
-            || self
-                .previous
-                .as_ref()
-                .is_none_or(|old| old.cols != cols || old.rows != rows);
+        let full = dirty == Dirty::Full || recolored;
         let mut lines = Vec::with_capacity(usize::from(rows));
+        let mut known = HashMap::with_capacity(usize::from(rows));
         let mut iterator = self.rows.update(&snapshot)?;
-        while let Some(row) = iterator.next() {
-            if !full
-                && !row.dirty()?
-                && let Some(previous) = self
-                    .previous
-                    .as_ref()
-                    .and_then(|old| old.lines.get(lines.len()))
-            {
-                lines.push(previous.clone());
-                continue;
-            }
-            let wrapped = row.raw_row()?.is_wrapped()?;
-            let y = row.viewport_y()?;
-            let mut cells = Vec::with_capacity(usize::from(cols));
-            let mut links: Vec<(usize, usize, Arc<str>)> = Vec::new();
-            let mut iterator = self.cells.update(row)?;
-            while let Some(cell) = iterator.next() {
-                let mut text = String::new();
-                cell.graphemes_utf8(&mut text)?;
-                let style = cell.style()?;
-                let (mut fg, mut bg) = (
-                    cell.fg_color()?.map(rgb).unwrap_or(fg),
-                    cell.bg_color()?.map(rgb).unwrap_or(bg),
-                );
-                if style.inverse {
-                    std::mem::swap(&mut fg, &mut bg);
+        while let Some(line) = iterator.next() {
+            let id = line.id()?;
+            let row = match self.known.remove(&id) {
+                Some(old) if !full && !line.dirty()? => old,
+                old => {
+                    // Ghostty calls every row dirty when the view moves, and so
+                    // forgets which were written to. One that only moved reads
+                    // as it did.
+                    let row = &mut self.read;
+                    read(line, &mut self.cells, terminal, &colors, row)?;
+                    old.filter(|old| **old == *row)
+                        .unwrap_or_else(|| Arc::new(row.clone()))
                 }
-                if style.invisible {
-                    text.clear();
-                }
-                let underline_color = match style.underline_color {
-                    StyleColor::None => None,
-                    StyleColor::Palette(index) => Some(rgb(colors.palette[usize::from(index.0)])),
-                    StyleColor::Rgb(color) => Some(rgb(color)),
-                };
-                let raw = cell.raw_cell()?;
-                let x = cells.len();
-                if raw.has_hyperlink()?
-                    && let (Ok(x16), Ok(y)) = (u16::try_from(x), u32::try_from(y))
-                {
-                    let at = Point::Viewport(Coordinate { x: x16, y });
-                    let mut target = [0; MAX_LINK_BYTES];
-                    // One too long to hold is no link.
-                    let length = terminal.grid_ref(at)?.hyperlink_uri(&mut target);
-                    let length = length.ok().filter(|length| *length > 0);
-                    let target = length.map(|length| &target[..length]);
-                    if let Some(Ok(target)) = target.map(str::from_utf8) {
-                        match links.last_mut() {
-                            Some((_, end, last)) if *end == x && **last == *target => *end += 1,
-                            _ => links.push((x, x + 1, target.into())),
-                        }
-                    }
-                }
-                let wide = raw.wide()?;
-                cells.push(Cell {
-                    text,
-                    spacer_tail: wide == CellWide::SpacerTail,
-                    spacer_head: wide == CellWide::SpacerHead,
-                    fg,
-                    bg,
-                    underline_color,
-                    style,
-                });
-            }
-            lines.push(Arc::new(Row {
-                cells,
-                wrapped,
-                links,
-            }));
+            };
+            known.insert(id, row.clone());
+            lines.push(row);
         }
+        self.known = known;
         let frame = Arc::new(Frame {
             cols,
             rows,

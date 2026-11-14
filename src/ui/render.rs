@@ -1,5 +1,5 @@
 //! Per-pane view state and painting. Shaped text is cached by row identity.
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use libghostty_vt::style::Underline;
@@ -90,13 +90,15 @@ pub struct PaneView {
     pub wheel: f32,
     pub mouse_button: Option<egui::PointerButton>,
     pub mouse_cell: Option<(u16, u16)>,
-    cached_rows: Vec<CachedRow>,
+    /// Shaped rows, by the address of the row each was shaped from, and holds.
+    cached_rows: HashMap<usize, CachedRow>,
     /// A galley of egui's own. The cached rows are good while egui still holds it.
     cached_while: Option<Arc<egui::Galley>>,
 }
 
 struct CachedRow {
-    source: Arc<Row>,
+    /// Held so that no other row comes to live at its address.
+    _source: Arc<Row>,
     glyphs: Vec<GlyphRun>,
     backgrounds: Vec<(usize, usize, Color32)>,
     /// Columns, the height in the cell as a fraction, and the kind of line.
@@ -126,17 +128,15 @@ impl PaneView {
         let cols = usize::from(frame.cols);
         let selection = self.selection.as_ref().map(|s| s.range);
         let visible = ((grid.rect.height() / grid.cell.y).ceil() as usize).min(frame.lines.len());
-        self.cached_rows.truncate(visible);
+        // A row keeps its shaped text wherever on screen it moves to, and loses it
+        // when it is shown no more.
+        let mut shaped = std::mem::take(&mut self.cached_rows);
         for (y, row) in frame.lines.iter().take(visible).enumerate() {
-            let cached = self.cached_rows.get(y);
-            if cached.is_none_or(|cached| !Arc::ptr_eq(&cached.source, row)) {
-                let cached = CachedRow::new(painter.ctx(), row, grid.font_size);
-                match self.cached_rows.get_mut(y) {
-                    Some(stale) => *stale = cached,
-                    None => self.cached_rows.push(cached),
-                }
-            }
-            let cached = &self.cached_rows[y];
+            let source = Arc::as_ptr(row).addr();
+            let cached = shaped
+                .remove(&source)
+                .unwrap_or_else(|| CachedRow::new(painter.ctx(), row, grid.font_size));
+            let cached = self.cached_rows.entry(source).or_insert(cached);
             for &(start, end, color) in &cached.backgrounds {
                 if color != bg {
                     painter.rect_filled(grid.span(y, start, end), 0, color);
@@ -246,14 +246,15 @@ impl PaneView {
 impl CachedRow {
     fn new(ctx: &egui::Context, row: &Arc<Row>, font_size: f32) -> Self {
         let mut result = Self {
-            source: Arc::clone(row),
+            _source: Arc::clone(row),
             glyphs: Vec::new(),
             backgrounds: Vec::new(),
             decorations: Vec::new(),
         };
         let mut x = 0;
-        for run in row.cells.chunk_by(|a, b| a.bg == b.bg) {
-            result.backgrounds.push((x, x + run.len(), rgb(run[0].bg)));
+        for run in row.cells.chunk_by(|a, b| row.look(a).bg == row.look(b).bg) {
+            let ground = rgb(row.look(&run[0]).bg);
+            result.backgrounds.push((x, x + run.len(), ground));
             x += run.len();
         }
         x = 0;
@@ -264,31 +265,27 @@ impl CachedRow {
                 continue;
             }
             let start = x;
-            let mut text = cell.text.clone();
             x += 1;
             // Monospace ASCII can be shaped in a single run. Fallback glyphs and
             // grapheme clusters are individually positioned on Ghostty's cell grid.
-            if text.len() == 1 && text.is_ascii() {
-                while let Some(next) = row.cells.get(x)
-                    && !next.spacer_tail
-                    && next.text.len() == 1
-                    && next.text.is_ascii()
-                    && next.fg == cell.fg
-                    && next.style == cell.style
-                {
-                    text.push_str(&next.text);
+            // A cell whose text is one byte long holds one ASCII character.
+            let ascii = |at: usize| row.text(at, at + 1).len() == 1;
+            if ascii(start) {
+                while ascii(x) && row.cells[x].look == cell.look {
                     x += 1;
                 }
             } else if row.cells.get(x).is_some_and(|c| c.spacer_tail) {
                 x += 1;
             }
-            let color = if cell.style.faint {
-                rgb(cell.fg).gamma_multiply(0.65)
+            let text = row.text(start, x);
+            let look = row.look(cell);
+            let color = if look.style.faint {
+                rgb(look.fg).gamma_multiply(0.65)
             } else {
-                rgb(cell.fg)
+                rgb(look.fg)
             };
             if !text.trim().is_empty() {
-                let font_id = if cell.style.bold {
+                let font_id = if look.style.bold {
                     style::mono_bold(font_size)
                 } else {
                     FontId::monospace(font_size)
@@ -296,31 +293,31 @@ impl CachedRow {
                 let format = egui::TextFormat {
                     font_id,
                     color,
-                    italics: cell.style.italic,
+                    italics: look.style.italic,
                     ..Default::default()
                 };
                 let mut job = egui::text::LayoutJob::default();
-                job.append(&text, 0.0, format);
+                job.append(text, 0.0, format);
                 result.glyphs.push(GlyphRun {
                     column: start,
                     width: x - start,
                     galley: ctx.fonts_mut(|f| f.layout_job(job)),
                 });
             }
-            let underline = cell.underline_color.map_or(color, rgb);
-            let kind = cell.style.underline;
+            let underline = look.underline_color.map_or(color, rgb);
+            let kind = look.style.underline;
             if kind != Underline::None {
                 result.decorations.push((start, x, 0.90, underline, kind));
                 if kind == Underline::Double {
                     result.decorations.push((start, x, 0.78, underline, kind));
                 }
             }
-            if cell.style.strikethrough {
+            if look.style.strikethrough {
                 result
                     .decorations
                     .push((start, x, 0.51, color, Underline::Single));
             }
-            if cell.style.overline {
+            if look.style.overline {
                 result
                     .decorations
                     .push((start, x, 0.05, color, Underline::Single));
@@ -338,7 +335,7 @@ pub fn word_at(frame: &Frame, index: usize) -> (usize, usize) {
         return (index, index);
     };
     let x = (index % cols).min(row.cells.len().saturating_sub(1));
-    let blank = |at: usize| row.cells.get(at).is_none_or(|c| c.text.trim().is_empty());
+    let blank = |at: usize| row.text(at, at + 1).trim().is_empty();
     let kind = blank(x);
     let (mut start, mut end) = (x, x);
     while start > 0 && blank(start - 1) == kind {
