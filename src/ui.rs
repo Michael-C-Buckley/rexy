@@ -54,6 +54,65 @@ const ARROWS: [(Key, [f32; 2]); 4] = [
     (Key::ArrowUp, [0.0, -1.0]),
     (Key::ArrowDown, [0.0, 1.0]),
 ];
+/// The lines of history one notch of a wheel moves through.
+const NOTCH: f32 = 3.0;
+
+/// A move through a pane's history. Negative is up.
+enum Scroll {
+    Lines(i32),
+    Pages(i32),
+    /// From one shell prompt to another, where the shell marks them (OSC 133).
+    Prompts(i32),
+    Bottom,
+}
+
+/// What a turn of the wheel over a pane is for.
+#[derive(Clone, Copy, PartialEq)]
+enum Wheel {
+    /// The pane's history, a line at a time.
+    History,
+    /// A program that has the whole screen, where there is no history, and
+    /// would have the wheel as arrow keys, one for a line (DEC mode 1007).
+    Arrows,
+    /// A program that tracks the mouse, which is told of each notch.
+    Program,
+    /// A program that has the whole screen and has not asked for arrow keys.
+    Nothing,
+}
+
+impl Wheel {
+    /// `tracking` says the program in the pane has the mouse, and Shift is not
+    /// held to take it back.
+    fn of(frame: &Frame, tracking: bool) -> Self {
+        match (tracking, frame.alternate_screen, frame.alternate_scroll) {
+            (true, ..) => Self::Program,
+            (false, false, _) => Self::History,
+            (false, true, true) => Self::Arrows,
+            (false, true, false) => Self::Nothing,
+        }
+    }
+
+    /// How far these events turned the wheel, in the steps this is taken by.
+    /// Negative is up. What is left of a step stays in `rest`, in lines, for the
+    /// next turn.
+    fn steps(self, events: &[egui::Event], grid: Grid, rest: &mut f32) -> i32 {
+        let lines = |event: &egui::Event| match event {
+            egui::Event::MouseWheel { unit, delta, .. } => Some(match unit {
+                // A touchpad says how far it went.
+                egui::MouseWheelUnit::Point => delta.y / grid.cell.y,
+                // A wheel says how many notches, and under X11 so does a touchpad.
+                egui::MouseWheelUnit::Line => delta.y * NOTCH,
+                egui::MouseWheelUnit::Page => delta.y * grid.rect.height() / grid.cell.y,
+            }),
+            _ => None,
+        };
+        *rest += events.iter().filter_map(lines).sum::<f32>();
+        let step = if self == Self::Program { NOTCH } else { 1.0 };
+        let steps = (*rest / step).trunc();
+        *rest -= steps * step;
+        -steps as i32
+    }
+}
 
 /// A server and the connection kept to it.
 struct Server {
@@ -500,6 +559,27 @@ impl App {
             }
             if pressed(chord, Key::Enter) && window.split() {
                 self.send(Action::Zoom { pane: pane.clone() });
+            }
+            // The keys that move through its history, which its program never
+            // sees: unless that has the whole screen, which keeps no history, and
+            // so has the keys.
+            let shift = Modifiers::SHIFT;
+            let scrolls = [
+                (shift, Key::PageUp, Scroll::Pages(-1)),
+                (shift, Key::PageDown, Scroll::Pages(1)),
+                // Further than any history goes.
+                (shift, Key::Home, Scroll::Lines(i32::MIN)),
+                (shift, Key::End, Scroll::Bottom),
+                (chord, Key::Z, Scroll::Prompts(-1)),
+                (chord, Key::X, Scroll::Prompts(1)),
+            ];
+            let frame = view.pane(&pane).and_then(|pane| pane.frame.as_ref());
+            if !frame.is_some_and(|frame| frame.alternate_screen) {
+                for (modifiers, key, to) in scrolls {
+                    if exactly(modifiers, key) {
+                        self.scroll(&pane, to);
+                    }
+                }
             }
             // A key held down asks once: its repeats would answer for the user.
             // They are looked for first, since `pressed` takes the key's events away.
@@ -1235,6 +1315,8 @@ impl App {
         let mut close = false;
         // Its header was clicked.
         let mut picked = false;
+        // Its view is to move through its history.
+        let mut scroll = None;
         let mut terminal_rect = rect;
         // One pane of several has a header, and so has one that fills the tab in
         // place of the rest.
@@ -1354,7 +1436,18 @@ impl App {
                 state.last_size = Some(size);
             }
         }
-        let pressed = response.clicked() || response.drag_started();
+        // Shift overrides a program's mouse capture.
+        let tracking =
+            frame.as_ref().is_some_and(|f| f.mouse_tracking) && !ui.input(|i| i.modifiers.shift);
+        // A middle click pastes the desktop's last selection, made in any program,
+        // unless a program that tracks the mouse has the click.
+        let paste = |event: &egui::Event| match event {
+            egui::Event::MiddleClickPaste { text, .. } => Some(text.clone()),
+            _ => None,
+        };
+        let paste = ui.input(|i| i.events.iter().find_map(paste));
+        let paste = paste.filter(|_| response.hovered() && !tracking);
+        let pressed = response.clicked() || response.drag_started() || paste.is_some();
         if pressed || picked {
             self.focused = Some(pane.id.clone());
             // A pane that is this window's, and where the server has the keyboard
@@ -1368,9 +1461,10 @@ impl App {
         if pressed {
             state.selection = None;
         }
-        // Shift overrides a program's mouse capture.
-        let tracking =
-            frame.as_ref().is_some_and(|f| f.mouse_tracking) && !ui.input(|i| i.modifiers.shift);
+        if let Some(text) = paste {
+            let pane = pane.id.clone();
+            actions.push(Action::Paste { pane, text });
+        }
         if let Some(frame) = &frame {
             let events = ui.input(|i| i.events.clone());
             let pointer = Pointer {
@@ -1387,29 +1481,7 @@ impl App {
             if !tracking {
                 pointer.select(state);
             }
-            match pointer.wheel(state) {
-                0 => {}
-                lines if !tracking => {
-                    let client = &self.servers[self.current].client;
-                    if let Err(error) = client.scroll(&pane.id, lines) {
-                        self.toast.say(error);
-                    }
-                }
-                lines => {
-                    if let Some(pos) = response.hover_pos() {
-                        let (x, y) = grid.cell_at(pos, frame);
-                        // A program is told of one step at a time: the server
-                        // takes each turn for one, however far it says it went.
-                        let step = Action::Wheel {
-                            pane: pane.id.clone(),
-                            x,
-                            y,
-                            lines: lines.signum(),
-                        };
-                        actions.extend(std::iter::repeat_n(step, lines.unsigned_abs() as usize));
-                    }
-                }
-            }
+            scroll = pointer.wheel(Wheel::of(frame, tracking), state, &mut actions);
             // A screen that is no longer kept up shows a cursor nobody is at.
             state.paint(ui.painter(), grid, frame, active && live);
             for &(row, start, end) in link.iter().flat_map(|link| &link.spans) {
@@ -1417,6 +1489,28 @@ impl App {
                 let line = Stroke::new(1.0, rgb(frame.fg));
                 ui.painter()
                     .hline(span.x_range(), span.bottom() - 1.0, line);
+            }
+            // Scrolled back, it says so at its foot, where a click returns it to
+            // the last of its output. How far back is known only as of this
+            // frame, so that is not said.
+            if frame.scroll_offset > 0 {
+                let font = FontId::proportional(SMALL);
+                let said = ui
+                    .painter()
+                    .layout_no_wrap("Scrolled back".into(), font, TEXT);
+                let size = said.size() + egui::vec2(20.0, 10.0);
+                let pill = Rect::from_min_size(grid.rect.right_bottom() - size, size);
+                let id = ui.scope_id().with(("scrolled", &pane.id));
+                let back = ui
+                    .interact(pill, id, Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("To the bottom (Shift+End)");
+                if back.clicked() {
+                    scroll = Some(Scroll::Bottom);
+                }
+                ui.painter().rect_filled(pill, size.y / 2.0, POPOVER);
+                ui.painter()
+                    .galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
             }
             if active && response.has_focus() {
                 compose(ui, grid, frame, &self.keyboard.preedit);
@@ -1489,9 +1583,36 @@ impl App {
         for action in actions {
             self.send(action);
         }
+        if let Some(to) = scroll {
+            self.scroll(&pane.id, to);
+        }
         if close {
             let pane = pane.id.clone();
             self.close(what, spared, true, self.current, Action::ClosePane { pane });
+        }
+    }
+
+    /// Move a pane's view through its history. No server is told.
+    fn scroll(&mut self, pane: &str, to: Scroll) {
+        // A selection holds the pane to the frame it was made on.
+        if let Some(state) = self.panes.get_mut(pane) {
+            state.selection = None;
+        }
+        let terminal = self.servers[self.current].client.terminal(pane);
+        let moved = terminal.and_then(|terminal| {
+            let moved = match to {
+                Scroll::Lines(lines) => terminal.scroll(lines),
+                Scroll::Pages(pages) => terminal.scroll_pages(pages),
+                Scroll::Prompts(prompts) => terminal.scroll_prompts(prompts),
+                Scroll::Bottom => {
+                    terminal.scroll_to_bottom();
+                    Ok(())
+                }
+            };
+            moved.map_err(|error| error.to_string())
+        });
+        if let Err(error) = moved {
+            self.toast.say(error);
         }
     }
 
@@ -1877,33 +1998,51 @@ impl Pointer<'_> {
         {
             state.selection = selection(render::word_at(frame, grid.index_at(pos, frame)));
         }
+        // Made, it is the desktop's to paste with a middle click, in any program.
+        if (response.drag_stopped_by(PointerButton::Primary) || response.double_clicked())
+            && let Some(selection) = &state.selection
+        {
+            let made = egui::OutputCommand::TextSelectionSettled(selection.text());
+            self.ui.ctx().send_cmd(made);
+        }
     }
 
-    /// Whole lines the wheel turned over this pane; negative is up.
-    fn wheel(&self, state: &mut PaneView) -> i32 {
-        if !self.response.hovered() {
-            return 0;
-        }
-        let cell = self.grid.cell.y;
-        let points: f32 = self
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                egui::Event::MouseWheel { unit, delta, .. } => Some(match unit {
-                    egui::MouseWheelUnit::Point => delta.y,
-                    egui::MouseWheelUnit::Line => delta.y * cell,
-                    egui::MouseWheelUnit::Page => delta.y * self.grid.rect.height(),
-                }),
-                _ => None,
-            })
-            .sum();
-        state.wheel += points / cell;
-        let lines = state.wheel.trunc();
-        if lines != 0.0 {
-            state.wheel -= lines;
-            state.selection = None;
-        }
-        -lines as i32
+    /// Take the wheel's turn over this pane for what it is: keys or steps for a
+    /// program, or a move through history, which is returned.
+    fn wheel(
+        &self,
+        wheel: Wheel,
+        state: &mut PaneView,
+        actions: &mut Vec<Action>,
+    ) -> Option<Scroll> {
+        let pos = self.response.hover_pos()?;
+        let steps = wheel.steps(self.events, self.grid, &mut state.wheel);
+        let turn: Vec<Action> = match wheel {
+            _ if steps == 0 => return None,
+            Wheel::Nothing => return None,
+            Wheel::History => return Some(Scroll::Lines(steps)),
+            // A press and its release, which the server writes as the program
+            // has asked to be sent its arrow keys.
+            Wheel::Arrows => [true, false]
+                .map(|pressed| Action::Key {
+                    pane: self.pane.into(),
+                    key: String::new(),
+                    code: if steps < 0 { "arrow_up" } else { "arrow_down" }.into(),
+                    modifiers: 0,
+                    pressed,
+                    repeat: false,
+                })
+                .into(),
+            // The server takes each for one step, however far it says it went.
+            Wheel::Program => {
+                let (x, y) = self.grid.cell_at(pos, self.frame);
+                let (pane, lines) = (self.pane.into(), steps.signum());
+                vec![Action::Wheel { pane, x, y, lines }]
+            }
+        };
+        state.selection = None;
+        actions.extend(std::iter::repeat_n(turn, steps.unsigned_abs() as usize).flatten());
+        None
     }
 }
 

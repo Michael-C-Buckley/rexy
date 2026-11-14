@@ -238,10 +238,11 @@ impl Client {
         }
     }
 
-    /// Move the local scrollback viewport; negative is up. Nothing is sent to the server.
-    pub fn scroll(&self, pane: &str, lines: i32) -> Result<(), String> {
-        let terminal = self.shared.terminal(pane).ok_or("Terminal is not ready")?;
-        terminal.scroll(lines).map_err(|e| e.to_string())
+    /// The terminal of a pane on show, for what is done to it here and never
+    /// sent to the server, such as moving through its history.
+    pub fn terminal(&self, pane: &str) -> Result<TerminalHandle, String> {
+        let terminal = self.shared.terminal(pane);
+        terminal.ok_or_else(|| "Terminal is not ready".into())
     }
 }
 
