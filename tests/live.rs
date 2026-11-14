@@ -253,10 +253,28 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     other.leave();
     assert!(other.snapshot().windows().is_empty());
+    let stays_left = || {
+        std::thread::sleep(Duration::from_millis(400));
+        let left = other.snapshot();
+        assert!(left.connected && left.selected_session.is_none() && left.windows().is_empty());
+    };
     // It stays left when the server next reports a change.
     send(&client, Action::CreateWindow(session.clone()));
     send(&client, show(&window));
-    std::thread::sleep(Duration::from_millis(400));
-    let left = other.snapshot();
-    assert!(left.connected && left.selected_session.is_none() && left.windows().is_empty());
+    stays_left();
+    // And when it left before the server had done what it was last asked.
+    send(&other, Action::SelectSession(session.clone()));
+    other.leave();
+    stays_left();
+    send(&other, Action::CreateSession(Some("Third".into())));
+    other.leave();
+    let third = wait(&client, "a session made by a client that left", |v| {
+        v.sessions.iter().any(|s| s.name == "Third")
+    });
+    stays_left();
+    let third = third.sessions.iter().find(|s| s.name == "Third").unwrap();
+    send(&client, edit(&third.id, None, Edit::Close));
+    wait(&client, "that session ended", |v| {
+        v.sessions.iter().all(|s| s.name != "Third")
+    });
 }

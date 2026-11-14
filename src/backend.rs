@@ -147,6 +147,18 @@ impl Client {
         // under the same lock before its queue is discarded, so input accepted
         // on it can never reach its replacement.
         let mut state = self.shared.lock();
+        // Asking a server to show something is how the UI comes to it, as `leave` is
+        // how it goes. Only these say where the UI is, and in the order it moved.
+        let show = matches!(
+            action,
+            Action::SelectSession(_)
+                | Action::SelectWindow { .. }
+                | Action::CreateSession(_)
+                | Action::CreateWindow(_)
+        );
+        if show {
+            state.away = false;
+        }
         if !state.view.connected && !matches!(action, Action::Reconnect) {
             return Err("Disconnected; input was not sent".into());
         }
@@ -165,7 +177,6 @@ impl Client {
             && let Some(session) = state.view.sessions.iter().find(|s| s.id == id)
         {
             let window = window.or_else(|| session.active.clone());
-            state.away = false;
             state.view.selected_session = Some(id);
             state.view.selected_window = window;
             drop(state);
@@ -178,8 +189,10 @@ impl Client {
     pub fn leave(&self) {
         let mut state = self.shared.lock();
         state.away = true;
+        state.view.selected_session = None;
         state.view.selected_window = None;
-        if state.view.selected_session.take().is_some() && state.view.connected {
+        // Even with nothing on show: what it was last asked may be on its way to being.
+        if state.view.connected {
             let _ = self.actions.try_send(Action::Leave);
         }
     }
@@ -400,15 +413,15 @@ impl Connection<'_> {
             .collect();
         let listed = |id: &str| sessions.iter().any(|s| s.id == id);
         let shown = show.filter(|id| listed(id)).map(str::to_owned);
-        let attached = shown.clone().or_else(|| {
+        let attached = {
             let state = self.shared.lock();
             let selected = state.view.selected_session.clone();
-            // Failing that the first, unless the UI is showing another server.
-            let first = || sessions.first().filter(|_| !state.away);
-            selected
-                .filter(|id| listed(id))
-                .or_else(|| first().map(|s| s.id.clone()))
-        });
+            let known = shown.clone().or(selected.filter(|id| listed(id)));
+            // Failing those the first, and none at all while the UI is showing another
+            // server: it may have left since it asked for this one.
+            let first = || sessions.first().map(|s| s.id.clone());
+            known.or_else(first).filter(|_| !state.away)
+        };
         // Joining is idempotent. The other sessions are only looked at.
         let mut views = Vec::new();
         for session in &sessions {
@@ -668,10 +681,6 @@ impl Connection<'_> {
             Action::Leave => None,
             input => return self.input(input).await,
         };
-        if show.is_some() {
-            // Wherever the UI was looking before.
-            self.shared.lock().away = false;
-        }
         self.sessions(show.as_deref()).await?;
         Ok(None)
     }
