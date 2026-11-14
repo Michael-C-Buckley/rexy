@@ -121,13 +121,12 @@ struct Server {
 }
 
 impl Server {
-    /// Unless `away`, the server's first session is shown without being asked for.
-    fn connect(ctx: &egui::Context, host: Host, away: bool, herald: &Herald) -> Self {
+    fn connect(ctx: &egui::Context, host: Host, herald: &Herald) -> Self {
         let ctx = ctx.clone();
         let wake = Arc::new(move || ctx.request_repaint());
         let herald = herald.of(&host.label);
         Self {
-            client: Client::spawn(host.endpoints.clone(), away, wake, herald),
+            client: Client::spawn(host.endpoints.clone(), wake, herald),
             host,
         }
     }
@@ -138,7 +137,7 @@ impl Server {
             label: String::new(),
             endpoints: vec![endpoint.to_owned()],
         };
-        Self::connect(ctx, host, false, herald)
+        Self::connect(ctx, host, herald)
     }
 
     fn label(&self) -> &str {
@@ -412,7 +411,7 @@ impl App {
         for host in &home.hosts {
             let server = match known.iter().position(|server| &server.host == host) {
                 Some(index) => known.swap_remove(index),
-                None => Server::connect(ctx, host.clone(), true, &self.herald),
+                None => Server::connect(ctx, host.clone(), &self.herald),
             };
             self.servers.push(server);
         }
@@ -1666,6 +1665,10 @@ impl eframe::App for App {
         self.follow_hosts(&ctx, &home);
         let others = self.servers[1..].iter().map(|s| s.client.snapshot());
         let mut views: Vec<View> = std::iter::once(home).chain(others).collect();
+        // The server on show shows a session if it has one. No other is asked to.
+        if let Some(first) = views[self.current].unshown() {
+            self.send(first);
+        }
         for error in views.iter_mut().filter_map(|view| view.error.take()) {
             self.toast.say(error);
         }

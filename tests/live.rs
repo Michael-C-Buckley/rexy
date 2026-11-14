@@ -73,13 +73,23 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         "refusing to mutate a non-test Rex server"
     );
     let (herald, notes) = Herald::new();
-    let client = Client::spawn(vec![endpoint.clone()], false, Arc::new(|| {}), herald);
+    let client = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), herald);
+    // A connection comes with every session's tabs, and with no session shown
+    // unasked. A window asks for the first, of the server it shows.
+    let listed = wait(&client, "a connection", |v| v.connected);
+    assert!(listed.sessions.iter().all(|s| !s.windows.is_empty()));
+    assert!(listed.selected_session.is_none() && listed.windows().is_empty());
+    send(&client, listed.unshown().unwrap());
     let initial = wait(&client, "initial Ghostty snapshot", |v| {
-        v.connected && v.panes().any(|p| p.frame.is_some())
+        v.panes().any(|p| p.frame.is_some())
     });
     let session = initial.selected_session.clone().unwrap();
     let window = initial.selected_window.clone().unwrap();
     let pane = initial.current_window().unwrap().panes[0].id.clone();
+    // The pane was made by a client that has left the server. Shown here, it
+    // becomes this client's without being touched.
+    let owned = |v: &View| v.pane(&pane).is_some_and(|p| p.owner);
+    wait(&client, "a pane whose owner has gone", owned);
     send(&client, Action::FocusPane { pane: pane.clone() });
     let size = Size {
         cols: 100,
@@ -163,8 +173,11 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
 
     let old_frame = frame(&client.snapshot(), &pane).unwrap().clone();
     send(&client, Action::Reconnect);
+    // The server knows the client again, with what it owned: nothing else here
+    // would give the pane back to it untouched while the server still held its place.
     wait(&client, "fresh reconnect snapshot", |v| {
         v.connected
+            && owned(v)
             && frame(v, &pane).is_some_and(|f| !Arc::ptr_eq(f, &old_frame))
             && screen(v, &pane).contains("rex-lite-verified")
     });
@@ -398,8 +411,12 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         v.selected_session.as_ref() == Some(&second) && v.windows().is_empty()
     });
     send(&client, edit(&second, None, Edit::Close));
-    wait(&client, "a session ended", |v| {
-        v.sessions.iter().all(|s| s.id != second) && v.selected_session.as_ref() == Some(&session)
+    let ended = wait(&client, "a session ended", |v| {
+        v.sessions.iter().all(|s| s.id != second) && v.selected_session.is_none()
+    });
+    send(&client, ended.unshown().unwrap());
+    wait(&client, "the first session shown in its place", |v| {
+        v.selected_session.as_ref() == Some(&session) && v.panes().any(|p| p.frame.is_some())
     });
     // A tab of a session shown again is shown with it.
     send(&client, show(&tab));
@@ -411,19 +428,32 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         v.windows().len() == initial.windows().len() && v.selected_window.as_ref() == Some(&window)
     });
 
-    // A client for a server the UI is not showing lists sessions and selects none.
-    let other = Client::spawn(vec![endpoint], true, Arc::new(|| {}), Herald::new().0);
-    let listed = wait(&other, "sessions without a selection", |v| {
-        v.connected && !v.sessions.is_empty()
-    });
-    assert!(listed.selected_session.is_none() && listed.windows().is_empty());
-    // It lists their tabs all the same.
-    assert!(listed.sessions.iter().any(|s| !s.windows.is_empty()));
+    // A second window on the same session takes nothing from the first by showing it.
+    let other = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), Herald::new().0);
+    wait(&other, "another connection", |v| v.connected);
     send(&other, Action::SelectSession(session.clone()));
     wait(&other, "a session shown on request", |v| {
         v.panes().any(|p| p.frame.is_some())
     });
+    let clients = || {
+        let listed = call("session.list_clients", json!({"session_id": session}));
+        let clients = listed["clients"].as_array().unwrap().iter();
+        clients.filter(|c| c["info"]["name"] == "Rex Lite").count()
+    };
+    assert_eq!(clients(), 2);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(owned(&client.snapshot()) && !owned(&other.snapshot()));
+    // What it takes by using it comes back when it goes.
+    send(&other, Action::FocusPane { pane: pane.clone() });
+    wait(&other, "a pane taken", owned);
+    wait(&client, "a pane lost to another window", |v| !owned(v));
+    // A connection made again finds the client still in the session it had joined,
+    // and leaves it if that is no longer on show.
+    send(&other, Action::Reconnect);
     other.leave();
+    wait(&client, "a pane given back", owned);
+    wait(&other, "another window connected again", |v| v.connected);
+    assert_eq!(clients(), 1);
     assert!(other.snapshot().windows().is_empty());
     let stays_left = || {
         std::thread::sleep(Duration::from_millis(400));
@@ -449,4 +479,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     wait(&client, "that session ended", |v| {
         v.sessions.iter().all(|s| s.name != "Third")
     });
+    // The probe shows the first session as a window would, and sees its terminal.
+    let probed = rex_lite::backend::probe(endpoint, Duration::from_secs(12)).unwrap();
+    assert!(probed.contains("1 sessions") && !probed.contains(" 0 decoded"));
 }

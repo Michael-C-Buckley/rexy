@@ -92,3 +92,77 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
     assert_eq!(line("", "Thinking"), "Thinking");
     assert_eq!(line("", ""), "");
 }
+
+fn tab(id: &str) -> Window {
+    Window {
+        id: id.into(),
+        label: None,
+        focus: None,
+        zoomed: false,
+        panes: Vec::new(),
+        hidden: Vec::new(),
+    }
+}
+
+fn session(id: &str, active: Option<&str>, tabs: &[&str]) -> Session {
+    Session {
+        id: id.into(),
+        name: id.into(),
+        active: active.map(str::to_owned),
+        windows: tabs.iter().map(|id| tab(id)).collect(),
+    }
+}
+
+#[test]
+fn the_tab_on_show_is_the_servers_once_it_has_answered() {
+    let mut view = View {
+        sessions: vec![session("s", Some("b"), &["a", "b", "c"])],
+        selected_session: Some("s".into()),
+        ..Default::default()
+    };
+    let shown = |view: &mut View, asked: Option<&str>, answered| {
+        view.selected_window = asked.map(str::to_owned);
+        view.settle(answered);
+        view.selected_window.clone()
+    };
+    // With nothing asked for, the tab the server shows.
+    assert_eq!(shown(&mut view, None, false).as_deref(), Some("b"));
+    // A tab just asked for stays while the server has yet to answer, whatever an
+    // older word from it says, and gives way to the server's when it has.
+    assert_eq!(shown(&mut view, Some("c"), false).as_deref(), Some("c"));
+    assert_eq!(shown(&mut view, Some("c"), true).as_deref(), Some("b"));
+    // One that has closed does not stay, answered or not.
+    assert_eq!(shown(&mut view, Some("gone"), false).as_deref(), Some("b"));
+    // Nor does the server's, where the view held is yet to have it: then the first.
+    view.sessions[0].active = Some("gone".into());
+    assert_eq!(shown(&mut view, None, true).as_deref(), Some("a"));
+    view.sessions[0].windows.clear();
+    assert_eq!(shown(&mut view, Some("a"), false), None);
+    // A session that has ended is on show no longer, with its tab.
+    view.sessions.clear();
+    view.selected_window = Some("a".into());
+    view.settle(true);
+    assert_eq!((view.selected_session, view.selected_window), (None, None));
+}
+
+#[test]
+fn only_a_server_showing_nothing_is_asked_for_its_first_session() {
+    let mut view = View {
+        connected: true,
+        sessions: vec![session("s", None, &[]), session("t", None, &[])],
+        ..Default::default()
+    };
+    let first = |view: &View| match view.unshown() {
+        Some(Action::SelectSession(session)) => Some(session),
+        _ => None,
+    };
+    assert_eq!(first(&view).as_deref(), Some("s"));
+    view.selected_session = Some("t".into());
+    assert_eq!(first(&view), None);
+    view.selected_session = None;
+    view.connected = false;
+    assert_eq!(first(&view), None);
+    view.connected = true;
+    view.sessions.clear();
+    assert_eq!(first(&view), None);
+}

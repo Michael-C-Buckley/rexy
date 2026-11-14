@@ -279,9 +279,16 @@ pub async fn socket(target: &Target, path: &str, protocol: &str) -> Result<Socke
 }
 
 /// Open a WebSocket at the first of an endpoint's addresses that answers, and say
-/// which that was.
-async fn reach(endpoint: &str, path: &str, protocol: &str) -> Result<(Socket, Target)> {
-    let targets = targets(endpoint)?;
+/// which that was. The one that answered `last` time, if it is among them, is tried
+/// first: each of the others may take its full time to say nothing.
+async fn reach(
+    endpoint: &str,
+    last: Option<&Target>,
+    path: &str,
+    protocol: &str,
+) -> Result<(Socket, Target)> {
+    let mut targets = targets(endpoint)?;
+    targets.sort_by_key(|target| Some(target) != last);
     let several = targets.len() > 1;
     let mut failure = anyhow!("This endpoint has no address");
     for target in targets {
@@ -402,6 +409,9 @@ pub struct Control {
     pub rpc: Rpc,
     pub client_id: String,
     pub reconnect_token: Option<String>,
+    /// The server knew the token it was sent, and this is the client it was given
+    /// to, still in the session it had joined and owning what it owned.
+    pub resumed: bool,
     /// The one address that answered, of those the endpoint stood for. Terminal
     /// streams go straight to it.
     pub target: Target,
@@ -420,8 +430,14 @@ impl Drop for Control {
 }
 
 impl Control {
-    pub async fn connect(endpoint: &str, token: Option<&str>) -> Result<Self> {
-        let (mut socket, target) = reach(endpoint, "/api/control", CONTROL_PROTOCOL).await?;
+    /// Connect to an endpoint, at the address that answered `last` time if it is one
+    /// of its own, and as the client a `token` was given to if the server knows it.
+    pub async fn connect(
+        endpoint: &str,
+        token: Option<&str>,
+        last: Option<&Target>,
+    ) -> Result<Self> {
+        let (mut socket, target) = reach(endpoint, last, "/api/control", CONTROL_PROTOCOL).await?;
         let mut hello = json!({
             "type": "hello",
             "api_revision": 13,
@@ -486,6 +502,7 @@ impl Control {
             rpc: Rpc { requests },
             client_id,
             reconnect_token,
+            resumed: welcome["client"]["resumed"] == true,
             target,
             events,
             task,
@@ -508,34 +525,57 @@ impl Control {
 /// What the server says has changed, of the things this client keeps up with.
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    /// The sessions, their tabs and panes, or the host list.
-    Structure,
-    /// A terminal's title.
-    Title { block: String, title: String },
-    /// The program in a terminal's foreground, by the name `program` gives it, and
-    /// its process.
-    Program {
+    /// There is a new session, last of them all, with this name.
+    Created {
+        session: String,
+        name: String,
+    },
+    Destroyed {
+        session: String,
+    },
+    /// A session has moved to just before another, or to the end.
+    Moved {
+        session: String,
+        before: Option<String>,
+    },
+    /// What a session's view shows is at a new revision. Its name, its tabs, their
+    /// panes and who owns each are all in the view. The server sends news of each of
+    /// those as well, and one of these with it, which is the one to go by: the view
+    /// that comes of it is whole, and its revision says whether it is already held.
+    Viewed {
+        session: String,
+        revision: u64,
+    },
+    /// The host list has changed, to the one with this hash.
+    Hosts {
+        hash: String,
+    },
+    /// News of one terminal.
+    Block {
         block: String,
+        news: News,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum News {
+    /// Its title.
+    Title(String),
+    /// The program in its foreground, by the name `program` gives it, and its process.
+    Program {
         program: Option<Program>,
         pid: Option<u64>,
     },
-    /// What the programs in a terminal say they are doing.
-    Status { block: String },
-    /// A program in a terminal has copied text: all of it, or if it is long the
-    /// `id` to ask for it by.
-    Copied {
-        block: String,
-        text: Option<String>,
-        id: u64,
-    },
-    /// A program in a terminal has rung the bell.
-    Bell { block: String },
+    /// What its programs say they are doing: each record of it that has changed, by
+    /// its name and whole, or `None` for one that is no more.
+    Status(Vec<(String, Option<Value>)>),
+    /// A program in it has copied text: all of it, or if it is long the `id` to
+    /// ask for it by.
+    Copied { text: Option<String>, id: u64 },
+    /// A program in it has rung the bell.
+    Bell,
     /// One has a notice for the desktop. Either part of it may be empty.
-    Notice {
-        block: String,
-        title: String,
-        body: String,
-    },
+    Notice { title: String, body: String },
 }
 
 /// The icon of a process, if any of its names has one. The most telling come first:
@@ -559,53 +599,68 @@ pub fn shell(child: &Value) -> Option<u64> {
 
 fn event(message: &Value) -> Option<Event> {
     let event = &message["payload"];
-    let event = if event["type"] == "session_event" {
-        &event["payload"]["event"]
+    let (session, event) = if event["type"] == "session_event" {
+        let within = &event["payload"];
+        (within["session_id"].as_str(), &within["event"])
     } else {
-        event
+        (None, event)
     };
-    let block = &event["payload"];
-    let id = || block["block_id"].as_str().map(str::to_owned);
-    match (event["type"].as_str()?, block["name"].as_str()) {
-        (
-            "session_created"
-            | "session_destroyed"
-            | "session_moved"
-            | "session_label_changed"
-            | "session_view_changed"
-            | "hosts_changed"
-            | "block_closed"
-            | "block_owner_changed",
-            _,
-        ) => Some(Event::Structure),
-        ("block_event", Some("title_changed")) => Some(Event::Title {
-            block: id()?,
-            title: block["payload"]["title"].as_str()?.into(),
-        }),
-        ("block_event", Some("process_changed")) => Some(Event::Program {
-            block: id()?,
-            program: program(&block["payload"]["foreground"]),
-            pid: block["payload"]["foreground"]["pid"].as_u64(),
-        }),
-        ("block_event", Some("program_status_changed" | "program_status_removed")) => {
-            Some(Event::Status { block: id()? })
+    let fields = &event["payload"];
+    let text = |value: &Value| value.as_str().map(str::to_owned);
+    Some(match event["type"].as_str()? {
+        "session_created" => Event::Created {
+            session: text(&fields["session"]["session_id"])?,
+            name: text(&fields["session"]["label"]).unwrap_or_default(),
+        },
+        "session_destroyed" => Event::Destroyed {
+            session: text(&fields["session_id"])?,
+        },
+        "session_moved" => Event::Moved {
+            session: text(&fields["session_id"])?,
+            before: text(&fields["before_session_id"]),
+        },
+        "session_view_changed" => Event::Viewed {
+            session: session?.to_owned(),
+            revision: fields["revision"].as_u64()?,
+        },
+        "hosts_changed" => Event::Hosts {
+            hash: text(&fields["hash"])?,
+        },
+        "block_event" => Event::Block {
+            block: text(&fields["block_id"])?,
+            news: news(fields["name"].as_str()?, &fields["payload"])?,
+        },
+        _ => return None,
+    })
+}
+
+/// News of a terminal, by the name its creator gives that kind of news.
+fn news(name: &str, fields: &Value) -> Option<News> {
+    let text = |value: &Value| value.as_str().map(str::to_owned);
+    Some(match name {
+        "title_changed" => News::Title(text(&fields["title"])?),
+        "process_changed" => News::Program {
+            program: program(&fields["foreground"]),
+            pid: fields["foreground"]["pid"].as_u64(),
+        },
+        "program_status_changed" => {
+            News::Status(vec![(text(&fields["id"])?, Some(fields["record"].clone()))])
         }
-        ("block_event", Some("clipboard_written")) => Some(Event::Copied {
-            block: id()?,
-            text: block["payload"]["text"].as_str().map(str::to_owned),
-            id: block["payload"]["id"].as_u64().unwrap_or_default(),
-        }),
-        ("block_event", Some("bell")) => Some(Event::Bell { block: id()? }),
-        ("block_event", Some("desktop_notification")) => {
-            let text = |key| block["payload"][key].as_str().unwrap_or_default();
-            Some(Event::Notice {
-                block: id()?,
-                title: text("title").to_owned(),
-                body: text("body").to_owned(),
-            })
+        "program_status_removed" => {
+            let ids = fields["ids"].as_array()?.iter();
+            News::Status(ids.filter_map(|id| Some((text(id)?, None))).collect())
         }
-        _ => None,
-    }
+        "clipboard_written" => News::Copied {
+            text: text(&fields["text"]),
+            id: fields["id"].as_u64().unwrap_or_default(),
+        },
+        "bell" => News::Bell,
+        "desktop_notification" => News::Notice {
+            title: text(&fields["title"]).unwrap_or_default(),
+            body: text(&fields["body"]).unwrap_or_default(),
+        },
+        _ => return None,
+    })
 }
 
 fn response_result(message: &Value) -> Result<Value, String> {

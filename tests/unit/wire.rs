@@ -1,37 +1,91 @@
 use super::*;
 use futures_util::FutureExt;
 
+/// An event as the server sends one, of a session if it is of one.
+fn sent(session: Option<&str>, kind: &str, payload: Value) -> Value {
+    let event = json!({"type": kind, "payload": payload});
+    let event = match session {
+        Some(session) => {
+            let payload = json!({"session_id": session, "event": event});
+            json!({"type": "session_event", "payload": payload})
+        }
+        None => event,
+    };
+    json!({"type": "event", "seq": 7, "payload": event})
+}
+
 #[test]
-fn keeps_up_with_structure_titles_and_programs_and_nothing_else() {
-    let session = |event: Value| {
-        let payload = json!({"session_id": "s", "event": event});
-        json!({"type": "event", "payload": {"type": "session_event", "payload": payload}})
+fn keeps_up_with_sessions_and_their_views_by_what_the_news_carries() {
+    let created = json!({"session": {"session_id": "session:2", "label": "Second"}});
+    let created = event(&sent(None, "session_created", created));
+    let (session, name) = ("session:2".to_owned(), "Second".to_owned());
+    assert_eq!(created, Some(Event::Created { session, name }));
+    let destroyed = sent(None, "session_destroyed", json!({"session_id": "s"}));
+    let session = "s".to_owned();
+    assert_eq!(event(&destroyed), Some(Event::Destroyed { session }));
+    let moved = |payload: Value, before: Option<&str>| {
+        let (session, before) = ("s".to_owned(), before.map(str::to_owned));
+        let moved = event(&sent(None, "session_moved", payload));
+        assert_eq!(moved, Some(Event::Moved { session, before }));
     };
+    let before = json!({"session_id": "s", "before_session_id": "t"});
+    moved(before, Some("t"));
+    // Last of all, there is none it comes before.
+    moved(json!({"session_id": "s"}), None);
+    // A view's news is its revision, and the session is the one it came in.
+    let viewed = sent(Some("s"), "session_view_changed", json!({"revision": 16}));
+    let (session, revision) = ("s".to_owned(), 16);
+    assert_eq!(event(&viewed), Some(Event::Viewed { session, revision }));
+    let hosts = sent(None, "hosts_changed", json!({"hash": "4f53"}));
+    let hash = "4f53".to_owned();
+    assert_eq!(event(&hosts), Some(Event::Hosts { hash }));
+    // What a view holds is told by its revision, and is not taken twice.
+    let label = json!({"window_id": "w", "label": "Named"});
+    let owner = json!({"block_id": "b", "owner": "client:1", "reason": "take"});
+    for (kind, payload) in [
+        ("window_label_changed", label),
+        ("active_window_changed", json!({"window_id": "w"})),
+        ("session_label_changed", json!({"label": "Renamed"})),
+        ("block_owner_changed", owner),
+        ("block_closed", json!({"block_id": "b"})),
+        ("client_connected", json!({"client_id": "client:1"})),
+    ] {
+        assert_eq!(event(&sent(Some("s"), kind, payload)), None, "{kind}");
+    }
+    let joined = sent(None, "client_joined", json!({"client": {}}));
+    assert_eq!(event(&joined), None);
+}
+
+#[test]
+fn keeps_up_with_what_each_terminal_says_of_itself() {
     let block = |name: &str, payload: Value| {
-        let payload = json!({"block_id": "b", "name": name, "payload": payload});
-        session(json!({"type": "block_event", "payload": payload}))
+        let payload = json!({
+            "block_id": "b",
+            "creator_name": "com.superlogical.terminal",
+            "name": name,
+            "payload": payload,
+        });
+        event(&sent(Some("s"), "block_event", payload))
     };
-    let structure = session(json!({"type": "session_view_changed", "payload": {}}));
-    assert_eq!(event(&structure), Some(Event::Structure));
-    let created = json!({"payload": {"type": "session_created"}});
-    assert_eq!(event(&created), Some(Event::Structure));
-    let title = Event::Title {
-        block: "b".into(),
-        title: "vim".into(),
+    let news = |news| {
+        let block = "b".to_owned();
+        Some(Event::Block { block, news })
     };
-    let changed = block("title_changed", json!({"title": "vim"}));
-    assert_eq!(event(&changed), Some(title));
+    let owner = json!({"pid": 2455975, "name": "zsh"});
+    let changed = block(
+        "title_changed",
+        json!({"title": "ada@studio: ~", "owner": owner}),
+    );
+    assert_eq!(changed, news(News::Title("ada@studio: ~".into())));
     // A program has the icon of its script, of what it was started as, or of its executable.
     let program = |foreground: Value, icon: Option<&str>| {
         let pid = foreground["pid"].as_u64();
-        let event = event(&block("process_changed", json!({"foreground": foreground})));
-        let (block, program) = ("b".into(), Program::named(icon));
-        let program = Event::Program {
-            block,
-            program,
-            pid,
-        };
-        assert_eq!(event, Some(program));
+        let event = block(
+            "process_changed",
+            json!({"generation": 2, "foreground": foreground}),
+        );
+        let program = Program::named(icon);
+        assert_eq!(event, news(News::Program { program, pid }));
     };
     program(
         json!({"name": "2.1.325", "argv0": "claude"}),
@@ -45,30 +99,30 @@ fn keeps_up_with_structure_titles_and_programs_and_nothing_else() {
     assert_eq!(shell(&json!({"name": "zsh", "pid": 7})), Some(7));
     assert_eq!(shell(&json!({"name": "vim", "pid": 7})), None);
     program(Value::Null, None);
-    let status = Some(Event::Status { block: "b".into() });
-    assert_eq!(event(&block("program_status_changed", json!({}))), status);
-    assert_eq!(event(&block("program_status_removed", json!({}))), status);
+    // What a program reports comes whole, under its name, and what is cleared by
+    // name alone. The program's own record has no name.
+    let record = json!({"state": "blocked", "kind": "permission", "msg": "Run it?"});
+    let reported = json!({"id": "", "record": record, "reason": "report"});
+    let status = News::Status(vec![(String::new(), Some(record))]);
+    assert_eq!(block("program_status_changed", reported), news(status));
+    let cleared = json!({"ids": ["", "build/test"], "reason": "clear"});
+    let status = News::Status(vec![(String::new(), None), ("build/test".into(), None)]);
+    assert_eq!(block("program_status_removed", cleared), news(status));
     // Text a program copies comes with the news of it, unless it is long.
     let copied = |text: Option<&str>, id| {
-        let (block, text) = ("b".into(), text.map(str::to_owned));
-        Some(Event::Copied { block, text, id })
+        let text = text.map(str::to_owned);
+        news(News::Copied { text, id })
     };
-    let short = block("clipboard_written", json!({"text": "hello", "id": 3}));
-    assert_eq!(event(&short), copied(Some("hello"), 3));
-    let long = block("clipboard_written", json!({"id": 4, "bytes": 200_000}));
-    assert_eq!(event(&long), copied(None, 4));
+    let short = json!({"text": "hello", "id": 3, "bytes": 5});
+    assert_eq!(block("clipboard_written", short), copied(Some("hello"), 3));
+    let long = json!({"id": 4, "bytes": 200_000});
+    assert_eq!(block("clipboard_written", long), copied(None, 4));
     // A program may ring its terminal's bell, or have a notice for the desktop.
-    let bell = Some(Event::Bell { block: "b".into() });
-    assert_eq!(event(&block("bell", json!({}))), bell);
+    assert_eq!(block("bell", json!({})), news(News::Bell));
     let notice = block("desktop_notification", json!({"title": "", "body": "hi"}));
-    let said = Event::Notice {
-        block: "b".into(),
-        title: String::new(),
-        body: "hi".into(),
-    };
-    assert_eq!(event(&notice), Some(said));
-    assert_eq!(event(&block("size_changed", json!({}))), None);
-    assert_eq!(event(&json!({"payload": {"type": "client_joined"}})), None);
+    let (title, body) = (String::new(), "hi".to_owned());
+    assert_eq!(notice, news(News::Notice { title, body }));
+    assert_eq!(block("size_changed", json!({})), None);
 }
 
 #[tokio::test]
@@ -252,10 +306,10 @@ async fn answers_reach_their_askers_and_news_its_readers() {
     assert_eq!(link.asked().await, ("2".into(), "two".into()));
     // Answers come in any order, among news and things this client does not know.
     let response = |id: &str| json!({"type": "response", "id": id, "payload": {"for": id}});
-    let news = |name: &str| json!({"type": "event", "payload": {"type": name}});
     link.answer(response("2")).await;
-    link.answer(news("session_created")).await;
-    link.answer(news("client_joined")).await;
+    link.answer(sent(None, "hosts_changed", json!({"hash": "h"})))
+        .await;
+    link.answer(sent(None, "client_joined", json!({}))).await;
     link.answer(response("99")).await;
     link.answer(json!({"type": "later", "id": "1"})).await;
     let error = json!({"code": "not_found", "message": "No such session"});
@@ -264,7 +318,8 @@ async fn answers_reach_their_askers_and_news_its_readers() {
     assert_eq!(second.await.unwrap(), Ok(json!({"for": "2"})));
     let refused = Err("not_found: No such session".into());
     assert_eq!(first.await.unwrap(), refused);
-    assert_eq!(link.events.recv().await, Some(Event::Structure));
+    let hash = "h".to_owned();
+    assert_eq!(link.events.recv().await, Some(Event::Hosts { hash }));
     assert!(link.events.try_recv().is_err());
     assert!(!link.task.is_finished());
 }
@@ -479,8 +534,11 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     });
     let welcome = Message::Text(welcome.to_string().into());
     let server = tokio::spawn(serve(listener(), welcome));
-    let mut control = Control::connect(&endpoint, Some("last")).await.unwrap();
+    let connect = |token| Control::connect(&endpoint, token, None);
+    let mut control = connect(Some("last")).await.unwrap();
     assert_eq!(control.client_id, "client:1");
+    // Not the client its token was given to, unless the server says so.
+    assert!(!control.resumed);
     assert_eq!(control.reconnect_token.as_deref(), Some("next"));
     // The address that answered is where a terminal's stream is sent.
     assert_eq!(control.target, Target::Unix(path.clone()));
@@ -499,7 +557,7 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     let reason = "no common API revision: update the server";
     let refusal = Message::Close(close(1008, reason));
     let server = tokio::spawn(serve(listener(), refusal));
-    let Err(error) = Control::connect(&endpoint, None).await else {
+    let Err(error) = connect(None).await else {
         panic!("welcomed by a server that closed");
     };
     let refused = Ended::Incompatible(reason.into());
