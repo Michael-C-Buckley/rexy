@@ -1,5 +1,6 @@
 //! Rex WebSocket transport and bounded, pipelined control requests.
 // Protocol interoperability informed by rexrs and rex-rune (MIT); see THIRD_PARTY.md.
+use crate::program::Program;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, StreamExt};
@@ -18,6 +19,7 @@ use tokio_tungstenite::{
 };
 
 pub const DATA_PROTOCOL: &str = "rex.data.terminal.v1";
+pub const ENDED: &str = "Rex control connection ended";
 const CONTROL_PROTOCOL: &str = "rex.control.v1";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_IN_FLIGHT: usize = 64;
@@ -161,15 +163,13 @@ impl Rpc {
                 reply,
             })
             .await
-            .map_err(|_| anyhow!("Rex control connection ended"))?;
+            .map_err(|_| anyhow!(ENDED))?;
         Ok(rx)
     }
 
     pub async fn call(&self, method: &str, payload: Value) -> Result<Value> {
         let rx = self.enqueue(method, payload).await?;
-        rx.await
-            .context("Rex control connection ended")?
-            .map_err(anyhow::Error::msg)
+        rx.await.context(ENDED)?.map_err(anyhow::Error::msg)
     }
 }
 
@@ -177,7 +177,9 @@ pub struct Control {
     pub rpc: Rpc,
     pub client_id: String,
     pub reconnect_token: Option<String>,
-    pub changes: mpsc::Receiver<()>,
+    /// Unbounded, so that reading replies never waits on whoever reads these. The
+    /// server ends a connection that falls far behind.
+    pub events: mpsc::UnboundedReceiver<Event>,
     pub task: tokio::task::JoinHandle<Result<()>>,
 }
 
@@ -231,38 +233,76 @@ impl Control {
             .as_u64()
             .unwrap_or(65536) as usize;
         let (requests, receiver) = mpsc::channel(MAX_IN_FLIGHT);
-        let (changes_tx, changes) = mpsc::channel(1);
-        let task = tokio::spawn(control_loop(socket, receiver, changes_tx, max_message));
+        let (sender, events) = mpsc::unbounded_channel();
+        let task = tokio::spawn(control_loop(socket, receiver, sender, max_message));
         Ok(Self {
             rpc: Rpc { requests },
             client_id,
             reconnect_token,
-            changes,
+            events,
             task,
         })
     }
 }
 
-fn structure_changed(message: &Value) -> bool {
+/// What the server says has changed, of the things this client keeps up with.
+#[derive(Debug, PartialEq)]
+pub enum Event {
+    /// The sessions, their tabs and panes, or the host list.
+    Structure,
+    /// A terminal's title.
+    Title { block: String, title: String },
+    /// The program in a terminal's foreground, by the name `program` gives it.
+    Program {
+        block: String,
+        program: Option<Program>,
+    },
+    /// What the programs in a terminal say they are doing.
+    Status { block: String },
+}
+
+/// The icon of a process, if any of its names has one. The most telling come first:
+/// the script it runs, what it was started as, and its executable, which may be a
+/// file named for its version.
+pub fn program(process: &Value) -> Option<Program> {
+    let named = ["script", "argv0", "name"].map(|key| process[key].as_str());
+    Program::named(named.into_iter().flatten())
+}
+
+fn event(message: &Value) -> Option<Event> {
     let event = &message["payload"];
-    let name = if event["type"] == "session_event" {
-        event["payload"]["event"]["type"].as_str()
+    let event = if event["type"] == "session_event" {
+        &event["payload"]["event"]
     } else {
-        event["type"].as_str()
+        event
     };
-    matches!(
-        name,
-        Some(
+    let block = &event["payload"];
+    let id = || block["block_id"].as_str().map(str::to_owned);
+    match (event["type"].as_str()?, block["name"].as_str()) {
+        (
             "session_created"
-                | "session_destroyed"
-                | "session_moved"
-                | "session_label_changed"
-                | "session_view_changed"
-                | "hosts_changed"
-                | "block_closed"
-                | "block_owner_changed"
-        )
-    )
+            | "session_destroyed"
+            | "session_moved"
+            | "session_label_changed"
+            | "session_view_changed"
+            | "hosts_changed"
+            | "block_closed"
+            | "block_owner_changed",
+            _,
+        ) => Some(Event::Structure),
+        ("block_event", Some("title_changed")) => Some(Event::Title {
+            block: id()?,
+            title: block["payload"]["title"].as_str()?.into(),
+        }),
+        ("block_event", Some("process_changed")) => Some(Event::Program {
+            block: id()?,
+            program: program(&block["payload"]["foreground"]),
+        }),
+        ("block_event", Some("program_status_changed" | "program_status_removed")) => {
+            Some(Event::Status { block: id()? })
+        }
+        _ => None,
+    }
 }
 
 fn response_result(message: &Value) -> Result<Value, String> {
@@ -280,7 +320,7 @@ fn response_result(message: &Value) -> Result<Value, String> {
 async fn control_loop(
     mut socket: Socket,
     mut outgoing: mpsc::Receiver<Request>,
-    changes: mpsc::Sender<()>,
+    events: mpsc::UnboundedSender<Event>,
     max_message: usize,
 ) -> Result<()> {
     let mut pending: HashMap<String, (Instant, Reply)> = HashMap::new();
@@ -316,8 +356,10 @@ async fn control_loop(
                     if let Some((_, reply)) = reply {
                         let _ = reply.send(response_result(&message));
                     }
-                } else if message["type"] == "event" && structure_changed(&message) {
-                    let _ = changes.try_send(());
+                } else if message["type"] == "event"
+                    && let Some(event) = event(&message)
+                {
+                    let _ = events.send(event);
                 }
             }
             _ = clock.tick(), if !pending.is_empty() => {

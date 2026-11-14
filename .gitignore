@@ -3,3 +3,6 @@
 *.log
 
 __pycache__/
+
+# Not ours to publish: see assets/icons/NOTICE.md.
+/assets/icons/*.svg

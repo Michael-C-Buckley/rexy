@@ -1,6 +1,6 @@
 # Rex Lite
 
-A small native Linux client for [Rex](https://www.superlogical.com/rex). Rust 1.100, egui, and libghostty. A quiet sidebar of servers and their sessions, one row of tabs, and the terminal, set in Inter and JetBrains Mono.
+A small native Linux client for [Rex](https://www.superlogical.com/rex). Rust 1.100, egui, and libghostty. Your servers, their sessions and their tabs in a quiet sidebar, or tabs along the top if you would rather, and the terminal, set in Inter and JetBrains Mono.
 
 Early working client. Closing the window leaves server sessions running. Connecting never starts or installs a server.
 
@@ -44,18 +44,23 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## Controls
 
-- Click a session or tab to switch. `+` beside a server creates a session there, which the server names; `+` in the toolbar creates a tab, and the two buttons beside it split the focused pane right or down.
+- The sidebar lists every server, its sessions, and each session's tabs. Click a tab to show it, wherever it is. `+` beside a server creates a session there, which the server names. Pointing at a session shows `+` for a new tab in it and `×` to close it; pointing at a tab shows `×` to close it. Closing a tab happens at once; a session's `×` asks for a second press.
+- **Ctrl Shift B** hides the sidebar and puts the tabs along the top instead. The button at their left lists the sessions on every server: type to find one, walk the list with the arrow keys, and press **Enter** to show the one picked out. A name that finds nothing creates a session with that name; `+` beside a server creates it there.
+- Right-click a session or a tab to rename it, move it, or close it. Double-click renames too, and dragging moves it among its like. A tab nobody has named goes by its terminal's title; renaming one to nothing gives it back that name.
+- The icon before a tab's name is that of the program in its foreground: Claude Code, Neovim, Python and some 150 more, from Rex's own icon set. A shell's prompt stands for shells and for programs without an icon. The set is Superlogical's and is not kept in this repository: run `./scripts/icons` once before building to fetch it, or every tab shows the prompt.
+- A dot marks a tab whose program says it is working (blue) or waiting for you (amber). Programs say so with OSC 7501, as Rex's own tools do. **Mute Tab**, in a tab's menu, silences its dot. Muted tabs are remembered on this computer, in `rex-lite/muted` under `$XDG_STATE_HOME` or `~/.local/state`, and no server is told.
+- The two buttons at the top split the focused pane right or down.
 - Click a pane to focus it. Input and focus take ownership; only owned panes are resized.
 - Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes. **Shift** overrides a program's mouse capture for selection and scrollback.
-- **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: toggle sidebar.
+- **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: sidebar, or tabs along the top.
 - **Ctrl + / - / 0**: terminal font size. **Esc** clears selection.
 - The pane menu also offers copy/paste. **Ctrl C** still interrupts terminal programs.
 - Nothing is shown while all is well. A lost connection says so above the last screen, and a failed action says so briefly at the foot of the window.
-- The terminal keeps the colours Rex gives it. The toolbar takes a dark terminal's background, so the two read as one surface.
+- The terminal keeps the colours Rex gives it. The tabs along the top and the headers of split panes take a dark terminal's background, so they read as one surface with it.
 
 ## What is here
 
-Several servers at once, over Unix sockets and SSH. Session switching, server-defined tabs and splits, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing, and a host address without a scheme, such as a Tailscale name, is not understood yet.
+Several servers at once, over Unix sockets and SSH. Sessions and tabs can be created, renamed, reordered and closed. Server-defined tabs and splits, live terminal titles, foreground programs and program status, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing, and a host address without a scheme, such as a Tailscale name, is not understood yet.
 
 This first version does not include terminal search, adding or editing hosts from the window, installing Rex on another machine, image rendering, drag-to-resize splits, full Rex keymap/action compatibility, or persistent appearance preferences. Keyboard layouts and IMEs need broader hands-on testing. It targets Linux; other platforms are not claimed.
 
@@ -85,7 +90,7 @@ The complete live/native check creates its own disposable Rex server, Xvfb displ
 python3 tests/smoke.py
 ```
 
-This additionally needs `rex`, `Xvfb`, `dbus-run-session`, ImageMagick's `import` (for optional screenshots), and the X11/XTest libraries. It checks real typing, Ctrl+C, selection/copy/paste, and typing immediately after clearing a selection. This is X11 validation; Wayland still needs a hands-on check.
+This additionally needs `rex`, `Xvfb`, `dbus-run-session`, ImageMagick's `import` (for optional screenshots), and the X11/XTest libraries. It checks real typing, Ctrl+C, selection/copy/paste, and typing immediately after clearing a selection. This is X11 validation; Wayland is checked by hand.
 
 For a backend-only run, `tests/live.rs` is opt-in and requires `REX_LITE_TEST_SERVER` pointing to a disposable Unix socket under this project's `work/` directory. It sends input and creates panes/tabs; never aim it at personal sessions.
 

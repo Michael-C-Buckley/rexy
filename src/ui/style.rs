@@ -1,10 +1,13 @@
 //! The look: a neutral dark palette, a few flat controls, Inter and JetBrains Mono.
 use std::sync::Arc;
 
+use crate::program::Program;
 use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Pos2, Rect, Sense, Stroke,
     StrokeKind, Vec2,
+    emath::GuiRounding,
     epaint::text::{FontTweak, VariationCoords},
+    text::{LayoutJob, TextWrapping},
 };
 
 /// The ground where no terminal lends its own.
@@ -15,6 +18,8 @@ pub const TEXT: Color32 = Color32::WHITE;
 pub const DIM: Color32 = white(140);
 pub const BORDER: Color32 = white(24);
 pub const ACCENT: Color32 = Color32::from_rgb(0x35, 0x84, 0xe4);
+/// Something is waiting for the user.
+pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x2e);
 /// Fills of flat controls: under the pointer, selected, and pressed.
 pub const HOVER: Color32 = white(18);
 pub const ACTIVE: Color32 = white(28);
@@ -29,6 +34,8 @@ pub const TOOLBAR: f32 = 44.0;
 pub const BODY: f32 = 14.5;
 pub const SMALL: f32 = 12.5;
 const RADIUS: u8 = 6;
+/// The side of a program's icon.
+const GLYPH: f32 = 16.0;
 
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
@@ -38,7 +45,7 @@ pub fn mono_bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("mono-bold".into()))
 }
 
-/// The toolbar takes a dark terminal's background, so the two read as one surface.
+/// What surrounds a dark terminal takes its background, so the two read as one surface.
 /// Its light ink would be lost on a light background, which stays the terminal's alone.
 pub fn ground(terminal: Color32) -> Color32 {
     let [r, g, b, _] = terminal.to_array().map(u32::from);
@@ -132,6 +139,13 @@ pub enum Icon {
     SplitRight,
     SplitDown,
     Retry,
+    Close,
+    Down,
+    /// A shell's, for a program whose icon is not at hand.
+    Prompt,
+    Dot,
+    /// A dot that has been silenced.
+    Muted,
 }
 
 impl Icon {
@@ -161,6 +175,26 @@ impl Icon {
                 window();
                 line([-7.0, 0.0], [7.0, 0.0]);
             }
+            Icon::Close => {
+                line([-4.0, -4.0], [4.0, 4.0]);
+                line([-4.0, 4.0], [4.0, -4.0]);
+            }
+            Icon::Down => {
+                line([-4.0, -2.0], [0.0, 2.0]);
+                line([0.0, 2.0], [4.0, -2.0]);
+            }
+            Icon::Prompt => {
+                line([-6.0, -4.0], [-2.0, 0.0]);
+                line([-2.0, 0.0], [-6.0, 4.0]);
+                line([0.5, 4.5], [6.0, 4.5]);
+            }
+            Icon::Dot => {
+                painter.circle_filled(center, 3.5, color);
+            }
+            Icon::Muted => {
+                painter.circle_stroke(center, 3.5, stroke);
+                line([-5.0, 5.0], [5.0, -5.0]);
+            }
             Icon::Retry => {
                 // Most of a circle, clockwise, ending in an arrowhead on the right.
                 let arc = (4..=24).map(|step| {
@@ -175,9 +209,52 @@ impl Icon {
     }
 }
 
+/// Draw a program's icon in one colour, as sharp as the screen allows.
+fn glyph(painter: &egui::Painter, program: Program, left: Pos2, color: Color32) {
+    let Some(drawing) = program.drawing() else {
+        return Icon::Prompt.paint(painter, left + egui::vec2(GLYPH / 2.0, 0.0), color);
+    };
+    let ctx = painter.ctx();
+    let scale = ctx.pixels_per_point();
+    let pixels = (GLYPH * scale).round() as usize;
+    let key = egui::Id::unique((program.name(), pixels));
+    let texture = ctx.data(|data| data.get_temp::<egui::TextureHandle>(key));
+    let texture = texture.unwrap_or_else(|| {
+        let image = raster(drawing, pixels);
+        let texture = ctx.load_texture(program.name(), image, egui::TextureOptions::LINEAR);
+        ctx.data_mut(|data| data.insert_temp(key, texture.clone()));
+        texture
+    });
+    // One texel to a pixel: an icon that straddles pixels blurs.
+    let corner = (left - egui::vec2(0.0, GLYPH / 2.0)).round_to_pixels(scale);
+    let rect = Rect::from_min_size(corner, Vec2::splat(pixels as f32 / scale));
+    let whole = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
+    painter.image(texture.id(), rect, whole, color);
+}
+
+/// An icon as a mask: white, as opaque as its drawing is anywhere.
+fn raster(drawing: &str, pixels: usize) -> egui::ColorImage {
+    use resvg::{tiny_skia, usvg};
+    let tree = usvg::Tree::from_str(drawing, &usvg::Options::default());
+    let tree = tree.expect("a bundled icon is sound");
+    let side = pixels as u32;
+    let mut canvas = tiny_skia::Pixmap::new(side, side).expect("an icon has a size");
+    let scale = pixels as f32 / tree.size().width();
+    let scale = tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, scale, &mut canvas.as_mut());
+    let ink = canvas.pixels().iter();
+    let ink = ink.map(|pixel| Color32::from_white_alpha(pixel.alpha()));
+    egui::ColorImage::new([pixels; 2], ink.collect())
+}
+
 /// A flat button that draws its own symbol.
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+    paint_button(ui, rect, &response, icon);
+    response.on_hover_text(tip)
+}
+
+fn paint_button(ui: &egui::Ui, rect: Rect, response: &egui::Response, icon: Icon) {
     let fill = if response.is_pointer_button_down_on() {
         PRESSED
     } else if response.hovered() {
@@ -188,36 +265,96 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
     ui.painter().rect_filled(rect, RADIUS, fill);
     let color = if ui.is_enabled() { DIM } else { white(56) };
     icon.paint(ui.painter(), rect.center(), color);
-    response.on_hover_text(tip)
 }
 
 /// A sidebar row or a tab: flat, and filled when selected or under the pointer.
-pub fn item(
-    ui: &mut egui::Ui,
-    size: Vec2,
-    label: &str,
-    selected: bool,
-    align: Align,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let (fill, color) = if selected {
-        (ACTIVE, TEXT)
-    } else if response.hovered() {
-        (HOVER, TEXT)
+#[derive(Default)]
+pub struct Item<'a> {
+    pub label: &'a str,
+    /// The icon of its program, ahead of the label.
+    pub icon: Option<Program>,
+    pub selected: bool,
+    pub align: Align,
+    /// A lesser row that heads the rows beneath it.
+    pub caption: bool,
+    /// It opens a list.
+    pub menu: bool,
+    /// A mark at its trailing edge.
+    pub mark: Option<(Icon, Color32)>,
+    /// Small buttons that take the mark's place while the pointer is on the row.
+    pub buttons: &'a [(Icon, &'a str)],
+    /// It can be dragged to another place among its like.
+    pub movable: bool,
+}
+
+/// Draw a row. Returns its response, and which of its buttons was pressed.
+pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, Option<usize>) {
+    const BUTTON: f32 = 24.0;
+    const ICON: f32 = GLYPH + 7.0;
+    let sense = if item.movable {
+        Sense::click_and_drag()
     } else {
-        (Color32::TRANSPARENT, white(190))
+        Sense::click()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    // While anything is dragged, only it is lit, and no row offers its buttons.
+    let dragging = ui.ctx().dragged_id().is_some();
+    let over = response.dragged() || (!dragging && ui.rect_contains_pointer(rect));
+    let (fill, color) = match (item.selected, over, item.caption) {
+        (true, ..) => (ACTIVE, TEXT),
+        (_, true, _) => (HOVER, TEXT),
+        (_, _, true) => (Color32::TRANSPARENT, DIM),
+        _ => (Color32::TRANSPARENT, white(190)),
     };
     ui.painter().rect_filled(rect, RADIUS, fill);
-    let text = rect.shrink2(egui::vec2(12.0, 0.0));
-    let anchor = Align2([align, Align::Center]);
-    ui.painter().with_clip_rect(text).text(
-        anchor.pos_in_rect(&text),
-        anchor,
-        label,
-        FontId::proportional(BODY),
-        color,
-    );
-    response
+    // Room at the trailing edge is the label's to lose, so that it never moves.
+    let marks = f32::from(u8::from(item.mark.is_some()) + u8::from(item.menu));
+    let room = (12.0 + 14.0 * marks).max(4.0 + BUTTON * item.buttons.len() as f32);
+    let mut text = rect.shrink2(egui::vec2(12.0, 0.0));
+    text.max.x = rect.right() - room;
+    if item.align == Align::Center {
+        text.min.x = rect.left() + room;
+    }
+    let lead = if item.icon.is_some() { ICON } else { 0.0 };
+    // A name too long for its row ends in an ellipsis.
+    let size = if item.caption { SMALL } else { BODY };
+    let mut label =
+        LayoutJob::simple_singleline(item.label.to_owned(), FontId::proportional(size), color);
+    label.wrap = TextWrapping::truncate_at_width(text.width() - lead);
+    let label = ui.painter().layout_job(label);
+    let anchor = Align2([item.align, Align::Center]);
+    let place = anchor.align_size_within_rect(label.size() + egui::vec2(lead, 0.0), text);
+    if let Some(program) = item.icon {
+        let left = egui::pos2(place.left(), rect.center().y);
+        let color = if item.selected { TEXT } else { DIM };
+        glyph(ui.painter(), program, left, color);
+    }
+    ui.painter()
+        .galley(place.min + egui::vec2(lead, 0.0), label, color);
+    let mut pressed = None;
+    if over && !dragging && !item.buttons.is_empty() {
+        let mut right = rect.right() - 4.0;
+        for (index, (icon, tip)) in item.buttons.iter().enumerate().rev() {
+            let center = egui::pos2(right - BUTTON / 2.0, rect.center().y);
+            let button = Rect::from_center_size(center, Vec2::splat(BUTTON));
+            let button_response = ui.interact(button, response.id.with(index), Sense::click());
+            paint_button(ui, button, &button_response, *icon);
+            if button_response.on_hover_text(*tip).clicked() {
+                pressed = Some(index);
+            }
+            right -= BUTTON;
+        }
+    } else {
+        let mut center = egui::pos2(rect.right() - 16.0, rect.center().y);
+        if item.menu {
+            Icon::Down.paint(ui.painter(), center, DIM);
+            center.x -= 14.0;
+        }
+        if let Some((mark, color)) = item.mark {
+            mark.paint(ui.painter(), center, color);
+        }
+    }
+    (response, pressed)
 }
 
 /// The one prominent action of a page or dialog.

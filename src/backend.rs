@@ -1,9 +1,10 @@
 //! A thin Rex client: one I/O runtime, bounded actions, separate terminal CPU workers.
 use crate::{
-    model::{self, Action, Direction, Host, Pane, Session, View, Window},
+    model::{self, Action, Activity, Direction, Edit, Host, Pane, Session, View, Window},
+    program::Program,
     ssh,
     terminal::{Notify, TerminalHandle},
-    wire::{self, Control, Response, Rpc},
+    wire::{self, Control, ENDED, Event, Response, Rpc},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use futures_util::{StreamExt, stream::FuturesUnordered};
@@ -25,6 +26,9 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// may come to refuse the address it comes from.
 const RECONNECT: [Duration; 2] = [RETRY_DELAY, Duration::from_secs(15)];
 const FULL: [f32; 4] = [0., 0., 1., 1.];
+const TITLE: &str = "com.superlogical.terminal.title";
+const PROCESS: &str = "com.superlogical.terminal.process";
+const STATUS: &str = "com.superlogical.terminal.program_status";
 static NULL: Value = Value::Null;
 
 /// Coalesces repaint requests until the UI takes its next snapshot.
@@ -69,9 +73,6 @@ impl Shared {
     }
     fn fail(&self, error: String) {
         self.change(|s| s.view.error = Some(error));
-    }
-    fn selected(&self) -> Option<String> {
-        self.lock().view.selected_session.clone()
     }
     fn terminal(&self, pane: &str) -> Option<TerminalHandle> {
         self.lock().terminals.get(pane).cloned()
@@ -149,18 +150,24 @@ impl Client {
         if !state.view.connected && !matches!(action, Action::Reconnect) {
             return Err("Disconnected; input was not sent".into());
         }
-        let selected = match &action {
-            Action::SelectWindow(id) => Some(id.clone()),
+        let shown = match &action {
+            Action::SelectSession(session) => Some((session.clone(), None)),
+            Action::SelectWindow { session, window } => {
+                Some((session.clone(), Some(window.clone())))
+            }
             _ => None,
         };
         self.actions
             .try_send(action)
             .map_err(|e| format!("Input not sent: {e}"))?;
-        // Show the tab at once; the server's view follows.
-        if let Some(id) = selected
-            && state.view.windows.iter().any(|w| w.id == id)
+        // Show it at once; the server's view follows.
+        if let Some((id, window)) = shown
+            && let Some(session) = state.view.sessions.iter().find(|s| s.id == id)
         {
-            state.view.selected_window = Some(id);
+            let window = window.or_else(|| session.active.clone());
+            state.away = false;
+            state.view.selected_session = Some(id);
+            state.view.selected_window = window;
             drop(state);
             self.shared.wake.notify();
         }
@@ -172,11 +179,8 @@ impl Client {
         let mut state = self.shared.lock();
         state.away = true;
         state.view.selected_window = None;
-        state.view.windows.clear();
-        if let Some(session) = state.view.selected_session.take()
-            && state.view.connected
-        {
-            let _ = self.actions.try_send(Action::Leave(session));
+        if state.view.selected_session.take().is_some() && state.view.connected {
+            let _ = self.actions.try_send(Action::Leave);
         }
     }
 
@@ -272,6 +276,9 @@ async fn run_connected(
         shared,
         rpc: control.rpc.clone(),
         client_id: control.client_id.clone(),
+        attached: None,
+        blocks: HashMap::new(),
+        stale: HashSet::new(),
         streams: HashMap::new(),
     };
     connection.refresh().await?;
@@ -287,14 +294,21 @@ async fn run_connected(
             result = &mut control.task => {
                 return result.context("Rex control worker stopped")?;
             }
-            changed = control.changes.recv() => {
-                ensure!(changed.is_some(), "Rex control connection ended");
-                dirty = true;
-            }
-            _ = refresh.tick(), if dirty => {
-                dirty = false;
-                connection.refresh().await?;
-                connection.reconcile();
+            event = control.events.recv() => match event.context(ENDED)? {
+                Event::Structure => dirty = true,
+                Event::Title { block, title } => connection.note(&block, |b| b.title = title),
+                Event::Program { block, program } => connection.note(&block, |b| b.process = program),
+                Event::Status { block } => {
+                    connection.stale.insert(block);
+                }
+            },
+            _ = refresh.tick(), if dirty || !connection.stale.is_empty() => {
+                if std::mem::take(&mut dirty) {
+                    connection.refresh().await?;
+                    connection.reconcile();
+                } else {
+                    connection.statuses().await?;
+                }
             }
             action = actions.recv(), if replies.len() < 64 => {
                 let Some(action) = action else { return Ok(()) };
@@ -323,8 +337,24 @@ struct Connection<'a> {
     shared: &'a Shared,
     rpc: Rpc,
     client_id: String,
+    /// The session this connection has joined: the one on show.
+    attached: Option<String>,
+    /// What is known of every terminal on the server, shown or not.
+    blocks: HashMap<String, Block>,
+    /// Terminals whose programs have reported since they were last asked.
+    stale: HashSet<String>,
     /// One stream per pane of the visible tab.
     streams: HashMap<String, JoinHandle<()>>,
+}
+
+struct Block {
+    session: String,
+    title: String,
+    /// The icon of the program in its foreground, if it has one.
+    process: Option<Program>,
+    /// That of a program reporting its status, which tells more, while one is.
+    app: Option<Program>,
+    activity: Activity,
 }
 
 impl Drop for Connection<'_> {
@@ -336,7 +366,7 @@ impl Drop for Connection<'_> {
 }
 
 impl Connection<'_> {
-    async fn refresh(&self) -> Result<()> {
+    async fn refresh(&mut self) -> Result<()> {
         // A server too old to keep a host list simply has none.
         if let Ok(result) = self.rpc.call("hosts.list", json!({})).await {
             let hosts = items(&result["hosts"]).filter_map(|host| {
@@ -349,74 +379,173 @@ impl Connection<'_> {
             let hosts = hosts.collect();
             self.shared.change(|s| s.view.hosts = hosts);
         }
-        self.list_sessions().await?;
-        if let Some(session) = self.shared.selected() {
-            // Attach is idempotent and keeps newly selected sessions joined after deletion/reconnect.
-            self.attach(&session).await?;
-        }
-        Ok(())
+        self.sessions(None).await
     }
 
-    async fn list_sessions(&self) -> Result<()> {
-        let result = self
-            .rpc
-            .call("session.attach_all", json!({"event_scope": "session"}))
-            .await?;
-        let sessions: Vec<_> = items(&result["sessions"])
+    /// Adopt the server's sessions and their tabs, and join the one on show: `show`
+    /// if it is given, or else the one already on show.
+    async fn sessions(&mut self, show: Option<&str>) -> Result<()> {
+        // Events of every session, so that tabs not on show keep their titles too.
+        let scope = json!({"event_scope": "all"});
+        let listed = self.rpc.call("session.attach_all", scope).await?;
+        let mut sessions: Vec<_> = items(&listed["sessions"])
             .filter_map(|s| {
                 Some(Session {
                     id: s["session_id"].as_str()?.into(),
                     name: label(&s["label"], "Untitled"),
+                    active: None,
+                    windows: Vec::new(),
                 })
             })
             .collect();
-        self.shared.change(|s| {
-            let selected = s.view.selected_session.as_ref();
-            if !sessions.iter().any(|x| Some(&x.id) == selected) {
-                let first = sessions.first().filter(|_| !s.away);
-                s.view.selected_session = first.map(|x| x.id.clone());
-                s.view.selected_window = None;
-                s.view.windows.clear();
-            }
-            s.view.sessions = sessions;
+        let listed = |id: &str| sessions.iter().any(|s| s.id == id);
+        let shown = show.filter(|id| listed(id)).map(str::to_owned);
+        let attached = shown.clone().or_else(|| {
+            let state = self.shared.lock();
+            let selected = state.view.selected_session.clone();
+            // Failing that the first, unless the UI is showing another server.
+            let first = || sessions.first().filter(|_| !state.away);
+            selected
+                .filter(|id| listed(id))
+                .or_else(|| first().map(|s| s.id.clone()))
         });
+        // Joining is idempotent. The other sessions are only looked at.
+        let mut views = Vec::new();
+        for session in &sessions {
+            let method = if Some(&session.id) == attached.as_ref() {
+                "session.attach"
+            } else {
+                "session.view"
+            };
+            let request = json!({"session_id": session.id});
+            views.push(self.rpc.enqueue(method, request).await?);
+        }
+        for (session, view) in sessions.iter_mut().zip(views) {
+            // One that ended a moment ago has no tabs.
+            let Ok(view) = view.await.context(ENDED)? else {
+                continue;
+            };
+            let view = view.get("view").unwrap_or(&view);
+            session.active = view["active_window_id"].as_str().map(str::to_owned);
+            session.windows = parse_windows(view, &self.client_id);
+        }
+        self.learn(&sessions).await?;
+        self.statuses().await?;
+        fill(&mut sessions, &self.blocks);
+        self.shared.change(|s| {
+            let view = &mut s.view;
+            let selected = view.selected_session.as_ref();
+            if shown.is_some() || !sessions.iter().any(|x| Some(&x.id) == selected) {
+                // Not if the UI left for another server while the replies were on their way.
+                view.selected_session = attached.clone().filter(|_| !s.away);
+                view.selected_window = None;
+            }
+            // The tab on show is the one the server says, for every client alike.
+            let session = sessions.iter().find(|x| Some(&x.id) == attached.as_ref());
+            if let Some(session) = session.filter(|_| view.selected_session == attached) {
+                let first = || session.windows.first().map(|w| w.id.clone());
+                view.selected_window = session.active.clone().or_else(first);
+            }
+            view.sessions = sessions;
+        });
+        // Watch only the session on show.
+        let previous = std::mem::replace(&mut self.attached, attached);
+        if let Some(previous) = previous.filter(|id| Some(id) != self.attached.as_ref()) {
+            let request = json!({"session_id": previous});
+            let _ = self.rpc.call("session.detach", request).await;
+        }
         Ok(())
     }
 
-    /// Join a session and adopt the server's view of it.
-    async fn attach(&self, session: &str) -> Result<()> {
-        let reply = self
-            .rpc
-            .call("session.attach", json!({"session_id": session}))
-            .await?;
-        let view = &reply["view"];
-        let windows = parse_windows(view, &self.client_id);
-        let selected = view["active_window_id"]
-            .as_str()
-            .map(str::to_owned)
-            .or_else(|| windows.first().map(|w| w.id.clone()));
-        self.shared.change(|s| {
-            // Not if the UI left for another server while the reply was on its way.
-            if !s.away {
-                s.view.selected_session = Some(session.into());
-                s.view.selected_window = selected;
-                s.view.windows = windows;
-            }
-        });
+    /// Ask of each terminal not seen before its title and its program, and forget
+    /// those that are gone.
+    async fn learn(&mut self, sessions: &[Session]) -> Result<()> {
+        let panes = || {
+            sessions.iter().flat_map(|session| {
+                let panes = session.windows.iter().flat_map(|w| &w.panes);
+                panes.map(move |pane| (&session.id, &pane.id))
+            })
+        };
+        let mut asked = Vec::new();
+        for (session, pane) in panes().filter(|(_, pane)| !self.blocks.contains_key(*pane)) {
+            let request = json!({"session_id": session, "block_id": pane, "args": {}});
+            let title = self.rpc.enqueue(TITLE, request.clone()).await?;
+            let process = self.rpc.enqueue(PROCESS, request).await?;
+            asked.push((session, pane, title, process));
+        }
+        for (session, pane, title, process) in asked {
+            // A server too old to be asked has nothing to say.
+            let title = title.await.context(ENDED)?.unwrap_or_default();
+            let process = process.await.context(ENDED)?.unwrap_or_default();
+            let block = Block {
+                session: session.clone(),
+                title: title["title"].as_str().unwrap_or_default().into(),
+                process: wire::program(&process["foreground"]),
+                app: None,
+                activity: Activity::Idle,
+            };
+            self.blocks.insert(pane.clone(), block);
+            self.stale.insert(pane.clone());
+        }
+        let seen: HashSet<_> = panes().map(|(_, pane)| pane).collect();
+        self.blocks.retain(|id, _| seen.contains(id));
         Ok(())
     }
 
-    /// Show a session the UI asked for, wherever it was looking before.
-    async fn select(&self, session: &str) -> Result<()> {
-        self.shared.lock().away = false;
-        self.attach(session).await
+    /// Ask what the programs say they are doing, in each terminal that has
+    /// reported since it was last asked.
+    async fn statuses(&mut self) -> Result<()> {
+        let mut replies = Vec::new();
+        for id in std::mem::take(&mut self.stale) {
+            let Some(block) = self.blocks.get(&id) else {
+                continue;
+            };
+            let request = json!({"session_id": block.session, "block_id": id, "args": {}});
+            replies.push((id, self.rpc.enqueue(STATUS, request).await?));
+        }
+        if replies.is_empty() {
+            return Ok(());
+        }
+        for (id, reply) in replies {
+            let status = reply.await.context(ENDED)?.unwrap_or_default();
+            // What a program that has finished left behind says nothing of now.
+            let live = || {
+                items(&status["records"]).filter_map(|record| {
+                    let state = match record["state"].as_str()? {
+                        "done" | "error" => return None,
+                        "blocked" => Activity::Blocked,
+                        "working" => Activity::Working,
+                        _ => Activity::Idle,
+                    };
+                    Some((state, record["effective_app"].as_str()))
+                })
+            };
+            if let Some(block) = self.blocks.get_mut(&id) {
+                block.activity = live().map(|(state, _)| state).max().unwrap_or_default();
+                block.app = Program::named(live().filter_map(|(_, app)| app));
+            }
+        }
+        self.shared
+            .change(|s| fill(&mut s.view.sessions, &self.blocks));
+        Ok(())
+    }
+
+    /// Take in news of one terminal. One not seen yet is asked about when it is.
+    fn note(&mut self, block: &str, news: impl FnOnce(&mut Block)) {
+        if let Some(block) = self.blocks.get_mut(block) {
+            news(block);
+            self.shared
+                .change(|s| fill(&mut s.view.sessions, &self.blocks));
+        }
     }
 
     /// Stream exactly the panes of the visible tab.
     fn reconcile(&mut self) {
         let (session, visible) = {
             let mut state = self.shared.lock();
-            let window = state.view.current_window();
+            // Only a session this connection has joined can be streamed.
+            let joined = state.view.selected_session == self.attached;
+            let window = state.view.current_window().filter(|_| joined);
             let visible: HashSet<String> = window
                 .into_iter()
                 .flat_map(|w| w.panes.iter().map(|p| p.id.clone()))
@@ -468,64 +597,62 @@ impl Connection<'_> {
         Ok(())
     }
 
-    /// Structural actions complete here. Input is only queued in wire order; the
-    /// caller awaits the returned reply so that typing never waits on a round trip.
+    /// Do what the UI asked. A change to sessions or tabs completes here. Input is
+    /// only queued, in wire order; the caller awaits the returned reply so that
+    /// typing never waits on a round trip.
     async fn perform(&mut self, action: Action) -> Result<Option<Response>> {
-        let (rpc, shared) = (&self.rpc, self.shared);
-        let session = match &action {
-            Action::CreateSession => {
-                let payload = json!({
-                    "initial_windows": [{"window_label": "Shell", "layout": shell()}],
-                });
+        let rpc = &self.rpc;
+        // The session to show when it is done, if not the one on show already.
+        let show = match action {
+            Action::CreateSession(name) => {
+                let mut payload = json!({"initial_windows": [{"layout": shell()}]});
+                if let Some(name) = name {
+                    payload["label"] = json!(name);
+                }
                 let created = rpc.call("session.create", payload).await?;
-                let id = created["session_id"]
-                    .as_str()
-                    .context("Missing created session id")?;
-                self.list_sessions().await?;
-                self.select(id).await?;
-                return Ok(None);
+                let id = created["session_id"].as_str();
+                Some(id.context("Missing created session id")?.to_owned())
             }
-            Action::SelectSession(id) => {
-                self.select(id).await?;
-                return Ok(None);
-            }
-            Action::Leave(id) => {
-                rpc.call("session.detach", json!({"session_id": id}))
-                    .await?;
-                return Ok(None);
-            }
-            _ => shared
-                .selected()
-                .context("Select or create a session first")?,
-        };
-        let key_request =
-            |pane: &str, key: Value| json!({"session_id": session, "block_id": pane, "key": key});
-        let event_request = |pane: &str, kind: &str, payload: Value| {
-            let event = json!({"type": kind, "payload": payload});
-            json!({"session_id": session, "block_id": pane, "event": event})
-        };
-        // Input that engages the terminal takes ownership and returns to live output.
-        let (pane, method, payload, engage) = match action {
-            Action::SelectWindow(id) => {
-                let payload = json!({"session_id": session, "window_id": id});
+            Action::SelectSession(session) => Some(session),
+            Action::SelectWindow { session, window } => {
+                let payload = json!({"session_id": session, "window_id": window});
                 rpc.call("session.focus_window", payload).await?;
-                self.attach(&session).await?;
-                return Ok(None);
+                Some(session)
             }
-            Action::CreateWindow => {
-                let payload = json!({
-                    "session_id": session,
-                    "window_label": "Shell",
-                    "layout": shell(),
-                    "focus": true,
-                });
+            Action::CreateWindow(session) => {
+                let payload = json!({"session_id": session, "layout": shell(), "focus": true});
                 rpc.call("session.new_window", payload).await?;
-                self.attach(&session).await?;
-                return Ok(None);
+                Some(session)
+            }
+            Action::Edit {
+                session,
+                window,
+                edit,
+            } => {
+                let (method, mut payload) = match (edit, window.is_some()) {
+                    (Edit::Rename(name), true) => {
+                        ("session.set_window_label", json!({"label": name}))
+                    }
+                    (Edit::Rename(name), false) => ("session.set_label", json!({"label": name})),
+                    (Edit::MoveBefore(before), true) => {
+                        ("session.move_window", json!({"before_window_id": before}))
+                    }
+                    (Edit::MoveBefore(before), false) => {
+                        ("session.move", json!({"before_session_id": before}))
+                    }
+                    (Edit::Close, true) => ("session.close_window", json!({})),
+                    (Edit::Close, false) => ("session.destroy", json!({})),
+                };
+                payload["session_id"] = json!(session);
+                if let Some(window) = window {
+                    payload["window_id"] = json!(window);
+                }
+                rpc.call(method, payload).await?;
+                None
             }
             Action::Split { pane, direction } => {
                 let payload = json!({
-                    "session_id": session,
+                    "session_id": self.shown()?,
                     "anchor_id": pane,
                     "direction": match direction {
                         Direction::Right => "horizontal",
@@ -536,9 +663,35 @@ impl Connection<'_> {
                     "focus": true,
                 });
                 rpc.call("session.new_split", payload).await?;
-                self.attach(&session).await?;
-                return Ok(None);
+                None
             }
+            Action::Leave => None,
+            input => return self.input(input).await,
+        };
+        if show.is_some() {
+            // Wherever the UI was looking before.
+            self.shared.lock().away = false;
+        }
+        self.sessions(show.as_deref()).await?;
+        Ok(None)
+    }
+
+    fn shown(&self) -> Result<String> {
+        let selected = self.shared.lock().view.selected_session.clone();
+        selected.context("Select or create a session first")
+    }
+
+    /// Queue input for a terminal of the session on show.
+    async fn input(&self, action: Action) -> Result<Option<Response>> {
+        let (rpc, shared, session) = (&self.rpc, self.shared, self.shown()?);
+        let key_request =
+            |pane: &str, key: Value| json!({"session_id": session, "block_id": pane, "key": key});
+        let event_request = |pane: &str, kind: &str, payload: Value| {
+            let event = json!({"type": kind, "payload": payload});
+            json!({"session_id": session, "block_id": pane, "event": event})
+        };
+        // Input that engages the terminal takes ownership and returns to live output.
+        let (pane, method, payload, engage) = match action {
             Action::FocusPane { pane } => {
                 self.claim(&session, &pane).await?;
                 let payload = json!({"session_id": session, "block_id": pane});
@@ -605,11 +758,8 @@ impl Connection<'_> {
                 let payload = event_request(&pane, "wheel", wheel);
                 (pane, "block.event", payload, false)
             }
-            // Handled above, or by the connection loop.
-            Action::CreateSession
-            | Action::SelectSession(_)
-            | Action::Leave(_)
-            | Action::Reconnect => return Ok(None),
+            // Done by `perform`, or by the connection loop.
+            _ => return Ok(None),
         };
         let ready = shared
             .terminal(&pane)
@@ -689,9 +839,8 @@ fn block<'a>(blocks: &'a Value, id: &str) -> &'a Value {
 
 fn parse_windows(view: &Value, client_id: &str) -> Vec<Window> {
     items(&view["windows"])
-        .enumerate()
-        .filter_map(|(index, window)| {
-            let id = window["window_id"].as_str()?.into();
+        .filter_map(|window| {
+            let id: String = window["window_id"].as_str()?.into();
             let zoom = window["zoomed_block_id"].as_str();
             let mut panes = Vec::new();
             for layer in items(&window["layers"]).filter(|l| l["state"] != "minimized") {
@@ -711,6 +860,8 @@ fn parse_windows(view: &Value, client_id: &str) -> Vec<Window> {
                     panes.push(Pane {
                         id,
                         title: label(&block["label"], "Terminal"),
+                        program: Program::default(),
+                        activity: Activity::Idle,
                         x,
                         y,
                         width,
@@ -721,13 +872,34 @@ fn parse_windows(view: &Value, client_id: &str) -> Vec<Window> {
                     });
                 }
             }
+            // A tab nobody named is labelled by the server with the end of its ID.
+            let label = window["label"].as_str().filter(|label| {
+                let unnamed = label.strip_prefix("Window ");
+                !label.is_empty() && !unnamed.is_some_and(|tail| id.ends_with(tail))
+            });
             Some(Window {
+                label: label.map(str::to_owned),
+                focus: window["focused_block_id"].as_str().map(str::to_owned),
                 id,
-                name: label(&window["label"], &format!("Tab {}", index + 1)),
                 panes,
             })
         })
         .collect()
+}
+
+/// Give every pane what is known of its terminal.
+fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
+    let windows = sessions.iter_mut().flat_map(|s| &mut s.windows);
+    for pane in windows.flat_map(|w| &mut w.panes) {
+        if let Some(block) = blocks.get(&pane.id) {
+            // One with no title keeps its label.
+            if !block.title.is_empty() {
+                pane.title.clone_from(&block.title);
+            }
+            pane.program = block.app.or(block.process).unwrap_or_default();
+            pane.activity = block.activity;
+        }
+    }
 }
 
 fn rect(value: &Value) -> Option<[f32; 4]> {
@@ -816,11 +988,11 @@ pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
     loop {
         let view = client.snapshot();
         let frames = view.panes().filter(|p| p.frame.is_some()).count();
-        if view.connected && (view.windows.is_empty() || frames > 0) {
+        if view.connected && (view.windows().is_empty() || frames > 0) {
             return Ok(format!(
                 "Connected; {} sessions, {} tabs, {} decoded terminal frames",
                 view.sessions.len(),
-                view.windows.len(),
+                view.windows().len(),
                 frames
             ));
         }

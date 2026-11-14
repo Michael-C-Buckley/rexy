@@ -79,12 +79,12 @@ fn client() -> (Client, mpsc::Receiver<Action>) {
 #[test]
 fn input_is_accepted_only_while_connected() {
     let (client, mut queue) = client();
-    assert!(client.try_send(Action::CreateWindow).is_err());
+    assert!(client.try_send(Action::CreateSession(None)).is_err());
     client.try_send(Action::Reconnect).unwrap();
     client.shared.status("Connected", true);
-    client.try_send(Action::CreateWindow).unwrap();
+    client.try_send(Action::CreateSession(None)).unwrap();
     assert!(matches!(queue.try_recv(), Ok(Action::Reconnect)));
-    assert!(matches!(queue.try_recv(), Ok(Action::CreateWindow)));
+    assert!(matches!(queue.try_recv(), Ok(Action::CreateSession(None))));
     assert!(queue.try_recv().is_err());
 }
 
@@ -97,7 +97,7 @@ fn input_racing_a_disconnect_never_outlives_it() {
         let (client, stop) = (client.clone(), stop.clone());
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                let _ = client.try_send(Action::CreateWindow);
+                let _ = client.try_send(Action::CreateSession(None));
             }
         })
     };

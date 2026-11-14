@@ -61,7 +61,8 @@ with tempfile.TemporaryDirectory(prefix='rex-lite-smoke-', dir=repo / 'work') as
             fixture = json.loads(subprocess.check_output(cli + ['new', 'rex-lite smoke',
                 '--window', 'Terminal', '--shell=none', '--keep-open', '-c', str(repo),
                 '--json', '--', '/bin/sh'], text=True))
-            env = dict(os.environ, REX_LITE_TEST_SERVER=endpoint)
+            # The window keeps what it remembers here, away from the user's own.
+            env = dict(os.environ, REX_LITE_TEST_SERVER=endpoint, XDG_STATE_HOME=str(work / 'local'))
             subprocess.run(['./scripts/dev', 'test', '--locked', '--test', 'live', '--',
                 '--ignored', '--nocapture'], cwd=repo, env=env, check=True)
             display_read, display_write = os.pipe()
