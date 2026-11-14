@@ -49,8 +49,10 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 - Right-click a session or a tab to rename it, move it, or close it. Double-click renames too, and dragging moves it among its like. A tab nobody has named goes by its terminal's title; renaming one to nothing gives it back that name.
 - The icon before a tab's name is that of the program in its foreground: Claude Code, Neovim, Python and some 150 more, from Rex's own icon set. A shell's prompt stands for shells and for programs without an icon. The set is Superlogical's and is not kept in this repository: run `./scripts/icons` once before building to fetch it, or every tab shows the prompt.
 - A dot marks a tab whose program says it is working (blue) or waiting for you (amber). Programs say so with OSC 7501, as Rex's own tools do. **Mute Tab**, in a tab's menu, silences its dot. Muted tabs are remembered on this computer, in `rex-lite/muted` under `$XDG_STATE_HOME` or `~/.local/state`, and no server is told.
-- The two buttons at the top split the focused pane right or down.
-- Click a pane to focus it. Input and focus take ownership; only owned panes are resized.
+- The two buttons at the top split the focused pane right or down, as **Ctrl Shift D** and **Ctrl Shift E** do.
+- Click a pane to focus it, or press **Ctrl Shift** and an arrow to move to the pane on that side. Input and focus take ownership; only owned panes are resized.
+- **Ctrl Shift Enter** zooms the focused pane, so that it fills the tab, and pressed again restores the others. **Ctrl Shift W** closes it at once, with the program in it; a tab closes with its last pane. Pointing at a pane of a split tab shows both as buttons in its header, and the pane menu has them too.
+- **Ctrl Tab** and **Ctrl Shift Tab** show the next and the previous tab of the session, round and round. So do **Ctrl PageDown** and **Ctrl PageUp**.
 - Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes. **Shift** overrides a program's mouse capture for selection and scrollback.
 - **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: sidebar, or tabs along the top.
 - **Ctrl + / - / 0**: terminal font size. **Esc** clears selection.
@@ -60,7 +62,7 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## What is here
 
-Several servers at once, over Unix sockets and SSH. Sessions and tabs can be created, renamed, reordered and closed. Server-defined tabs and splits, live terminal titles, foreground programs and program status, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing, and a host address without a scheme, such as a Tailscale name, is not understood yet.
+Several servers at once, over Unix sockets and SSH. Sessions and tabs can be created, renamed, reordered and closed, and panes split, zoomed and closed. Server-defined tabs and splits, live terminal titles, foreground programs and program status, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing, and a host address without a scheme, such as a Tailscale name, is not understood yet.
 
 This first version does not include terminal search, adding or editing hosts from the window, installing Rex on another machine, image rendering, drag-to-resize splits, full Rex keymap/action compatibility, or persistent appearance preferences. Keyboard layouts and IMEs need broader hands-on testing. It targets Linux; other platforms are not claimed.
 
@@ -86,9 +88,11 @@ All test code is under `tests/`. Small unit modules in `tests/unit/` retain acce
 The complete live/native check creates its own disposable Rex server, Xvfb display, and D-Bus session, then cleans them up:
 
 ```sh
-./scripts/dev build --release --locked
+./scripts/dev build --locked
 python3 tests/smoke.py
 ```
+
+It tries the debug build, which is the quick one to make. Before a release, try that build too, with `--binary target/release/rex-lite`.
 
 This additionally needs `rex`, `Xvfb`, `dbus-run-session`, ImageMagick's `import` (for optional screenshots), and the X11/XTest libraries. It checks real typing, Ctrl+C, selection/copy/paste, and typing immediately after clearing a selection. This is X11 validation; Wayland is checked by hand.
 

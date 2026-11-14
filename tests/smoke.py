@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run live and native tests with a private Rex server, Xvfb, and D-Bus session.
 
-Build first: ./scripts/dev build --release --locked
-Run: python3 tests/smoke.py [--screenshot /absolute/path.png]
+Build first: ./scripts/dev build --locked
+Run: python3 tests/smoke.py [--binary target/release/rex-lite] [--screenshot /absolute/path.png]
 Requires rex, Xvfb, dbus-run-session, import, libX11, and libXtst.
 """
 import argparse
@@ -16,7 +16,7 @@ import tempfile
 import time
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--binary', default='target/release/rex-lite')
+parser.add_argument('--binary', default='target/debug/rex-lite')
 parser.add_argument('--screenshot')
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[1]

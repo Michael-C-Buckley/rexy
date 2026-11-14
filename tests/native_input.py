@@ -70,7 +70,7 @@ def chord(sym, ctrl=False, shift=False):
     key(sym, False)
     if shift: key(SHIFT, False)
     if ctrl: key(CONTROL, False)
-    time.sleep(.12)
+    time.sleep(.02)
 
 def type_text(text):
     for char in text:
@@ -118,7 +118,7 @@ expect('native Ctrl+C interrupts', lambda text: f'interrupt-{nonce}' in text)
 type_text("printf '\\033[3J\\033[2J\\033[HCLIP%s\\n' BOARD")
 chord(RETURN)
 expect('clipboard fixture', lambda text: text.strip().startswith('CLIPBOARD'))
-click(290, 46, twice=True)
+click(290, 18, twice=True)
 chord(ord('c'), ctrl=True, shift=True)
 chord(ESCAPE)
 type_text('cat')

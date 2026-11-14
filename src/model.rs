@@ -9,6 +9,8 @@ pub struct View {
     pub connected: bool,
     /// An action that failed, reported by one snapshot only.
     pub error: Option<String>,
+    /// A pane this client has just made by a split, reported likewise.
+    pub made: Option<String>,
     /// The other servers this one knows of.
     pub hosts: Vec<Host>,
     /// Every session on the server, each with its tabs.
@@ -81,12 +83,14 @@ pub struct Window {
     pub label: Option<String>,
     /// The pane that typing goes to.
     pub focus: Option<String>,
+    /// One pane fills the tab, and is the only one of them listed.
+    pub zoomed: bool,
     pub panes: Vec<Pane>,
 }
 
 impl Window {
     /// The pane that speaks for the tab: the one typing goes to.
-    fn front(&self) -> Option<&Pane> {
+    pub fn front(&self) -> Option<&Pane> {
         let focused = |pane: &&Pane| Some(&pane.id) == self.focus.as_ref();
         self.panes.iter().find(focused).or(self.panes.first())
     }
@@ -104,6 +108,42 @@ impl Window {
     pub fn activity(&self) -> Activity {
         let panes = self.panes.iter().map(|p| p.activity);
         panes.max().unwrap_or_default()
+    }
+
+    /// Whether it holds more panes than one, on show or not.
+    pub fn split(&self) -> bool {
+        self.zoomed || self.panes.len() > 1
+    }
+
+    /// The pane nearest a pane on one side of it: `toward` is a step along x or y.
+    /// Of several as near, the first from the top or the left.
+    pub fn beside(&self, pane: &str, toward: [f32; 2]) -> Option<&Pane> {
+        const SLACK: f32 = 0.001;
+        let from = self.panes.iter().find(|p| p.id == pane)?;
+        let along = usize::from(toward[0] == 0.0);
+        let span = |pane: &Pane, axis| match axis {
+            0 => (pane.x, pane.x + pane.width),
+            _ => (pane.y, pane.y + pane.height),
+        };
+        let reach = |pane: &Pane| {
+            let ((start, end), (from_start, from_end)) = (span(pane, along), span(from, along));
+            let gap = if toward[along] > 0.0 {
+                start - from_end
+            } else {
+                from_start - end
+            };
+            // It lies that way, and alongside rather than merely past a corner.
+            let ((start, end), (from_start, from_end)) =
+                (span(pane, 1 - along), span(from, 1 - along));
+            let alongside = start < from_end - SLACK && end > from_start + SLACK;
+            (gap > -SLACK && alongside).then_some((gap, start))
+        };
+        let near = self
+            .panes
+            .iter()
+            .filter_map(|pane| Some((reach(pane)?, pane)));
+        let nearest = near.min_by(|(a, _), (b, _)| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        nearest.map(|(_, pane)| pane)
     }
 }
 
@@ -210,6 +250,14 @@ pub enum Action {
         pane: String,
         direction: Direction,
     },
+    /// Let a pane fill its tab, or give the tab back to all its panes.
+    Zoom {
+        pane: String,
+    },
+    /// End a pane and the program in it. A tab ends with its last pane.
+    ClosePane {
+        pane: String,
+    },
     /// Change a session or, with `window`, one of its tabs.
     Edit {
         session: String,
@@ -228,3 +276,7 @@ pub enum Edit {
     /// End it and every program in it.
     Close,
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/model.rs"]
+mod tests;

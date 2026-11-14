@@ -25,16 +25,24 @@ use input::{Keyboard, modifier_bits};
 use muted::Muted;
 use render::{Grid, PaneView, Selection, rgb};
 use style::{
-    ACCENT, AMBER, BODY, BORDER, DIM, HOVER, Icon, Item, POPOVER, SIDEBAR, SMALL, TEXT, TOOLBAR,
-    VIEW, bold, icon_button, item, suggested,
+    ACCENT, AMBER, BODY, BORDER, DIM, HOVER, Icon, Item, POPOVER, SIDEBAR, SMALL, SMALL_BUTTON,
+    TEXT, TOOLBAR, VIEW, bold, icon_button, item, small_button, suggested,
 };
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
 const SIDEBAR_WIDTH: f32 = 240.0;
 const PANE_HEADER: f32 = 28.0;
-const SPLITS: [(Icon, &str, Direction); 2] = [
-    (Icon::SplitRight, "Split Right", Direction::Right),
-    (Icon::SplitDown, "Split Down", Direction::Down),
+/// The ways to split a pane, and the key that with Ctrl and Shift does each.
+const SPLITS: [(Icon, &str, Key, Direction); 2] = [
+    (Icon::SplitRight, "Split Right", Key::D, Direction::Right),
+    (Icon::SplitDown, "Split Down", Key::E, Direction::Down),
+];
+/// The arrow keys, and the step each takes from one pane to the next.
+const ARROWS: [(Key, [f32; 2]); 4] = [
+    (Key::ArrowLeft, [-1.0, 0.0]),
+    (Key::ArrowRight, [1.0, 0.0]),
+    (Key::ArrowUp, [0.0, -1.0]),
+    (Key::ArrowDown, [0.0, 1.0]),
 ];
 
 /// A server and the connection kept to it.
@@ -233,6 +241,44 @@ impl App {
         if pressed(chord, Key::V) || pressed(Modifiers::NONE, Key::Paste) {
             paste();
         }
+        // The tabs of the session on show, round and round. A chord is taken with
+        // Shift held too, so those that need it are asked after first.
+        let back = pressed(chord, Key::Tab) || pressed(Modifiers::CTRL, Key::PageUp);
+        let on = pressed(Modifiers::CTRL, Key::Tab) || pressed(Modifiers::CTRL, Key::PageDown);
+        let (tabs, shown) = (view.windows(), view.selected_window.as_ref());
+        if on != back
+            && let Some(session) = &view.selected_session
+            && let Some(at) = tabs.iter().position(|tab| Some(&tab.id) == shown)
+        {
+            let to = (at + if on { 1 } else { tabs.len() - 1 }) % tabs.len();
+            let (session, window) = (session.clone(), tabs[to].id.clone());
+            self.send(Action::SelectWindow { session, window });
+        }
+        if let Some(window) = view.current_window()
+            && let Some(pane) = self.focused.clone()
+        {
+            for (key, toward) in ARROWS {
+                if pressed(chord, key)
+                    && let Some(next) = window.beside(&pane, toward)
+                {
+                    let pane = next.id.clone();
+                    self.focused = Some(pane.clone());
+                    self.send(Action::FocusPane { pane });
+                }
+            }
+            for (.., key, direction) in SPLITS {
+                if pressed(chord, key) {
+                    let pane = pane.clone();
+                    self.send(Action::Split { pane, direction });
+                }
+            }
+            if pressed(chord, Key::Enter) && window.split() {
+                self.send(Action::Zoom { pane: pane.clone() });
+            }
+            if pressed(chord, Key::W) {
+                self.send(Action::ClosePane { pane });
+            }
+        }
         if pressed(Modifiers::CTRL, Key::Plus) || pressed(Modifiers::CTRL, Key::Equals) {
             self.font_size = (self.font_size + 1.0).min(32.0);
         }
@@ -247,8 +293,9 @@ impl App {
     /// The buttons that split the focused pane, laid out from the right.
     fn splits(&mut self, ui: &mut egui::Ui, view: &View) {
         ui.add_enabled_ui(view.connected && self.focused.is_some(), |ui| {
-            for (icon, label, direction) in SPLITS.into_iter().rev() {
-                if icon_button(ui, icon, label).clicked()
+            for (icon, label, key, direction) in SPLITS.into_iter().rev() {
+                let tip = format!("{label} (Ctrl+Shift+{})", key.name());
+                if icon_button(ui, icon, &tip).clicked()
                     && let Some(pane) = self.focused.clone()
                 {
                     self.send(Action::Split { pane, direction });
@@ -773,20 +820,50 @@ impl App {
         });
     }
 
-    fn terminal_pane(&mut self, ui: &mut egui::Ui, pane: &Pane, rect: Rect, split: bool) {
+    fn terminal_pane(&mut self, ui: &mut egui::Ui, window: &Window, pane: &Pane, rect: Rect) {
         let active = self.focused.as_deref() == Some(&pane.id);
         // The focused pane holds the keyboard whenever nothing else is taking it.
         let keyboard = active && !self.busy(ui.ctx());
+        let mut actions = Vec::new();
         let mut terminal_rect = rect;
-        if split {
-            ui.painter().with_clip_rect(rect).text(
-                rect.left_top() + egui::vec2(12.0, PANE_HEADER / 2.0 + 2.0),
+        // One pane of several has a header, and so has one that fills the tab in
+        // place of the rest.
+        if window.split() {
+            terminal_rect.min.y += PANE_HEADER;
+            let mut header = rect.shrink2(egui::vec2(4.0, 0.0));
+            // The name sits a little low, toward the terminal it names.
+            header.min.y += 2.0;
+            header.max.y = terminal_rect.top();
+            let layout = Layout::right_to_left(Align::Center);
+            let mut buttons = ui.new_child(UiBuilder::new().max_rect(header).layout(layout));
+            buttons.spacing_mut().item_spacing.x = 0.0;
+            let over = ui.rect_contains_pointer(rect);
+            // Its buttons show under the pointer. The way back from a pane that
+            // fills the tab shows always, where it would be among them.
+            if !over {
+                buttons.add_space(SMALL_BUTTON);
+            } else if small_button(&mut buttons, Icon::Close, "Close Pane (Ctrl+Shift+W)").clicked()
+            {
+                let pane = pane.id.clone();
+                actions.push(Action::ClosePane { pane });
+            }
+            let (zoom, tip) = if window.zoomed {
+                (Icon::Restore, "Restore Panes (Ctrl+Shift+Enter)")
+            } else {
+                (Icon::Zoom, "Zoom Pane (Ctrl+Shift+Enter)")
+            };
+            if (over || window.zoomed) && small_button(&mut buttons, zoom, tip).clicked() {
+                let pane = pane.id.clone();
+                actions.push(Action::Zoom { pane });
+            }
+            header.max.x -= 2.0 * SMALL_BUTTON + 4.0;
+            ui.painter().with_clip_rect(header).text(
+                header.left_center() + egui::vec2(8.0, 0.0),
                 Align2::LEFT_CENTER,
                 &pane.title,
                 FontId::proportional(SMALL),
                 if active { TEXT } else { DIM },
             );
-            terminal_rect.min.y += PANE_HEADER;
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
         // A selection keeps showing the frame it was made on, including on the
@@ -819,7 +896,6 @@ impl App {
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
-        let mut actions = Vec::new();
         let size = grid.size(ui.ctx().pixels_per_point());
         // Only owned panes are resized, so report the size again when ownership returns.
         if !pane.owner {
@@ -913,12 +989,26 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
-                for (_, label, direction) in SPLITS {
-                    if ui.button(label).clicked() {
-                        actions.push(Action::Split {
-                            pane: pane.id.clone(),
-                            direction,
-                        });
+                let pane = || pane.id.clone();
+                let split = |(_, label, _, direction)| {
+                    let pane = pane();
+                    (label, true, Action::Split { pane, direction })
+                };
+                let zoom = if window.zoomed {
+                    "Restore Panes"
+                } else {
+                    "Zoom Pane"
+                };
+                let entries = SPLITS.into_iter().map(split).chain([
+                    (zoom, window.split(), Action::Zoom { pane: pane() }),
+                    ("Close Pane", true, Action::ClosePane { pane: pane() }),
+                ]);
+                for (label, enabled, action) in entries {
+                    if matches!(action, Action::ClosePane { .. }) {
+                        ui.separator();
+                    }
+                    if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                        actions.push(action);
                         ui.close();
                     }
                 }
@@ -960,17 +1050,25 @@ impl eframe::App for App {
         for error in views.iter_mut().filter_map(|view| view.error.take()) {
             self.toast.say(error);
         }
+        let made = views[self.current].made.take();
         let view = &views[self.current];
+        let window = view.current_window();
+        let panes = window.map_or(&[][..], |w| &w.panes);
+        // A pane this window has just made takes the keyboard. One made from
+        // elsewhere does not: that would take it from under the user's hands.
+        if made.is_some() {
+            self.focused = made;
+        }
+        // Focus stays with a pane while it is on screen, and otherwise goes where the
+        // server has it.
+        if !panes.iter().any(|p| Some(&p.id) == self.focused.as_ref()) {
+            self.focused = window.and_then(Window::front).map(|p| p.id.clone());
+        }
         // Whether this frame's keys were pressed for something other than a terminal.
         let busy = self.busy(&ctx);
         self.shortcuts(&ctx, view);
         if self.sidebar {
             self.sidebar(root_ui, &views);
-        }
-        let panes = view.current_window().map_or(&[][..], |w| &w.panes);
-        // Focus stays with a pane while it is on screen, and otherwise goes to the first.
-        if !panes.iter().any(|p| Some(&p.id) == self.focused.as_ref()) {
-            self.focused = panes.first().map(|p| p.id.clone());
         }
         let terminal = panes.iter().find_map(|p| p.frame.as_ref());
         let ground = terminal.map_or(VIEW, |frame| style::ground(rgb(frame.bg)));
@@ -981,9 +1079,9 @@ impl eframe::App for App {
                 if !self.sidebar {
                     self.toolbar(ui, &views);
                 }
-                if panes.is_empty() {
+                let Some(window) = window.filter(|window| !window.panes.is_empty()) else {
                     return self.empty(ui, view);
-                }
+                };
                 // Healthy needs no words. A lost connection says so above its last screen.
                 if !view.connected {
                     let size = Vec2::new(ui.available_width(), 36.0);
@@ -1002,7 +1100,7 @@ impl eframe::App for App {
                     let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
                     let size = area.size() * egui::vec2(pane.width, pane.height);
                     let rect = Rect::from_min_size(min, size);
-                    self.terminal_pane(ui, pane, rect, panes.len() > 1);
+                    self.terminal_pane(ui, window, pane, rect);
                 }
             });
         self.toast.show(&ctx);

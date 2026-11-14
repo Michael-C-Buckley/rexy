@@ -129,6 +129,7 @@ impl Client {
         let mut state = self.shared.lock();
         let mut view = state.view.clone();
         state.view.error = None;
+        state.view.made = None;
         for pane in view.panes_mut() {
             if let Some(terminal) = state.terminals.get(&pane.id) {
                 pane.frame = terminal.latest();
@@ -615,6 +616,7 @@ impl Connection<'_> {
     /// typing never waits on a round trip.
     async fn perform(&mut self, action: Action) -> Result<Option<Response>> {
         let rpc = &self.rpc;
+        let mut made = None;
         // The session to show when it is done, if not the one on show already.
         let show = match action {
             Action::CreateSession(name) => {
@@ -675,13 +677,31 @@ impl Connection<'_> {
                     "layout": shell(),
                     "focus": true,
                 });
-                rpc.call("session.new_split", payload).await?;
+                let split = rpc.call("session.new_split", payload).await?;
+                made = split["block_ids"][0].as_str().map(str::to_owned);
+                None
+            }
+            Action::Zoom { pane } => {
+                let session = self.shown()?;
+                // Only an owner may resize it to the room it is given.
+                self.claim(&session, &pane).await?;
+                let payload = json!({"session_id": session, "block_id": pane});
+                rpc.call("session.zoom_block", payload).await?;
+                None
+            }
+            Action::ClosePane { pane } => {
+                let payload = json!({"session_id": self.shown()?, "block_id": pane});
+                rpc.call("block.close", payload).await?;
                 None
             }
             Action::Leave => None,
             input => return self.input(input).await,
         };
         self.sessions(show.as_deref()).await?;
+        // Said once the pane is there to be seen.
+        if made.is_some() {
+            self.shared.change(|s| s.view.made = made);
+        }
         Ok(None)
     }
 
@@ -889,6 +909,7 @@ fn parse_windows(view: &Value, client_id: &str) -> Vec<Window> {
             Some(Window {
                 label: label.map(str::to_owned),
                 focus: window["focused_block_id"].as_str().map(str::to_owned),
+                zoomed: zoom.is_some(),
                 id,
                 panes,
             })

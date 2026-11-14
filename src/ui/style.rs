@@ -34,6 +34,7 @@ pub const TOOLBAR: f32 = 44.0;
 pub const BODY: f32 = 14.5;
 pub const SMALL: f32 = 12.5;
 const RADIUS: u8 = 6;
+pub const SMALL_BUTTON: f32 = 24.0;
 /// The side of a program's icon: a tile, wider than it is tall, on a square.
 const TILE: f32 = 20.0;
 
@@ -140,6 +141,9 @@ pub enum Icon {
     SplitDown,
     Retry,
     Close,
+    /// Let a pane fill its tab, and give the tab back to them all.
+    Zoom,
+    Restore,
     Down,
     /// A shell's, for a program whose icon is not at hand.
     Prompt,
@@ -178,6 +182,18 @@ impl Icon {
             Icon::Close => {
                 line([-4.0, -4.0], [4.0, 4.0]);
                 line([-4.0, 4.0], [4.0, -4.0]);
+            }
+            // Two corners, drawn apart or drawn together.
+            Icon::Zoom | Icon::Restore => {
+                let (corner, arm) = match self {
+                    Icon::Zoom => (5.0, -4.0),
+                    _ => (2.5, 4.0),
+                };
+                for side in [1.0, -1.0] {
+                    let (x, y) = (side * corner, -side * corner);
+                    line([x, y], [x + side * arm, y]);
+                    line([x, y], [x, y - side * arm]);
+                }
             }
             Icon::Down => {
                 line([-4.0, -2.0], [0.0, 2.0]);
@@ -252,7 +268,16 @@ fn raster(drawing: &str, pixels: usize) -> egui::ColorImage {
 
 /// A flat button that draws its own symbol.
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+    button(ui, 32.0, icon, tip)
+}
+
+/// A lesser one, as small as those of a row.
+pub fn small_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
+    button(ui, SMALL_BUTTON, icon, tip)
+}
+
+fn button(ui: &mut egui::Ui, side: f32, icon: Icon, tip: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
     paint_button(ui, rect, &response, icon);
     response.on_hover_text(tip)
 }
@@ -292,7 +317,7 @@ pub struct Item<'a> {
 
 /// Draw a row. Returns its response, and which of its buttons was pressed.
 pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, Option<usize>) {
-    const BUTTON: f32 = 24.0;
+    const BUTTON: f32 = SMALL_BUTTON;
     const ICON: f32 = TILE + 7.0;
     let sense = if item.movable {
         Sense::click_and_drag()

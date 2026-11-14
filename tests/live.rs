@@ -126,10 +126,20 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         direction: Direction::Right,
     };
     send(&client, split);
-    wait(&client, "split layout and streams", |v| {
+    let split = wait(&client, "split layout and streams", |v| {
         find(v, &window)
             .is_some_and(|w| w.panes.len() == 2 && w.panes.iter().all(|p| p.frame.is_some()))
     });
+    let mut others = find(&split, &window).unwrap().panes.iter();
+    let other = others.find(|p| p.id != pane).unwrap().id.clone();
+    // A pane fills its tab in place of the rest, and gives it back to them.
+    for (label, zoomed, panes) in [("a pane zoomed", true, 1), ("a pane restored", false, 2)] {
+        send(&client, Action::Zoom { pane: pane.clone() });
+        wait(&client, label, |v| {
+            let shown = |w: &Window| w.panes.len() == panes && w.panes[0].id == pane;
+            find(v, &window).is_some_and(|w| w.zoomed == zoomed && shown(w))
+        });
+    }
     send(&client, Action::CreateWindow(session.clone()));
     let next = wait(&client, "new tab", |v| {
         v.windows().len() == initial.windows().len() + 1
@@ -188,6 +198,11 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     program("an agent, by its report", "claude-code");
     run("printf '\\033]7501;state=clear\\007'");
     program("the shell once more", "shell");
+    // A pane closed leaves the tab to the others.
+    send(&client, Action::ClosePane { pane: other });
+    wait(&client, "a pane closed", |v| {
+        find(v, &window).is_some_and(|w| !w.split() && w.panes[0].id == pane)
+    });
     let order = |v: &View| -> Vec<String> { v.windows().iter().map(|w| w.id.clone()).collect() };
     let first = Edit::MoveBefore(Some(window.clone()));
     send(&client, edit(&session, Some(&tab), first));
