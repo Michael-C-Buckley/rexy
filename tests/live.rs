@@ -65,7 +65,7 @@ fn live_input_resize_splits_tabs_and_reconnect() {
             && endpoint.contains("/work/"),
         "refusing to mutate a non-test Rex server"
     );
-    let client = Client::spawn(endpoint, Arc::new(|| {}));
+    let client = Client::spawn(vec![endpoint.clone()], false, Arc::new(|| {}));
     let initial = wait(&client, "initial Ghostty snapshot", |v| {
         v.connected && v.panes().any(|p| p.frame.is_some())
     });
@@ -139,4 +139,23 @@ fn live_input_resize_splits_tabs_and_reconnect() {
     wait(&client, "return to existing tab", |v| {
         v.selected_window.as_ref() == Some(&window) && screen(v, &pane).contains("paste-verified")
     });
+
+    // A client for a server the UI is not showing lists sessions and selects none.
+    let other = Client::spawn(vec![endpoint], true, Arc::new(|| {}));
+    let listed = wait(&other, "sessions without a selection", |v| {
+        v.connected && !v.sessions.is_empty()
+    });
+    assert!(listed.selected_session.is_none() && listed.windows.is_empty());
+    send(&other, Action::SelectSession(session.clone()));
+    wait(&other, "a session shown on request", |v| {
+        v.panes().any(|p| p.frame.is_some())
+    });
+    other.leave();
+    assert!(other.snapshot().windows.is_empty());
+    // It stays left when the server next reports a change.
+    send(&client, Action::SelectWindow(next.selected_window.unwrap()));
+    send(&client, Action::SelectWindow(window.clone()));
+    std::thread::sleep(Duration::from_millis(400));
+    let left = other.snapshot();
+    assert!(left.connected && left.selected_session.is_none() && left.windows.is_empty());
 }

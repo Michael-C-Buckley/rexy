@@ -9,6 +9,8 @@ pub struct View {
     pub connected: bool,
     /// An action that failed, reported by one snapshot only.
     pub error: Option<String>,
+    /// The other servers this one knows of.
+    pub hosts: Vec<Host>,
     pub sessions: Vec<Session>,
     pub selected_session: Option<String>,
     pub selected_window: Option<String>,
@@ -36,6 +38,13 @@ impl View {
     pub fn pane_mut(&mut self, id: &str) -> Option<&mut Pane> {
         self.panes_mut().find(|p| p.id == id)
     }
+}
+
+/// A server, by the name it goes by and the addresses that reach it, in the order to try them.
+#[derive(Clone, PartialEq)]
+pub struct Host {
+    pub label: String,
+    pub endpoints: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -88,6 +97,8 @@ pub const SUPER: u8 = 8;
 #[derive(Clone, Debug)]
 pub enum Action {
     SelectSession(String),
+    /// Detach from a session that is no longer shown. Sent by `Client::leave`.
+    Leave(String),
     SelectWindow(String),
     FocusPane {
         pane: String,

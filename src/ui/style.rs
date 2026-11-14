@@ -131,6 +131,7 @@ pub enum Icon {
     Plus,
     SplitRight,
     SplitDown,
+    Retry,
 }
 
 impl Icon {
@@ -159,6 +160,16 @@ impl Icon {
             Icon::SplitDown => {
                 window();
                 line([-7.0, 0.0], [7.0, 0.0]);
+            }
+            Icon::Retry => {
+                // Most of a circle, clockwise, ending in an arrowhead on the right.
+                let arc = (4..=24).map(|step| {
+                    let angle = step as f32 * std::f32::consts::TAU / 24.0;
+                    center + 6.0 * Vec2::angled(angle)
+                });
+                painter.line(arc.collect(), stroke);
+                line([6.0, 0.0], [2.5, -3.0]);
+                line([6.0, 0.0], [8.5, -3.5]);
             }
         }
     }

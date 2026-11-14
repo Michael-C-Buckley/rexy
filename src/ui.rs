@@ -17,7 +17,7 @@ use eframe::egui::{
 
 use crate::{
     backend::Client,
-    model::{Action, Direction, Pane, View},
+    model::{Action, Direction, Host, Pane, View},
     terminal::Frame,
 };
 use input::{Keyboard, modifier_bits};
@@ -35,12 +35,50 @@ const SPLITS: [(Icon, &str, Direction); 2] = [
     (Icon::SplitDown, "Split Down", Direction::Down),
 ];
 
-pub struct App {
+/// A server and the connection kept to it.
+struct Server {
+    host: Host,
     client: Client,
+}
+
+impl Server {
+    /// Unless `away`, the server's first session is shown without being asked for.
+    fn connect(ctx: &egui::Context, host: Host, away: bool) -> Self {
+        let ctx = ctx.clone();
+        let wake = Arc::new(move || ctx.request_repaint());
+        Self {
+            client: Client::spawn(host.endpoints.clone(), away, wake),
+            host,
+        }
+    }
+
+    /// Home, the server this window was opened on, has no label of its own.
+    fn home(ctx: &egui::Context, endpoint: &str) -> Self {
+        let host = Host {
+            label: String::new(),
+            endpoints: vec![endpoint.to_owned()],
+        };
+        Self::connect(ctx, host, false)
+    }
+
+    fn label(&self) -> &str {
+        match self.host.label.as_str() {
+            "" => "This Computer",
+            label => label,
+        }
+    }
+}
+
+pub struct App {
+    /// Home first, then the hosts it names.
+    servers: Vec<Server>,
+    /// The server whose session fills the window.
+    current: usize,
+    /// Home's address, as typed.
     endpoint: String,
     sidebar: bool,
-    /// The name being typed while the new-session dialog is open.
-    new_session: Option<String>,
+    /// The server and the name being typed while the new-session dialog is open.
+    new_session: Option<(usize, String)>,
     /// The pane that has the keyboard, while one is on screen.
     focused: Option<String>,
     panes: HashMap<String, PaneView>,
@@ -49,16 +87,12 @@ pub struct App {
     toast: Toast,
 }
 
-fn connect(ctx: &egui::Context, endpoint: &str) -> Client {
-    let ctx = ctx.clone();
-    Client::spawn(endpoint.to_owned(), Arc::new(move || ctx.request_repaint()))
-}
-
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, endpoint: String) -> Self {
         style::apply(&cc.egui_ctx);
         Self {
-            client: connect(&cc.egui_ctx, &endpoint),
+            servers: vec![Server::home(&cc.egui_ctx, &endpoint)],
+            current: 0,
             endpoint,
             sidebar: true,
             new_session: None,
@@ -71,9 +105,42 @@ impl App {
     }
 
     fn send(&mut self, action: Action) {
-        if let Err(error) = self.client.try_send(action) {
+        if let Err(error) = self.servers[self.current].client.try_send(action) {
             self.toast.say(error);
         }
+    }
+
+    /// Select or create a session, on whichever server it lives.
+    fn open(&mut self, server: usize, action: Action) {
+        if server != self.current {
+            // The session left behind keeps running; this window just stops watching it.
+            self.servers[self.current].client.leave();
+            self.current = server;
+        }
+        self.send(action);
+    }
+
+    /// Home names the other servers. Keep a connection to each, and to no others.
+    fn follow_hosts(&mut self, ctx: &egui::Context, home: &View) {
+        // Only a connected home knows, and a server is not swapped under an open dialog.
+        if !home.connected || self.new_session.is_some() {
+            return;
+        }
+        let listed = self.servers[1..].iter().map(|server| &server.host);
+        if listed.eq(&home.hosts) {
+            return;
+        }
+        let current = self.servers[self.current].host.clone();
+        let mut known = self.servers.split_off(1);
+        for host in &home.hosts {
+            let server = match known.iter().position(|server| &server.host == host) {
+                Some(index) => known.swap_remove(index),
+                None => Server::connect(ctx, host.clone(), true),
+            };
+            self.servers.push(server);
+        }
+        let current = self.servers.iter().position(|s| s.host == current);
+        self.current = current.unwrap_or(0);
     }
 
     /// A dialog or a menu is up, and keeps the keyboard to itself.
@@ -104,7 +171,7 @@ impl App {
             return;
         }
         if pressed(chord, Key::N) {
-            self.new_session = Some(String::new());
+            self.new_session = Some((self.current, String::new()));
         }
         if pressed(chord, Key::T) && view.connected {
             self.send(Action::CreateWindow);
@@ -129,46 +196,63 @@ impl App {
         }
     }
 
-    fn sidebar(&mut self, root_ui: &mut egui::Ui, view: &View) {
+    /// Every server, each with its sessions beneath it.
+    fn sidebar(&mut self, root_ui: &mut egui::Ui, views: &[View]) {
+        let rows = egui::Frame::new().inner_margin(6);
+        let list = |ui: &mut egui::Ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (index, view) in views.iter().enumerate() {
+                if index > 0 {
+                    ui.add_space(12.0);
+                }
+                let mut header = bar(ui, 32.0, 0.0);
+                header.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if !view.connected {
+                        if icon_button(ui, Icon::Retry, "Try again").clicked() {
+                            let _ = self.servers[index].client.try_send(Action::Reconnect);
+                        }
+                    } else if icon_button(ui, Icon::Plus, "New session").clicked() {
+                        self.new_session = Some((index, String::new()));
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        let label = RichText::new(self.servers[index].label());
+                        ui.add(egui::Label::new(label.font(bold(SMALL)).color(DIM)).truncate());
+                    });
+                });
+                if !view.connected {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        let status = RichText::new(&view.status).size(SMALL).color(DIM);
+                        ui.add(egui::Label::new(status).truncate())
+                            .on_hover_text(&view.status);
+                    });
+                }
+                for session in &view.sessions {
+                    let selected = index == self.current
+                        && view.selected_session.as_deref() == Some(&session.id);
+                    let size = Vec2::new(ui.available_width(), 34.0);
+                    if item(ui, size, &session.name, selected, Align::LEFT).clicked() {
+                        self.open(index, Action::SelectSession(session.id.clone()));
+                    }
+                }
+            }
+        };
         egui::Panel::left("sessions")
             .exact_size(SIDEBAR_WIDTH)
             .resizable(false)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(SIDEBAR))
             .show(root_ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                let mut bar = bar(ui);
-                bar.add_space(8.0);
-                bar.label(RichText::new("Sessions").font(bold(BODY)));
-                bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_enabled_ui(view.connected, |ui| {
-                        if icon_button(ui, Icon::Plus, "New session (Ctrl+Shift+N)").clicked() {
-                            self.new_session = Some(String::new());
-                        }
-                    });
-                });
-                let rows = egui::Frame::new().inner_margin(Margin::symmetric(6, 0));
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
-                    .show(ui, |ui| {
-                        rows.show(ui, |ui| {
-                            for session in &view.sessions {
-                                let selected =
-                                    view.selected_session.as_deref() == Some(&session.id);
-                                let size = Vec2::new(ui.available_width(), 34.0);
-                                let row = item(ui, size, &session.name, selected, Align::LEFT);
-                                if row.clicked() {
-                                    self.send(Action::SelectSession(session.id.clone()));
-                                }
-                            }
-                        });
-                    });
+                    .show(ui, |ui| rows.show(ui, list));
             });
     }
 
     /// One row: the sidebar toggle, the session's tabs, and what can be added to it.
     fn toolbar(&mut self, ui: &mut egui::Ui, view: &View) {
-        let mut bar = bar(ui);
+        let mut bar = bar(ui, TOOLBAR, 6.0);
         if icon_button(&mut bar, Icon::Sidebar, "Toggle sidebar (Ctrl+Shift+B)").clicked() {
             self.sidebar = !self.sidebar;
         }
@@ -210,22 +294,30 @@ impl App {
 
     /// What to show when there is no terminal to show.
     fn empty(&mut self, ui: &mut egui::Ui, view: &View) {
-        let (title, detail, action) = if view.connected {
-            (
-                "No Terminals",
-                "Programs you start keep running on the server.",
-                "New Session",
-            )
-        } else {
-            ("Not Connected", view.status.as_str(), "Connect")
+        let action = |label| {
+            suggested(label)
+                .corner_radius(19)
+                .min_size(Vec2::new(140.0, 38.0))
         };
         ui.add_space((ui.available_height() * 0.28).max(20.0));
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing.y = 12.0;
-            ui.heading(title);
-            ui.add(egui::Label::new(RichText::new(detail).color(DIM)).wrap());
-            ui.add_space(12.0);
-            if !view.connected {
+            if view.connected {
+                ui.heading("No Terminals");
+                let about = "Programs you start keep running on the server.";
+                ui.label(RichText::new(about).color(DIM));
+                ui.add_space(12.0);
+                if ui.add(action("New Session")).clicked() {
+                    self.new_session = Some((self.current, String::new()));
+                }
+                return;
+            }
+            ui.heading("Not Connected");
+            ui.add(egui::Label::new(RichText::new(&view.status).color(DIM)).wrap());
+            // Home's address is the one typed here. Another server's comes from home,
+            // and is tried again from the sidebar.
+            if self.current == 0 {
+                ui.add_space(12.0);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.endpoint)
                         .desired_width(380.0)
@@ -233,15 +325,8 @@ impl App {
                         .font(egui::TextStyle::Monospace)
                         .hint_text("unix:/path/to/rex/server.sock"),
                 );
-            }
-            let button = suggested(action)
-                .corner_radius(19)
-                .min_size(Vec2::new(140.0, 38.0));
-            if ui.add(button).clicked() {
-                if view.connected {
-                    self.new_session = Some(String::new());
-                } else {
-                    self.client = connect(ui.ctx(), self.endpoint.trim());
+                if ui.add(action("Connect")).clicked() {
+                    self.servers[0] = Server::home(ui.ctx(), self.endpoint.trim());
                     self.toast = Toast::default();
                 }
             }
@@ -334,7 +419,8 @@ impl App {
             match pointer.wheel(state) {
                 0 => {}
                 lines if !tracking => {
-                    if let Err(error) = self.client.scroll(&pane.id, lines) {
+                    let client = &self.servers[self.current].client;
+                    if let Err(error) = client.scroll(&pane.id, lines) {
                         self.toast.say(error);
                     }
                 }
@@ -404,9 +490,15 @@ impl App {
     }
 
     fn session_dialog(&mut self, ctx: &egui::Context) {
-        let Some(name) = &mut self.new_session else {
+        let Some((server, name)) = &mut self.new_session else {
             return;
         };
+        let server = *server;
+        let place = match server {
+            0 => "the server",
+            _ => self.servers[server].label(),
+        };
+        let about = format!("Its programs keep running on {place}.");
         let (mut create, mut cancel) = (false, false);
         let frame = egui::Frame::new()
             .fill(POPOVER)
@@ -419,7 +511,7 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 12.0;
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("New Session").font(bold(17.0)));
-                    ui.label(RichText::new("Its programs keep running on the server.").color(DIM));
+                    ui.label(RichText::new(about).color(DIM));
                 });
                 let field = ui.add(
                     egui::TextEdit::singleline(name)
@@ -444,7 +536,7 @@ impl App {
             });
         if create {
             let name = name.trim().to_owned();
-            self.send(Action::CreateSession { name });
+            self.open(server, Action::CreateSession { name });
         }
         if create || cancel || modal.should_close() {
             self.new_session = None;
@@ -475,16 +567,16 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
-        let mut view = self.client.snapshot();
-        if let Some(error) = view.error.take() {
+        let mut views: Vec<View> = self.servers.iter().map(|s| s.client.snapshot()).collect();
+        for error in views.iter_mut().filter_map(|view| view.error.take()) {
             self.toast.say(error);
         }
-        let view = &view;
+        let view = &views[self.current];
         // Whether this frame's keys were pressed with a dialog or a menu up.
         let modal = self.modal(&ctx);
         self.shortcuts(&ctx, view);
         if self.sidebar {
-            self.sidebar(root_ui, view);
+            self.sidebar(root_ui, &views);
         }
         let panes = view.current_window().map_or(&[][..], |w| &w.panes);
         // Focus stays with a pane while it is on screen, and otherwise goes to the first.
@@ -531,6 +623,7 @@ impl eframe::App for App {
             self.terminal_keys(&ctx, &pane);
         }
         self.panes.retain(|id, _| view.pane(id).is_some());
+        self.follow_hosts(&ctx, &views[0]);
     }
 }
 
@@ -571,11 +664,11 @@ impl Toast {
     }
 }
 
-/// A row of controls at the top of the sidebar or the content.
-fn bar(ui: &mut egui::Ui) -> egui::Ui {
-    let size = Vec2::new(ui.available_width(), TOOLBAR);
+/// A row of controls, such as the toolbar or a server's heading.
+fn bar(ui: &mut egui::Ui, height: f32, inset: f32) -> egui::Ui {
+    let size = Vec2::new(ui.available_width(), height);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let rect = rect.shrink2(egui::vec2(6.0, 0.0));
+    let rect = rect.shrink2(egui::vec2(inset, 0.0));
     let layout = Layout::left_to_right(Align::Center);
     let mut bar = ui.new_child(UiBuilder::new().max_rect(rect).layout(layout));
     bar.spacing_mut().item_spacing.x = 2.0;

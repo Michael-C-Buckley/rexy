@@ -1,10 +1,11 @@
 //! A thin Rex client: one I/O runtime, bounded actions, separate terminal CPU workers.
 use crate::{
-    model::{self, Action, Direction, Pane, Session, View, Window},
+    model::{self, Action, Direction, Host, Pane, Session, View, Window},
+    ssh,
     terminal::{Notify, TerminalHandle},
     wire::{self, Control, Response, Rpc},
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use serde_json::{Value, json};
 use std::{
@@ -19,6 +20,10 @@ use std::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// How long to wait before each try at a server that will not connect. After these
+/// it is left alone until the user asks: a machine that keeps refusing a login
+/// may come to refuse the address it comes from.
+const RECONNECT: [Duration; 2] = [RETRY_DELAY, Duration::from_secs(15)];
 const FULL: [f32; 4] = [0., 0., 1., 1.];
 static NULL: Value = Value::Null;
 
@@ -39,6 +44,8 @@ impl Wake {
 struct State {
     view: View,
     terminals: HashMap<String, TerminalHandle>,
+    /// The UI is showing another server, so no session is picked unasked.
+    away: bool,
 }
 
 #[derive(Clone)]
@@ -80,9 +87,15 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn spawn(endpoint: String, wake: Notify) -> Self {
+    /// Connect to a server at the first of its endpoints that answers, and keep
+    /// connected. Unless `away`, its first session is shown without being asked for.
+    pub fn spawn(endpoints: Vec<String>, away: bool, wake: Notify) -> Self {
+        let state = State {
+            away,
+            ..Default::default()
+        };
         let shared = Shared {
-            state: Arc::default(),
+            state: Arc::new(Mutex::new(state)),
             wake: Arc::new(Wake {
                 pending: AtomicBool::new(false),
                 callback: wake,
@@ -97,7 +110,7 @@ impl Client {
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(run(endpoint, receiver, worker)),
+                    Ok(runtime) => runtime.block_on(run(endpoints, receiver, worker)),
                     Err(error) => {
                         worker.status(format!("Cannot start network runtime: {error}"), false)
                     }
@@ -154,6 +167,19 @@ impl Client {
         Ok(())
     }
 
+    /// Stop showing this server's session. Its programs keep running there.
+    pub fn leave(&self) {
+        let mut state = self.shared.lock();
+        state.away = true;
+        state.view.selected_window = None;
+        state.view.windows.clear();
+        if let Some(session) = state.view.selected_session.take()
+            && state.view.connected
+        {
+            let _ = self.actions.try_send(Action::Leave(session));
+        }
+    }
+
     /// Move the local scrollback viewport; negative is up. Nothing is sent to the server.
     pub fn scroll(&self, pane: &str, lines: i32) -> Result<(), String> {
         let terminal = self.shared.terminal(pane).ok_or("Terminal is not ready")?;
@@ -161,14 +187,22 @@ impl Client {
     }
 }
 
-async fn run(endpoint: String, mut actions: mpsc::Receiver<Action>, shared: Shared) {
+async fn run(endpoints: Vec<String>, mut actions: mpsc::Receiver<Action>, shared: Shared) {
     let mut token = None;
+    // Tries in a row that never connected.
+    let mut failures = 0usize;
     loop {
         shared.status("Connecting…", false);
-        let result = run_connected(&endpoint, &mut token, &mut actions, &shared).await;
+        let result = run_connected(&endpoints, &mut token, &mut actions, &shared).await;
         if actions.is_closed() {
             return;
         }
+        failures = if shared.lock().view.connected {
+            0
+        } else {
+            failures + 1
+        };
+        let delay = RECONNECT.get(failures.saturating_sub(1));
         shared.change(|s| {
             // Keep the last immutable screen for context, but never send old input again.
             for pane in s.view.panes_mut() {
@@ -180,35 +214,68 @@ async fn run(endpoint: String, mut actions: mpsc::Receiver<Action>, shared: Shar
             }
             s.terminals.clear();
             s.view.connected = false;
-            s.view.status = match result {
-                Ok(()) => "Reconnecting…".into(),
-                Err(error) => format!("Disconnected: {error:#} · retrying"),
+            s.view.status = match (result, delay) {
+                (Ok(()), _) => "Reconnecting…".into(),
+                (Err(error), Some(_)) => format!("Disconnected: {error:#} · retrying"),
+                (Err(error), None) => format!("Disconnected: {error:#}"),
             };
         });
         while actions.try_recv().is_ok() {} // Commands belong to the failed connection.
-        tokio::select! {
-            _ = tokio::time::sleep(RETRY_DELAY) => {}
-            action = actions.recv() => { if action.is_none() { return; } }
+        // Any action is a request to try now.
+        let asked = match delay {
+            Some(delay) => tokio::time::timeout(*delay, actions.recv()).await,
+            None => Ok(actions.recv().await),
+        };
+        if let Ok(None) = asked {
+            return;
         }
     }
 }
 
+/// Reach the server at the first endpoint that answers. An `ssh://` endpoint is
+/// reached through a tunnel, which lasts as long as it is held.
+async fn connect(
+    endpoints: &[String],
+    token: Option<&str>,
+) -> Result<(Option<ssh::Tunnel>, String, Control)> {
+    let mut failure = anyhow!("This host has no address");
+    for endpoint in endpoints {
+        let attempt = async {
+            let (tunnel, endpoint) = if endpoint.starts_with("ssh://") {
+                let tunnel = ssh::Tunnel::open(endpoint).await?;
+                let local = tunnel.endpoint();
+                (Some(tunnel), local)
+            } else {
+                (None, endpoint.clone())
+            };
+            let control = Control::connect(&endpoint, token).await?;
+            anyhow::Ok((tunnel, endpoint, control))
+        };
+        match attempt.await {
+            Ok(connected) => return Ok(connected),
+            Err(error) => failure = error,
+        }
+    }
+    Err(failure)
+}
+
 async fn run_connected(
-    endpoint: &str,
+    endpoints: &[String],
     token: &mut Option<String>,
     actions: &mut mpsc::Receiver<Action>,
     shared: &Shared,
 ) -> Result<()> {
-    let mut control = Control::connect(endpoint, token.as_deref()).await?;
+    let (_tunnel, endpoint, mut control) = connect(endpoints, token.as_deref()).await?;
     *token = control.reconnect_token.take();
     let mut connection = Connection {
-        endpoint,
+        endpoint: &endpoint,
         shared,
         rpc: control.rpc.clone(),
         client_id: control.client_id.clone(),
         streams: HashMap::new(),
     };
     connection.refresh().await?;
+    while actions.try_recv().is_ok() {} // Requests to try again have been answered.
     shared.status("", true);
     connection.reconcile();
     let mut replies = FuturesUnordered::new();
@@ -270,6 +337,18 @@ impl Drop for Connection<'_> {
 
 impl Connection<'_> {
     async fn refresh(&self) -> Result<()> {
+        // A server too old to keep a host list simply has none.
+        if let Ok(result) = self.rpc.call("hosts.list", json!({})).await {
+            let hosts = items(&result["hosts"]).filter_map(|host| {
+                let endpoints = items(&host["endpoints"]).filter_map(Value::as_str);
+                Some(Host {
+                    label: host["label"].as_str()?.into(),
+                    endpoints: endpoints.map(str::to_owned).collect(),
+                })
+            });
+            let hosts = hosts.collect();
+            self.shared.change(|s| s.view.hosts = hosts);
+        }
         self.list_sessions().await?;
         if let Some(session) = self.shared.selected() {
             // Attach is idempotent and keeps newly selected sessions joined after deletion/reconnect.
@@ -294,7 +373,8 @@ impl Connection<'_> {
         self.shared.change(|s| {
             let selected = s.view.selected_session.as_ref();
             if !sessions.iter().any(|x| Some(&x.id) == selected) {
-                s.view.selected_session = sessions.first().map(|x| x.id.clone());
+                let first = sessions.first().filter(|_| !s.away);
+                s.view.selected_session = first.map(|x| x.id.clone());
                 s.view.selected_window = None;
                 s.view.windows.clear();
             }
@@ -316,11 +396,20 @@ impl Connection<'_> {
             .map(str::to_owned)
             .or_else(|| windows.first().map(|w| w.id.clone()));
         self.shared.change(|s| {
-            s.view.selected_session = Some(session.into());
-            s.view.selected_window = selected;
-            s.view.windows = windows;
+            // Not if the UI left for another server while the reply was on its way.
+            if !s.away {
+                s.view.selected_session = Some(session.into());
+                s.view.selected_window = selected;
+                s.view.windows = windows;
+            }
         });
         Ok(())
+    }
+
+    /// Show a session the UI asked for, wherever it was looking before.
+    async fn select(&self, session: &str) -> Result<()> {
+        self.shared.lock().away = false;
+        self.attach(session).await
     }
 
     /// Stream exactly the panes of the visible tab.
@@ -394,11 +483,16 @@ impl Connection<'_> {
                     .as_str()
                     .context("Missing created session id")?;
                 self.list_sessions().await?;
-                self.attach(id).await?;
+                self.select(id).await?;
                 return Ok(None);
             }
             Action::SelectSession(id) => {
-                self.attach(id).await?;
+                self.select(id).await?;
+                return Ok(None);
+            }
+            Action::Leave(id) => {
+                rpc.call("session.detach", json!({"session_id": id}))
+                    .await?;
                 return Ok(None);
             }
             _ => shared
@@ -513,9 +607,10 @@ impl Connection<'_> {
                 (pane, "block.event", payload, false)
             }
             // Handled above, or by the connection loop.
-            Action::CreateSession { .. } | Action::SelectSession(_) | Action::Reconnect => {
-                return Ok(None);
-            }
+            Action::CreateSession { .. }
+            | Action::SelectSession(_)
+            | Action::Leave(_)
+            | Action::Reconnect => return Ok(None),
         };
         let ready = shared
             .terminal(&pane)
@@ -717,7 +812,7 @@ fn shell() -> Value {
 
 /// Read-only connectivity probe used by --probe: no sessions are created and no input is sent.
 pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
-    let client = Client::spawn(endpoint, Arc::new(|| {}));
+    let client = Client::spawn(vec![endpoint], false, Arc::new(|| {}));
     let started = std::time::Instant::now();
     loop {
         let view = client.snapshot();

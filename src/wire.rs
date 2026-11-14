@@ -41,7 +41,7 @@ pub async fn socket(endpoint: &str, path: &str, protocol: &str) -> Result<Socket
         let scheme = match url.scheme() {
             "http" | "ws" => "ws",
             "https" | "wss" => "wss",
-            _ => bail!("Use a Unix socket path or ws:// / wss:// endpoint"),
+            _ => bail!("Use a Unix socket path or an ssh://, ws:// or wss:// endpoint"),
         };
         url.set_scheme(scheme)
             .map_err(|_| anyhow!("Invalid endpoint scheme"))?;
@@ -258,6 +258,7 @@ fn structure_changed(message: &Value) -> bool {
                 | "session_moved"
                 | "session_label_changed"
                 | "session_view_changed"
+                | "hosts_changed"
                 | "block_closed"
                 | "block_owner_changed"
         )

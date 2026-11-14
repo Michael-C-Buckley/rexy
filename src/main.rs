@@ -7,7 +7,7 @@ rex-lite — a minimal Rex client
 
 Usage: rex-lite [--server ENDPOINT]
 
-  -S, --server  Unix socket, ws:// or wss:// Rex endpoint
+  -S, --server  Unix socket, ssh://, ws:// or wss:// Rex endpoint
       --probe   Verify attachment and Ghostty decoding without opening a window
   -h, --help    Show this help
       --version Show version

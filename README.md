@@ -1,6 +1,6 @@
 # Rex Lite
 
-A small native Linux client for [Rex](https://www.superlogical.com/rex). Rust 1.100, egui, and libghostty. A quiet sidebar, one row of tabs, and the terminal, set in Inter and JetBrains Mono.
+A small native Linux client for [Rex](https://www.superlogical.com/rex). Rust 1.100, egui, and libghostty. A quiet sidebar of servers and their sessions, one row of tabs, and the terminal, set in Inter and JetBrains Mono.
 
 Early working client. Closing the window leaves server sessions running. Connecting never starts or installs a server.
 
@@ -21,6 +21,16 @@ The endpoint defaults to `REX_SERVER`, then `$XDG_RUNTIME_DIR/rex/server.sock` (
 
 Once built, run `target/release/rex-lite` directly. `--probe` checks connection and Ghostty snapshot decoding without opening a window or sending terminal input.
 
+## Other servers
+
+The sidebar lists the server you opened, then every host that server knows of, each with its sessions. Hosts are Rex's own list, shared with the `rex` CLI and other clients:
+
+```sh
+rex hosts add studio ssh://studio
+```
+
+An `ssh://[user@]host[:port]` address is reached the way the Rex CLI reaches it: `ssh` asks that machine where its server listens and forwards the socket. It needs `rex` on the other machine and an `ssh` that connects without asking anything. A host's addresses are tried in order. A server that will not connect is tried twice more, then left alone until you press the retry button beside its name, so that a refused login is not repeated until the machine blocks you. Sessions on other servers are only listed until you open one, and are left again when you open a session elsewhere.
+
 ## Build
 
 Rust **1.100.0** is pinned in `rust-toolchain.toml`. libghostty requires **Zig 0.17.x**; `mise.toml` pins 0.17.1. With [mise](https://mise.jdx.dev/):
@@ -34,7 +44,7 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## Controls
 
-- Click a session or tab to switch. `+` creates a session or tab; the two buttons beside it split the focused pane right or down.
+- Click a session or tab to switch. `+` beside a server creates a session there; `+` in the toolbar creates a tab, and the two buttons beside it split the focused pane right or down.
 - Click a pane to focus it. Input and focus take ownership; only owned panes are resized.
 - Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes. **Shift** overrides a program's mouse capture for selection and scrollback.
 - **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: toggle sidebar.
@@ -45,13 +55,13 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## What is here
 
-Session switching, server-defined tabs and splits, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and automatic reconnect with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing.
+Several servers at once, over Unix sockets and SSH. Session switching, server-defined tabs and splits, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing, and a host address without a scheme, such as a Tailscale name, is not understood yet.
 
-This first version does not include terminal search, saved-host management, SSH setup, image rendering, drag-to-resize splits, full Rex keymap/action compatibility, or persistent appearance preferences. Keyboard layouts and IMEs need broader hands-on testing. It targets Linux; other platforms are not claimed.
+This first version does not include terminal search, adding or editing hosts from the window, installing Rex on another machine, image rendering, drag-to-resize splits, full Rex keymap/action compatibility, or persistent appearance preferences. Keyboard layouts and IMEs need broader hands-on testing. It targets Linux; other platforms are not claimed.
 
 ## Small by construction
 
-- One network runtime handles control and terminal transport. Each visible pane has a separate Ghostty worker; parsing never runs on the UI thread.
+- Each server has one network runtime for control and terminal transport. Each visible pane has a separate Ghostty worker; parsing never runs on the UI thread.
 - Ordered terminal bytes use bounded queues with backpressure. Redraw notices coalesce; the UI reads the newest immutable frame.
 - Ghostty dirty rows are shared between frames. The renderer caches shaped text by row identity; it does not build widgets for individual cells.
 - Terminal workers sleep when idle. Hidden tabs release their streams and restore a fresh snapshot when selected again.
