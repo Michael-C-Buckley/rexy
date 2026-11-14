@@ -28,6 +28,12 @@ pub const GREEN: Color32 = Color32::from_rgb(0x57, 0xe3, 0x89);
 pub const HOVER: Color32 = white(18);
 pub const ACTIVE: Color32 = white(28);
 pub const PRESSED: Color32 = white(46);
+/// Fills of rows, which lie many together: faint under the pointer, so that the
+/// one selected is plain among them.
+const OVER: Color32 = white(12);
+const SELECTED: Color32 = white(44);
+/// The fill of what ends programs if pressed. Darker than `RED`, to carry white text.
+pub const DANGER: Color32 = Color32::from_rgb(0xc0, 0x1c, 0x28);
 
 /// Translucent white, for text and fills that sit on any ground.
 const fn white(alpha: u8) -> Color32 {
@@ -38,6 +44,8 @@ pub const TOOLBAR: f32 = 44.0;
 pub const BODY: f32 = 14.5;
 pub const SMALL: f32 = 12.5;
 const RADIUS: u8 = 6;
+/// The space to each side of the word in a button that asks.
+const PILL: f32 = 8.0;
 pub const SMALL_BUTTON: f32 = 24.0;
 /// The side of a program's icon: a tile, wider than it is tall, on a square.
 const TILE: f32 = 20.0;
@@ -332,10 +340,45 @@ fn paint_button(ui: &egui::Ui, rect: Rect, response: &egui::Response, icon: Icon
     icon.paint(ui.painter(), rect.center(), color);
 }
 
+/// Text on one line, which ends in an ellipsis if it is too long for `width`.
+pub fn fitted(
+    ui: &egui::Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    width: f32,
+) -> Arc<egui::Galley> {
+    let mut job = LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = TextWrapping::truncate_at_width(width);
+    ui.painter().layout_job(job)
+}
+
+/// A button that asks to be pressed, to close what a press before it would not,
+/// lest programs end by a slip. Its trailing edge is at `edge`, where that press was.
+pub fn confirm(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: &str) -> egui::Response {
+    let word = ui
+        .painter()
+        .layout_no_wrap(word.to_owned(), bold(SMALL), TEXT);
+    pill(ui, edge, id, word)
+}
+
+fn pill(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: Arc<egui::Galley>) -> egui::Response {
+    let size = egui::vec2(word.size().x + 2.0 * PILL, SMALL_BUTTON);
+    let rect = Rect::from_min_size(edge - egui::vec2(size.x, size.y / 2.0), size);
+    let response = ui.interact(rect, id, Sense::click());
+    ui.painter().rect_filled(rect, RADIUS, DANGER);
+    ui.painter()
+        .galley(rect.center() - word.size() / 2.0, word, TEXT);
+    response
+}
+
 /// A sidebar row or a tab: flat, and filled when selected or under the pointer.
 #[derive(Default)]
 pub struct Item<'a> {
     pub label: &'a str,
+    /// A name of its own, for a row that must stay itself while the rows before
+    /// it come and go: its menu and its buttons go by it.
+    pub id: Option<egui::Id>,
     /// The icon of its program, ahead of the label.
     pub icon: Option<Program>,
     pub selected: bool,
@@ -351,6 +394,10 @@ pub struct Item<'a> {
     pub word: Option<&'a str>,
     /// Small buttons that take the mark's place while the pointer is on the row.
     pub buttons: &'a [(Icon, &'a str)],
+    /// The last of them was pressed, and asks with this word to be pressed again.
+    pub confirm: Option<&'a str>,
+    /// More to say of the row under the pointer, after its name if that was cut short.
+    pub tip: &'a str,
     /// It can be dragged to another place among its like.
     pub movable: bool,
 }
@@ -364,13 +411,19 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     } else {
         Sense::click()
     };
-    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let (rect, response) = match item.id {
+        Some(id) => {
+            let (_, rect) = ui.allocate_space(size);
+            (rect, ui.interact(rect, id, sense))
+        }
+        None => ui.allocate_exact_size(size, sense),
+    };
     // While anything is dragged, only it is lit, and no row offers its buttons.
     let dragging = ui.ctx().dragged_id().is_some();
     let over = response.dragged() || (!dragging && ui.rect_contains_pointer(rect));
     let (fill, color) = match (item.selected, over, item.caption) {
-        (true, ..) => (ACTIVE, TEXT),
-        (_, true, _) => (HOVER, TEXT),
+        (true, ..) => (SELECTED, TEXT),
+        (_, true, _) => (OVER, TEXT),
         (_, _, true) => (Color32::TRANSPARENT, DIM),
         _ => (Color32::TRANSPARENT, white(190)),
     };
@@ -385,21 +438,34 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let marks = word
         .as_ref()
         .map_or(14.0 * marks, |word| word.size().x + 8.0);
+    let last = item.buttons.len().checked_sub(1);
+    let confirm = item.confirm.zip(last).map(|(word, last)| {
+        let word = ui
+            .painter()
+            .layout_no_wrap(word.to_owned(), bold(SMALL), TEXT);
+        (word, last)
+    });
     let room = (12.0 + marks).max(4.0 + BUTTON * item.buttons.len() as f32);
+    let room = confirm.as_ref().map_or(room, |(word, _)| {
+        room.max(word.size().x + 2.0 * PILL + 10.0)
+    });
     let mut text = rect.shrink2(egui::vec2(12.0, 0.0));
     text.max.x = rect.right() - room;
-    if item.align == Align::Center {
-        text.min.x = rect.left() + room;
-    }
     let lead = if item.icon.is_some() { ICON } else { 0.0 };
     // A name too long for its row ends in an ellipsis.
     let size = if item.caption { SMALL } else { BODY };
-    let mut label =
-        LayoutJob::simple_singleline(item.label.to_owned(), FontId::proportional(size), color);
-    label.wrap = TextWrapping::truncate_at_width(text.width() - lead);
-    let label = ui.painter().layout_job(label);
+    let font = FontId::proportional(size);
+    let label = fitted(ui, item.label, font, color, text.width() - lead);
+    let cut = label.elided;
+    let needs = label.size() + egui::vec2(lead, 0.0);
+    // A centred name is at the middle of its row while it fits there, and has
+    // all the room there is when it does not.
+    let middle = text.with_min_x(rect.left() + room);
+    if item.align == Align::Center && needs.x <= middle.width() {
+        text = middle;
+    }
     let anchor = Align2([item.align, Align::Center]);
-    let place = anchor.align_size_within_rect(label.size() + egui::vec2(lead, 0.0), text);
+    let place = anchor.align_size_within_rect(needs, text);
     if let Some(program) = item.icon {
         let left = egui::pos2(place.left(), rect.center().y);
         let ink = if item.selected { TEXT } else { DIM };
@@ -408,7 +474,13 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     ui.painter()
         .galley(place.min + egui::vec2(lead, 0.0), label, color);
     let mut pressed = None;
-    if over && !dragging && !item.buttons.is_empty() {
+    if let Some((word, last)) = confirm {
+        // Where the button was, and by its name: the pointer is on it already.
+        let edge = egui::pos2(rect.right() - 4.0, rect.center().y);
+        if pill(ui, edge, response.id.with(("button", last)), word).clicked() {
+            pressed = Some(last);
+        }
+    } else if over && !dragging && !item.buttons.is_empty() {
         let mut right = rect.right() - 4.0;
         for (index, (icon, tip)) in item.buttons.iter().enumerate().rev() {
             let center = egui::pos2(right - BUTTON / 2.0, rect.center().y);
@@ -436,6 +508,18 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
             mark.paint(ui.painter(), center, color);
         }
     }
+    let response = if cut || !item.tip.is_empty() {
+        response.on_hover_ui(|ui| {
+            if cut {
+                ui.label(item.label);
+            }
+            if !item.tip.is_empty() {
+                ui.label(item.tip);
+            }
+        })
+    } else {
+        response
+    };
     (response, pressed)
 }
 
@@ -443,3 +527,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
 pub fn suggested(label: &str) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(label).font(bold(BODY)).color(TEXT)).fill(ACCENT)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/ui_style.rs"]
+mod tests;

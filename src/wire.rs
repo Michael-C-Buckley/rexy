@@ -533,10 +533,12 @@ pub enum Event {
     Structure,
     /// A terminal's title.
     Title { block: String, title: String },
-    /// The program in a terminal's foreground, by the name `program` gives it.
+    /// The program in a terminal's foreground, by the name `program` gives it, and
+    /// its process.
     Program {
         block: String,
         program: Option<Program>,
+        pid: Option<u64>,
     },
     /// What the programs in a terminal say they are doing.
     Status { block: String },
@@ -563,6 +565,17 @@ pub enum Event {
 pub fn program(process: &Value) -> Option<Program> {
     let named = ["script", "argv0", "name"].map(|key| process[key].as_str());
     Program::named(named.into_iter().flatten())
+}
+
+/// The process a terminal started, if that is a shell. While it is also the one in
+/// the foreground it is at its prompt, and closing the terminal ends nothing else.
+pub fn shell(child: &Value) -> Option<u64> {
+    const SHELLS: [&str; 13] = [
+        "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "pwsh", "elvish",
+        "xonsh",
+    ];
+    let name = child["name"].as_str()?;
+    child["pid"].as_u64().filter(|_| SHELLS.contains(&name))
 }
 
 fn event(message: &Value) -> Option<Event> {
@@ -593,6 +606,7 @@ fn event(message: &Value) -> Option<Event> {
         ("block_event", Some("process_changed")) => Some(Event::Program {
             block: id()?,
             program: program(&block["payload"]["foreground"]),
+            pid: block["payload"]["foreground"]["pid"].as_u64(),
         }),
         ("block_event", Some("program_status_changed" | "program_status_removed")) => {
             Some(Event::Status { block: id()? })

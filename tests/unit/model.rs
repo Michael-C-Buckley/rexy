@@ -14,6 +14,7 @@ fn pane(id: &str, [x, y, width, height]: [f32; 4]) -> Pane {
         frame: None,
         status: String::new(),
         owner: false,
+        idle: false,
     }
 }
 

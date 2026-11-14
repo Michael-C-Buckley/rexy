@@ -352,7 +352,10 @@ async fn run_connected(
             event = control.events.recv() => match event.context(ENDED)? {
                 Event::Structure => dirty = true,
                 Event::Title { block, title } => connection.note(&block, |b| b.title = title),
-                Event::Program { block, program } => connection.note(&block, |b| b.process = program),
+                Event::Program { block, program, pid } => connection.note(&block, |b| {
+                    b.process = program;
+                    b.idle = pid.is_some() && pid == b.shell;
+                }),
                 Event::Status { block } => {
                     connection.stale.insert(block);
                 }
@@ -420,6 +423,10 @@ struct Block {
     title: String,
     /// The icon of the program in its foreground, if it has one.
     process: Option<Program>,
+    /// The shell it started with, if it started with one, and whether that is what
+    /// is in its foreground.
+    shell: Option<u64>,
+    idle: bool,
     /// That of a program reporting its status, which tells more, while one is.
     app: Option<Program>,
     activity: Activity,
@@ -558,10 +565,13 @@ impl Connection<'_> {
             let process = process.await.context(ENDED)?.unwrap_or_default();
             let status = status.await.context(ENDED)?.unwrap_or_default();
             let (activity, message, app) = reported(&status["records"]);
+            let shell = wire::shell(&process["child"]);
             let block = Block {
                 session: session.clone(),
                 title: title["title"].as_str().unwrap_or_default().into(),
                 process: wire::program(&process["foreground"]),
+                shell,
+                idle: shell.is_some() && shell == process["foreground"]["pid"].as_u64(),
                 app,
                 activity,
                 message,
@@ -1038,6 +1048,7 @@ fn parse_windows(view: &Value, client_id: &str) -> Vec<Window> {
                         frame: None,
                         status: "Connecting terminal…".into(),
                         owner: block["owner"] == client_id,
+                        idle: false,
                     });
                 }
             }
@@ -1098,6 +1109,7 @@ fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
             pane.program = block.app.or(block.process).unwrap_or_default();
             pane.activity = block.activity;
             pane.message.clone_from(&block.message);
+            pane.idle = block.idle;
         }
     }
 }

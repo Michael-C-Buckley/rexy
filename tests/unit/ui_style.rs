@@ -1,0 +1,90 @@
+use super::*;
+
+const SCREEN: Rect = Rect::from_min_max(Pos2::ZERO, egui::pos2(400.0, 300.0));
+
+fn window() -> egui::Context {
+    let ctx = egui::Context::default();
+    apply(&ctx);
+    ctx
+}
+
+/// Draw rows by these names, each with a close button, while the pointer does
+/// `events`. Returns each row's response, and which of its buttons was pressed.
+fn draw(
+    ctx: &egui::Context,
+    rows: &[&str],
+    confirm: Option<&str>,
+    events: Vec<egui::Event>,
+) -> Vec<(egui::Response, Option<usize>)> {
+    let input = egui::RawInput {
+        screen_rect: Some(SCREEN),
+        events,
+        ..Default::default()
+    };
+    let mut drawn = Vec::new();
+    let output = ctx.run_ui(input, |ui| {
+        drawn.clear();
+        for name in rows {
+            let row = Item {
+                id: Some(egui::Id::unique(("row", name))),
+                label: name,
+                buttons: &[(Icon::Close, "Close")],
+                confirm,
+                ..Default::default()
+            };
+            drawn.push(item(ui, egui::vec2(200.0, 32.0), row));
+        }
+    });
+    output.drop_without_applying_deltas();
+    drawn
+}
+
+/// A click of the main button at `pos`, as the drawings it takes.
+fn click(pos: Pos2) -> [Vec<egui::Event>; 2] {
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    [vec![button(true)], vec![button(false)]]
+}
+
+#[test]
+fn a_row_keeps_its_name_when_the_row_before_it_goes() {
+    let ctx = window();
+    let both = draw(&ctx, &["one", "two"], None, vec![]);
+    let left = draw(&ctx, &["two"], None, vec![]);
+    assert_eq!(both[1].0.id, left[0].0.id);
+    assert_ne!(both[0].0.id, left[0].0.id);
+}
+
+#[test]
+fn a_close_button_asks_again_from_under_the_pointer() {
+    let ctx = window();
+    let row = draw(&ctx, &["one"], None, vec![])[0].0.rect;
+    // Where the button shows once the pointer is on the row.
+    let at = egui::pos2(row.right() - 4.0 - SMALL_BUTTON / 2.0, row.center().y);
+    draw(&ctx, &["one"], None, vec![egui::Event::PointerMoved(at)]);
+    let [press, release] = click(at);
+    assert_eq!(draw(&ctx, &["one"], None, press)[0].1, None);
+    assert_eq!(draw(&ctx, &["one"], None, release)[0].1, Some(0));
+    // It asks, and a second click with the pointer where it was is the answer.
+    let asked = draw(&ctx, &["one"], Some("Close?"), vec![]);
+    assert_eq!(asked[0].0.rect, row);
+    let [press, release] = click(at);
+    assert_eq!(draw(&ctx, &["one"], Some("Close?"), press)[0].1, None);
+    assert_eq!(draw(&ctx, &["one"], Some("Close?"), release)[0].1, Some(0));
+}
+
+#[test]
+fn a_name_too_long_for_its_room_ends_in_an_ellipsis() {
+    let ctx = window();
+    let output = ctx.run_ui(Default::default(), |ui| {
+        let font = FontId::proportional(SMALL);
+        let long = fitted(ui, "a name that goes on and on", font.clone(), TEXT, 60.0);
+        assert!(long.elided && long.size().x <= 60.0);
+        assert!(!fitted(ui, "short", font, TEXT, 60.0).elided);
+    });
+    output.drop_without_applying_deltas();
+}

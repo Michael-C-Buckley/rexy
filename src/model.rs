@@ -258,6 +258,9 @@ pub struct Pane {
     pub frame: Option<Arc<Frame>>,
     pub status: String,
     pub owner: bool,
+    /// Nothing is in it but the shell it started with, at its prompt, so closing it
+    /// loses nothing. False where that is not known.
+    pub idle: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

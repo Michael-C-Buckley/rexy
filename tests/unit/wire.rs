@@ -23,9 +23,15 @@ fn keeps_up_with_structure_titles_and_programs_and_nothing_else() {
     assert_eq!(event(&changed), Some(title));
     // A program has the icon of its script, of what it was started as, or of its executable.
     let program = |foreground: Value, icon: Option<&str>| {
+        let pid = foreground["pid"].as_u64();
         let event = event(&block("process_changed", json!({"foreground": foreground})));
         let (block, program) = ("b".into(), Program::named(icon));
-        assert_eq!(event, Some(Event::Program { block, program }));
+        let program = Event::Program {
+            block,
+            program,
+            pid,
+        };
+        assert_eq!(event, Some(program));
     };
     program(
         json!({"name": "2.1.325", "argv0": "claude"}),
@@ -34,7 +40,10 @@ fn keeps_up_with_structure_titles_and_programs_and_nothing_else() {
     let script = "/opt/lib/pi-coding-agent/dist/cli.js";
     let script = json!({"name": "node", "argv0": "node", "script": script});
     program(script, Some("pi"));
-    program(json!({"name": "zsh", "argv0": "-zsh"}), None);
+    program(json!({"name": "zsh", "argv0": "-zsh", "pid": 7}), None);
+    // A terminal that started with a shell, and one that started with something else.
+    assert_eq!(shell(&json!({"name": "zsh", "pid": 7})), Some(7));
+    assert_eq!(shell(&json!({"name": "vim", "pid": 7})), None);
     program(Value::Null, None);
     let status = Some(Event::Status { block: "b".into() });
     assert_eq!(event(&block("program_status_changed", json!({}))), status);

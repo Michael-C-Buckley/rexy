@@ -14,7 +14,7 @@ use std::{
 
 use eframe::egui::{
     self, Align, Align2, Color32, DragAndDrop, FontId, Key, Layout, Margin, Modifiers,
-    PointerButton, Pos2, Rect, RichText, Sense, Stroke, UiBuilder, Vec2,
+    PointerButton, Pos2, Rect, RichText, Sense, Stroke, UiBuilder, Vec2, text::LayoutJob,
 };
 
 use crate::{
@@ -29,13 +29,19 @@ use muted::Muted;
 use raise::Raise;
 use render::{Grid, PaneView, Selection, rgb};
 use style::{
-    ACCENT, AMBER, BODY, BORDER, DIM, GREEN, HOVER, Icon, Item, POPOVER, RED, SIDEBAR, SMALL,
-    SMALL_BUTTON, TEXT, TOOLBAR, VIEW, bold, icon_button, item, small_button, suggested,
+    ACCENT, AMBER, BODY, BORDER, DANGER, DIM, GREEN, HOVER, Icon, Item, POPOVER, RED, SIDEBAR,
+    SMALL, SMALL_BUTTON, TEXT, TOOLBAR, VIEW, bold, confirm, fitted, icon_button, item,
+    small_button, suggested,
 };
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
 const SIDEBAR_WIDTH: f32 = 240.0;
+/// The least and the most its edge can be dragged to.
+const SIDEBAR_RANGE: [f32; 2] = [180.0, 480.0];
 const PANE_HEADER: f32 = 28.0;
+/// What a button says that has been pressed to close something busy, and asks to
+/// be pressed again.
+const CLOSE: &str = "Close?";
 /// The ways to split a pane, and the key that with Ctrl and Shift does each.
 const SPLITS: [(Icon, &str, Key, Direction); 2] = [
     (Icon::SplitRight, "Split Right", Key::D, Direction::Right),
@@ -92,10 +98,33 @@ struct Target {
     window: Option<String>,
 }
 
+impl Target {
+    /// The action that shows it.
+    fn select(&self) -> Action {
+        let session = self.session.clone();
+        match self.window.clone() {
+            Some(window) => Action::SelectWindow { session, window },
+            None => Action::SelectSession(session),
+        }
+    }
+
+    /// The action that changes it.
+    fn edit(self, edit: Edit) -> Action {
+        Action::Edit {
+            session: self.session,
+            window: self.window,
+            edit,
+        }
+    }
+}
+
 /// A name being typed over a session's or a tab's.
 struct Rename {
     target: Target,
     text: String,
+    /// The name the field opened with. Left as it was, it is not given anew: that
+    /// would name a tab for good by what was running in it just then.
+    was: String,
     /// The field has yet to be shown.
     fresh: bool,
     /// The field was shown this frame. A row that has gone takes its renaming with it.
@@ -112,6 +141,85 @@ struct Heard {
     rang: bool,
     /// It was on show so when last the window drew.
     watched: bool,
+}
+
+/// What was asked to close while it may have had programs running, if anything,
+/// and so waits to be asked again: once is easily a slip.
+#[derive(Default)]
+struct Closing(Option<Asked>);
+
+struct Asked {
+    /// The row of a session or a tab, or a pane, by name.
+    what: egui::Id,
+    /// It was asked with the pointer, and waits only while the pointer is by it.
+    near: bool,
+    /// The pointer was by it when last the window drew.
+    kept: bool,
+    until: Instant,
+}
+
+/// What pressing something that closes will do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ask {
+    /// Close, there being nothing to lose.
+    No,
+    /// Wait to be pressed again.
+    First,
+    /// Close, having been pressed before.
+    Again,
+}
+
+impl Closing {
+    const TIME: Duration = Duration::from_secs(4);
+
+    /// What pressing something that closes `what` will do. `spared` says that
+    /// nothing would be lost by closing it.
+    fn ask(&self, what: egui::Id, spared: bool) -> Ask {
+        match &self.0 {
+            Some(asked) if asked.what == what => Ask::Again,
+            _ if spared => Ask::No,
+            _ => Ask::First,
+        }
+    }
+
+    /// Take a press of something that closes `what`, and say whether to close it.
+    /// `near` says the press was the pointer's.
+    fn press(&mut self, what: egui::Id, spared: bool, near: bool, now: Instant) -> bool {
+        let first = self.ask(what, spared) == Ask::First;
+        self.0 = first.then_some(Asked {
+            what,
+            near,
+            kept: true,
+            until: now + Self::TIME,
+        });
+        !first
+    }
+
+    /// The pointer is still by what waits.
+    fn keep(&mut self) {
+        if let Some(asked) = &mut self.0 {
+            asked.kept = true;
+        }
+    }
+
+    /// Stop waiting after a while, or once the pointer has left what it asked.
+    /// Returns how long the wait still has to run: no time at all if it has just
+    /// ended, and what asked has yet to be drawn as it was before.
+    fn lapse(&mut self, now: Instant) -> Option<Duration> {
+        let asked = self.0.as_mut()?;
+        let left = asked.until.saturating_duration_since(now);
+        let left_alone = !std::mem::take(&mut asked.kept) && asked.near;
+        if left_alone || left.is_zero() {
+            self.0 = None;
+            return Some(Duration::ZERO);
+        }
+        Some(left)
+    }
+}
+
+/// The name a pane goes by in being closed.
+fn doomed(pane: &str) -> egui::Id {
+    egui::Id::unique(("close", pane))
 }
 
 /// What was asked of a session or a tab through its menu.
@@ -131,6 +239,7 @@ pub struct App {
     endpoint: String,
     /// With the sidebar, tabs are listed in it. Without, they run along the top.
     sidebar: bool,
+    sidebar_width: f32,
     /// The pane that has the keyboard, while one is on screen.
     focused: Option<String>,
     panes: HashMap<String, PaneView>,
@@ -148,8 +257,10 @@ pub struct App {
     /// What is typed in the list of sessions, and which of its rows Enter would take.
     filter: String,
     cursor: usize,
-    /// A session whose close button was pressed, and until when a second press ends it.
-    closing: Option<(String, Instant)>,
+    closing: Closing,
+    /// The tab on show that its list was last scrolled to, and in which list. It
+    /// is scrolled to once, and the list is the user's to scroll after that.
+    followed: Option<egui::Id>,
 }
 
 impl App {
@@ -172,6 +283,7 @@ impl App {
             current: 0,
             endpoint,
             sidebar: true,
+            sidebar_width: SIDEBAR_WIDTH,
             focused: None,
             panes: HashMap::new(),
             keyboard: Keyboard::default(),
@@ -184,7 +296,23 @@ impl App {
             desktop,
             filter: String::new(),
             cursor: 0,
-            closing: None,
+            closing: Closing::default(),
+            followed: None,
+        }
+    }
+
+    /// The name a session's or a tab's row goes by, which stays its own whatever
+    /// rows come and go around it.
+    fn row(&self, target: &Target) -> egui::Id {
+        let host = &self.servers[target.server].host.label;
+        egui::Id::unique(("row", host, &target.session, &target.window))
+    }
+
+    /// Close something, by the action that does it, unless programs may be lost by
+    /// that and this is the first asking. `near` says the pointer did the asking.
+    fn close(&mut self, what: egui::Id, spared: bool, near: bool, server: usize, action: Action) {
+        if self.closing.press(what, spared, near, Instant::now()) {
+            self.tell(server, action);
         }
     }
 
@@ -373,8 +501,19 @@ impl App {
             if pressed(chord, Key::Enter) && window.split() {
                 self.send(Action::Zoom { pane: pane.clone() });
             }
-            if pressed(chord, Key::W) {
-                self.send(Action::ClosePane { pane });
+            // A key held down asks once: its repeats would answer for the user.
+            let held = |event: &egui::Event| {
+                let (key, repeat) = match event {
+                    egui::Event::Key { key, repeat, .. } => (*key, *repeat),
+                    _ => return false,
+                };
+                key == Key::W && repeat
+            };
+            let held = ctx.input(|i| i.events.iter().any(held));
+            if pressed(chord, Key::W) && !held {
+                let spared = view.pane(&pane).is_some_and(|pane| pane.idle);
+                let action = Action::ClosePane { pane: pane.clone() };
+                self.close(doomed(&pane), spared, false, self.current, action);
             }
         }
         // Ctrl with Shift or Alt and these keys is for the terminal's programs. On
@@ -452,8 +591,12 @@ impl App {
             top: 0,
             ..Margin::same(6)
         });
+        // No wider than leaves the terminal half the window, however it was left.
+        let [least, most] = SIDEBAR_RANGE;
+        let most = (root_ui.available_width() / 2.0).clamp(least, most);
+        self.sidebar_width = self.sidebar_width.clamp(least, most);
         egui::Panel::left("sessions")
-            .exact_size(SIDEBAR_WIDTH)
+            .exact_size(self.sidebar_width)
             .resizable(false)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(SIDEBAR))
@@ -484,6 +627,28 @@ impl App {
             });
     }
 
+    /// The sidebar's edge, which drags to make it wider or narrower. It is asked
+    /// for last of all, or the terminal beside it and the scroll bar within it
+    /// would have the pointer there first.
+    fn edge(&mut self, root_ui: &egui::Ui) {
+        let x = root_ui.max_rect().left() + self.sidebar_width;
+        let height = root_ui.max_rect().y_range();
+        let grab = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, height);
+        // It takes clicks too, or a press there would be the terminal's to drag.
+        let sense = Sense::click_and_drag();
+        let edge = root_ui.interact(grab, egui::Id::unique("sidebar edge"), sense);
+        if edge.hovered() || edge.dragged() {
+            root_ui
+                .ctx()
+                .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            root_ui.painter().vline(x, height, Stroke::new(1.0, DIM));
+        }
+        // The next drawing holds it to its least and its most.
+        if let Some(pointer) = edge.interact_pointer_pos().filter(|_| edge.dragged()) {
+            self.sidebar_width = pointer.x - root_ui.max_rect().left();
+        }
+    }
+
     /// A server in the sidebar: its name, its sessions, and under each its tabs.
     fn server(&mut self, ui: &mut egui::Ui, server: usize, view: &View) {
         if self.heading(ui, server, view) {
@@ -492,18 +657,22 @@ impl App {
         if !view.connected {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
-                let status = RichText::new(&view.status).size(SMALL).color(DIM);
-                ui.add(egui::Label::new(status).truncate())
+                // On as many as three lines, broken between words. In full under
+                // the pointer, if that was not enough.
+                let font = FontId::proportional(SMALL);
+                let mut status = LayoutJob::simple(view.status.clone(), font, DIM, 0.0);
+                status.wrap.max_rows = 3;
+                ui.add(egui::Label::new(status).wrap())
                     .on_hover_text(&view.status);
             });
         }
         let mut sessions = Vec::new();
         for (index, session) in view.sessions.iter().enumerate() {
             let top = ui.cursor().top();
-            self.session(ui, server, &view.sessions, index);
-            // The tab on show, if it is one of this session's.
             let shown =
                 server == self.current && view.session().is_some_and(|s| s.id == session.id);
+            self.session(ui, server, &view.sessions, index, shown);
+            // The tab on show, if it is one of this session's.
             let shown = view.selected_window.as_deref().filter(|_| shown);
             let size = Vec2::new(ui.available_width(), 32.0);
             self.tabs(ui, server, session, shown, size);
@@ -617,6 +786,8 @@ impl App {
                 let Some(session) = view.session() else {
                     return;
                 };
+                // The wheel has one way to turn them, whichever way it is turned.
+                ui.style_mut().always_scroll_the_only_direction = true;
                 egui::ScrollArea::horizontal()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
@@ -744,7 +915,14 @@ impl App {
     }
 
     /// A session's name, heading its tabs in the sidebar.
-    fn session(&mut self, ui: &mut egui::Ui, server: usize, sessions: &[Session], index: usize) {
+    fn session(
+        &mut self,
+        ui: &mut egui::Ui,
+        server: usize,
+        sessions: &[Session],
+        index: usize,
+        shown: bool,
+    ) {
         let session = &sessions[index];
         let target = Target {
             server,
@@ -752,46 +930,61 @@ impl App {
             window: None,
         };
         let size = Vec2::new(ui.available_width(), 28.0);
-        if self.renaming(ui, &target, size).is_some() {
+        let id = self.row(&target);
+        if self.renaming(ui, &target, id, size).is_some() {
             return;
         }
+        let spared = session
+            .windows
+            .iter()
+            .flat_map(Window::every)
+            .all(|pane| pane.idle);
+        let ask = self.closing.ask(id, spared);
         let row = Item {
+            id: Some(id),
             caption: true,
             buttons: &[(Icon::Plus, "New tab"), (Icon::Close, "Close session")],
+            confirm: (ask == Ask::Again).then_some(CLOSE),
             movable: true,
             label: &session.name,
             ..Default::default()
         };
         let (response, button) = item(ui, size, row);
-        if response.clicked() {
-            self.open(server, Action::SelectSession(session.id.clone()));
-        }
+        let rename = self.picked(&response, &target, shown);
+        self.wait(ui, &response, ask);
         if response.drag_started_by(PointerButton::Primary) {
             DragAndDrop::set_payload(ui.ctx(), target.clone());
         }
         let labels = ["Move Up", "Move Down", "Close Session"];
-        let id = |index: usize| sessions.get(index).map(|s| s.id.clone());
-        match (button, menu(&response, labels, None, index, id)) {
+        let at = |index: usize| sessions.get(index).map(|s| s.id.clone());
+        let choice = menu(&response, labels, None, index, at, ask);
+        match (button, choice.or(rename.then_some(Choice::Rename))) {
             (Some(0), _) => self.open(server, Action::CreateWindow(session.id.clone())),
+            // This ends every program in the session.
             (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
-                self.close_session(target, &session.name);
+                self.close(id, spared, true, server, target.edit(Edit::Close));
             }
             (None, Some(choice)) => self.choose(target, &session.name, choice),
             (None, None) => {}
         }
     }
 
-    /// End a session, if asked a second time: once is easily a slip, and this ends
-    /// every program in it.
-    fn close_session(&mut self, target: Target, name: &str) {
-        let now = Instant::now();
-        let armed = self.closing.take();
-        if armed.is_some_and(|(id, until)| id == target.session && now < until) {
-            self.edit(target, Edit::Close);
-        } else {
-            self.toast
-                .say(format!("Close again to end {name} and all that runs in it"));
-            self.closing = Some((target.session, now + Toast::TIME));
+    /// Take a click on a session's or a tab's row, if there was one, and show the
+    /// row unless it is on show. True if the click was the second of two, which
+    /// asks for a new name: nothing tells a first click from a lone one, so the
+    /// first has shown the row by then.
+    fn picked(&mut self, response: &egui::Response, target: &Target, shown: bool) -> bool {
+        if response.clicked() && !shown {
+            self.open(target.server, target.select());
+        }
+        response.double_clicked()
+    }
+
+    /// Go on waiting to be asked again to close a row, while the pointer is on
+    /// it or in its menu.
+    fn wait(&mut self, ui: &egui::Ui, row: &egui::Response, ask: Ask) {
+        if ask == Ask::Again && (ui.rect_contains_pointer(row.rect) || row.context_menu_opened()) {
+            self.closing.keep();
         }
     }
 
@@ -812,14 +1005,22 @@ impl App {
             session: session.id.clone(),
             window: Some(window.id.clone()),
         };
-        if let Some(field) = self.renaming(ui, &target, size) {
+        let id = self.row(&target);
+        if let Some(field) = self.renaming(ui, &target, id, size) {
             return field;
         }
         let muted = self.muted.has(&window.id);
         let (said, message) = window.says();
+        let selected = shown == Some(&window.id);
+        let spared = window.every().all(|pane| pane.idle);
+        let ask = self.closing.ask(id, spared);
+        // What it says in full, for a row with no room for it, and with the line
+        // its program adds.
+        let tip = model::line(said.word().unwrap_or_default(), message);
         let row = Item {
+            id: Some(id),
             icon: Some(window.program()),
-            selected: shown == Some(&window.id),
+            selected,
             align: if across { Align::Center } else { Align::LEFT },
             mark: if muted {
                 Some((Icon::Muted, DIM))
@@ -828,23 +1029,22 @@ impl App {
             },
             word: said.word(),
             buttons: &[(Icon::Close, "Close tab")],
+            confirm: (ask == Ask::Again).then_some(CLOSE),
+            tip: &tip,
             movable: true,
             label: window.name(),
             ..Default::default()
         };
         let (response, button) = item(ui, size, row);
-        // In full, for a row with no room for it, and with the line its program adds.
-        let word = said.word().unwrap_or_default();
-        let response = match (word, message) {
-            ("", "") => response,
-            _ => response.on_hover_ui(|ui| {
-                ui.label(model::line(word, message));
-            }),
-        };
-        if response.clicked() {
-            let (session, window) = (session.id.clone(), window.id.clone());
-            self.open(server, Action::SelectWindow { session, window });
+        // The list turns to the tab on show when another comes to be it, by
+        // whatever means, and stays where the user turns it otherwise.
+        let list = id.with(self.sidebar);
+        if selected && self.followed != Some(list) {
+            self.followed = Some(list);
+            response.scroll_to_me(None);
         }
+        let rename = self.picked(&response, &target, selected);
+        self.wait(ui, &response, ask);
         if response.drag_started_by(PointerButton::Primary) {
             DragAndDrop::set_payload(ui.ctx(), target.clone());
         }
@@ -853,25 +1053,27 @@ impl App {
         } else {
             ["Move Up", "Move Down", "Close Tab"]
         };
-        let id = |index: usize| session.windows.get(index).map(|w| w.id.clone());
-        match (button, menu(&response, labels, Some(muted), index, id)) {
-            (Some(_), _) => self.edit(target, Edit::Close),
-            // One that goes by what runs in it has no name to start from.
-            (None, Some(choice)) => {
-                self.choose(target, window.label.as_deref().unwrap_or_default(), choice);
+        let at = |index: usize| session.windows.get(index).map(|w| w.id.clone());
+        let choice = menu(&response, labels, Some(muted), index, at, ask);
+        match (button, choice.or(rename.then_some(Choice::Rename))) {
+            (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
+                self.close(id, spared, true, server, target.edit(Edit::Close));
             }
+            // The field opens on the name it goes by, given or not.
+            (None, Some(choice)) => self.choose(target, window.name(), choice),
             (None, None) => {}
         }
         response.rect
     }
 
-    /// Do what a session's or a tab's menu was asked. `name` is the one it was given.
+    /// Do what a session's or a tab's menu was asked. `name` is the one it goes by.
     fn choose(&mut self, target: Target, name: &str, choice: Choice) {
         match choice {
             Choice::Rename => {
                 self.rename = Some(Rename {
                     target,
                     text: name.to_owned(),
+                    was: name.to_owned(),
                     fresh: true,
                     shown: true,
                 });
@@ -889,26 +1091,25 @@ impl App {
     }
 
     fn edit(&mut self, target: Target, edit: Edit) {
-        let Target {
-            server,
-            session,
-            window,
-        } = target;
-        let action = Action::Edit {
-            session,
-            window,
-            edit,
-        };
-        self.tell(server, action);
+        self.tell(target.server, target.edit(edit));
     }
 
     /// Show the field that stands in for a row while it is renamed, and return the
     /// space it took. None if this row is not the one.
-    fn renaming(&mut self, ui: &mut egui::Ui, target: &Target, size: Vec2) -> Option<Rect> {
+    fn renaming(
+        &mut self,
+        ui: &mut egui::Ui,
+        target: &Target,
+        row: egui::Id,
+        size: Vec2,
+    ) -> Option<Rect> {
         let rename = self.rename.as_mut().filter(|r| &r.target == target)?;
         rename.shown = true;
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        // By the row's own name, so that the field keeps the keyboard when rows
+        // before it come and go.
         let field = egui::TextEdit::singleline(&mut rename.text)
+            .id(row.with("rename"))
             .hint_text("Name")
             .margin(egui::vec2(11.0, 0.0))
             .align(Align2::LEFT_CENTER)
@@ -922,8 +1123,12 @@ impl App {
             output.response.request_focus();
         } else if output.response.lost_focus() {
             // Escape leaves the name as it was. Anything else, such as Enter or a
-            // click elsewhere, takes the new one.
-            let name = self.rename.take().map(|rename| rename.text);
+            // click elsewhere, takes the new one, if it is new.
+            let name = self
+                .rename
+                .take()
+                .filter(|rename| rename.text != rename.was);
+            let name = name.map(|rename| rename.text);
             if let Some(name) = name.filter(|_| !ui.input(|i| i.key_pressed(Key::Escape))) {
                 self.edit(target.clone(), Edit::Rename(name));
             }
@@ -979,16 +1184,80 @@ impl App {
         });
     }
 
-    fn terminal_pane(&mut self, ui: &mut egui::Ui, window: &Window, pane: &Pane, rect: Rect) {
+    /// A lost connection says so above its last screen, in plain words and with
+    /// a way to try again. What the connection itself had to say comes under them.
+    fn lost(&mut self, ui: &mut egui::Ui, view: &View) {
+        let size = Vec2::new(ui.available_width(), 48.0);
+        let (banner, response) = ui.allocate_exact_size(size, Sense::hover());
+        ui.painter().rect_filled(banner, 0, HOVER);
+        let mut text = banner.shrink2(egui::vec2(12.0, 0.0));
+        let layout = Layout::right_to_left(Align::Center);
+        let mut row = ui.new_child(UiBuilder::new().max_rect(text).layout(layout));
+        let again = row.button("Reconnect");
+        if again.clicked() {
+            self.send(Action::Reconnect);
+        }
+        text.max.x = again.rect.left() - 12.0;
+        // Room for a mark ahead of the words.
+        text.min.x += 14.0;
+        let server = self.servers[self.current].label();
+        let said = format!("Disconnected from {server}. This is its last screen.");
+        let said = fitted(ui, &said, FontId::proportional(BODY), TEXT, text.width());
+        let font = FontId::proportional(SMALL);
+        let why = fitted(ui, &view.status, font, DIM, text.width());
+        let line = said.size().y;
+        let top = banner.center().y - (line + why.size().y) / 2.0;
+        let mark = egui::pos2(text.left() - 10.0, top + line / 2.0);
+        ui.painter().circle_filled(mark, 3.5, RED);
+        ui.painter()
+            .galley(egui::pos2(text.left(), top), said, TEXT);
+        let under = egui::pos2(text.left(), top + line);
+        ui.painter().galley(under, why, DIM);
+        // In full, where there was not the room.
+        response.on_hover_text(&view.status);
+    }
+
+    /// A pane of the tab on show. One that is not `live` shows the last screen of
+    /// a connection that was lost.
+    fn terminal_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        window: &Window,
+        pane: &Pane,
+        rect: Rect,
+        live: bool,
+    ) {
         let active = self.focused.as_deref() == Some(&pane.id);
         // The focused pane holds the keyboard whenever nothing else is taking it.
         let keyboard = active && !self.busy(ui.ctx());
         let mut actions = Vec::new();
+        let (what, spared) = (doomed(&pane.id), pane.idle);
+        let ask = self.closing.ask(what, spared);
+        // Asked to close, it waits to be asked again while the pointer is on it,
+        // or in a menu.
+        let over = ui.rect_contains_pointer(rect);
+        if ask == Ask::Again && (over || egui::Popup::is_any_open(ui.ctx())) {
+            self.closing.keep();
+        }
+        // It was asked to close just now, with the pointer.
+        let mut close = false;
+        // Its header was clicked.
+        let mut picked = false;
         let mut terminal_rect = rect;
         // One pane of several has a header, and so has one that fills the tab in
         // place of the rest.
         if window.split() {
             terminal_rect.min.y += PANE_HEADER;
+            // A click on it takes the keyboard to the pane, as one in its terminal
+            // does. Its buttons lie over it.
+            let bar = rect.with_max_y(terminal_rect.top());
+            let id = ui.scope_id().with(("header", &pane.id));
+            picked = ui.interact(bar, id, Sense::click()).clicked();
+            // The pane with the keyboard is marked along its top.
+            if active {
+                let line = Stroke::new(2.0, ACCENT);
+                ui.painter().hline(bar.x_range(), bar.top() + 1.0, line);
+            }
             let mut header = rect.shrink2(egui::vec2(4.0, 0.0));
             // The name sits a little low, toward the terminal it names.
             header.min.y += 2.0;
@@ -996,15 +1265,13 @@ impl App {
             let layout = Layout::right_to_left(Align::Center);
             let mut buttons = ui.new_child(UiBuilder::new().max_rect(header).layout(layout));
             buttons.spacing_mut().item_spacing.x = 0.0;
-            let over = ui.rect_contains_pointer(rect);
             // Its buttons show under the pointer. The way back from a pane that
             // fills the tab shows always, where it would be among them.
-            if !over {
+            if !over || ask == Ask::Again {
                 buttons.add_space(SMALL_BUTTON);
             } else if small_button(&mut buttons, Icon::Close, "Close Pane (Ctrl+Shift+W)").clicked()
             {
-                let pane = pane.id.clone();
-                actions.push(Action::ClosePane { pane });
+                close = true;
             }
             let (zoom, tip) = if window.zoomed {
                 (Icon::Restore, "Restore Panes (Ctrl+Shift+Enter)")
@@ -1024,13 +1291,12 @@ impl App {
                     .text(edge, Align2::RIGHT_CENTER, word, font, color);
                 header.max.x = word.left() - 8.0;
             }
-            ui.painter().with_clip_rect(header).text(
-                header.left_center() + egui::vec2(8.0, 0.0),
-                Align2::LEFT_CENTER,
-                &pane.title,
-                FontId::proportional(SMALL),
-                if active { TEXT } else { DIM },
-            );
+            // A title too long for the room left ends in an ellipsis.
+            let color = if active { TEXT } else { DIM };
+            let font = FontId::proportional(SMALL);
+            let title = fitted(ui, &pane.title, font, color, header.width() - 8.0);
+            let corner = header.left_center() + egui::vec2(8.0, -title.size().y / 2.0);
+            ui.painter().galley(corner, title, color);
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
         // A selection keeps showing the frame it was made on, including on the
@@ -1096,7 +1362,8 @@ impl App {
                 state.last_size = Some(size);
             }
         }
-        if response.clicked() || response.drag_started() {
+        let pressed = response.clicked() || response.drag_started();
+        if pressed || picked {
             self.focused = Some(pane.id.clone());
             // A pane that is this window's, and where the server has the keyboard
             // already, needs no telling.
@@ -1105,6 +1372,8 @@ impl App {
                     pane: pane.id.clone(),
                 });
             }
+        }
+        if pressed {
             state.selection = None;
         }
         // Shift overrides a program's mouse capture.
@@ -1149,7 +1418,8 @@ impl App {
                     }
                 }
             }
-            state.paint(ui.painter(), grid, frame, active);
+            // A screen that is no longer kept up shows a cursor nobody is at.
+            state.paint(ui.painter(), grid, frame, active && live);
             for &(row, start, end) in link.iter().flat_map(|link| &link.spans) {
                 let span = grid.span(row, start, end).intersect(grid.rect);
                 let line = Stroke::new(1.0, rgb(frame.fg));
@@ -1158,6 +1428,11 @@ impl App {
             }
             if active && response.has_focus() {
                 compose(ui, grid, frame, &self.keyboard.preedit);
+            }
+            // And goes dim, halfway to its background.
+            if !live {
+                let veil = rgb(frame.bg).gamma_multiply(0.5);
+                ui.painter().rect_filled(terminal_rect, 0, veil);
             }
         } else {
             ui.painter().text(
@@ -1177,7 +1452,7 @@ impl App {
             ui.painter().hline(rect.x_range(), rect.top(), line);
         }
         if !tracking {
-            response.context_menu(|ui| {
+            asking(&response).show(|ui| {
                 let copy = egui::Button::new("Copy selection");
                 if ui.add_enabled(state.selection.is_some(), copy).clicked()
                     && let Some(selection) = &state.selection
@@ -1202,23 +1477,35 @@ impl App {
                 } else {
                     "Zoom Pane"
                 };
-                let entries = SPLITS.into_iter().map(split).chain([
-                    (zoom, window.split(), Action::Zoom { pane: pane() }),
-                    ("Close Pane", true, Action::ClosePane { pane: pane() }),
-                ]);
-                for (label, enabled, action) in entries {
-                    if matches!(action, Action::ClosePane { .. }) {
-                        ui.separator();
-                    }
+                let zoom = (zoom, window.split(), Action::Zoom { pane: pane() });
+                for (label, enabled, action) in SPLITS.into_iter().map(split).chain([zoom]) {
                     if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
                         actions.push(action);
                         ui.close();
                     }
                 }
+                ui.separator();
+                if ui.add(closer("Close Pane", ask)).clicked() {
+                    close = true;
+                    // Waiting to be chosen again, it stays under the pointer.
+                    if ask != Ask::First {
+                        ui.close();
+                    }
+                }
             });
+        }
+        // Asked to close, it asks back from where its close button is, or would
+        // be: it may have been asked with a key, and may have no header.
+        if ask == Ask::Again {
+            let edge = rect.right_top() + egui::vec2(-4.0, 1.0 + PANE_HEADER / 2.0);
+            close |= confirm(ui, edge, what, CLOSE).clicked();
         }
         for action in actions {
             self.send(action);
+        }
+        if close {
+            let pane = pane.id.clone();
+            self.close(what, spared, true, self.current, Action::ClosePane { pane });
         }
     }
 
@@ -1308,7 +1595,8 @@ impl eframe::App for App {
         }
         let terminal = panes.iter().find_map(|p| p.frame.as_ref());
         let ground = terminal.map_or(VIEW, |frame| style::ground(rgb(frame.bg)));
-        egui::CentralPanel::no_frame()
+        // The panel's work, and the space it has for terminals.
+        let shown = egui::CentralPanel::no_frame()
             .frame(egui::Frame::new().fill(ground))
             .show(root_ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -1316,30 +1604,32 @@ impl eframe::App for App {
                     self.toolbar(ui, &views);
                 }
                 let Some(window) = window.filter(|window| !window.panes.is_empty()) else {
-                    return self.empty(ui, view);
+                    let area = ui.available_rect_before_wrap();
+                    self.empty(ui, view);
+                    return area;
                 };
-                // Healthy needs no words. A lost connection says so above its last screen.
+                // Healthy needs no words.
                 if !view.connected {
-                    let size = Vec2::new(ui.available_width(), 36.0);
-                    let (banner, _) = ui.allocate_exact_size(size, Sense::hover());
-                    ui.painter().rect_filled(banner, 0, HOVER);
-                    ui.painter().with_clip_rect(banner).text(
-                        banner.center(),
-                        Align2::CENTER_CENTER,
-                        &view.status,
-                        FontId::proportional(BODY),
-                        TEXT,
-                    );
+                    self.lost(ui, view);
                 }
                 let area = ui.available_rect_before_wrap();
                 for pane in panes {
                     let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
                     let size = area.size() * egui::vec2(pane.width, pane.height);
                     let rect = Rect::from_min_size(min, size);
-                    self.terminal_pane(ui, window, pane, rect);
+                    self.terminal_pane(ui, window, pane, rect, view.connected);
                 }
+                area
             });
-        self.toast.show(&ctx);
+        if self.sidebar {
+            self.edge(root_ui);
+        }
+        self.toast.show(&ctx, shown.inner);
+        // One more drawing when the wait to be asked again to close is over, and
+        // none until then.
+        if let Some(left) = self.closing.lapse(Instant::now()) {
+            ctx.request_repaint_after(left);
+        }
         if view.connected
             && !busy
             && let Some(pane) = self.focused.clone()
@@ -1368,7 +1658,7 @@ impl eframe::App for App {
     }
 }
 
-/// Trouble is said once, briefly, at the foot of the window.
+/// Trouble is said once, briefly, over the terminals.
 #[derive(Default)]
 struct Toast(Option<(String, Instant)>);
 
@@ -1379,7 +1669,9 @@ impl Toast {
         self.0 = Some((message, Instant::now() + Self::TIME));
     }
 
-    fn show(&mut self, ctx: &egui::Context) {
+    /// Show it at the head of the space the terminals have: at the foot is the
+    /// line being typed, more often than not. A click sends it away.
+    fn show(&mut self, ctx: &egui::Context, within: Rect) {
         let Some((message, until)) = &self.0 else {
             return;
         };
@@ -1394,16 +1686,21 @@ impl Toast {
             .corner_radius(12)
             .inner_margin(Margin::symmetric(16, 10))
             .shadow(ctx.global_style().visuals.popup_shadow);
-        egui::Area::new(egui::Id::unique("toast"))
+        let area = egui::Area::new(egui::Id::unique("toast"))
             .order(egui::Order::Foreground)
-            .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -24.0))
-            .interactable(false)
-            .show(ctx, |ui| {
-                frame.show(ui, |ui| {
-                    ui.set_max_width(520.0);
-                    ui.label(message);
-                });
+            .constrain_to(within)
+            .anchor(Align2::CENTER_TOP, egui::vec2(0.0, 12.0));
+        let shown = area.show(ctx, |ui| {
+            frame.show(ui, |ui| {
+                ui.set_max_width((within.width() - 64.0).clamp(120.0, 520.0));
+                // Its words are not for selecting: that would take the click.
+                ui.add(egui::Label::new(message).selectable(false));
             });
+        });
+        if shown.response.clicked() {
+            self.0 = None;
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -1419,19 +1716,20 @@ fn dot(activity: Activity) -> Option<(Icon, Color32)> {
     Some((Icon::Dot, color))
 }
 
-/// What a session's or a tab's menu was asked, if anything. A double click asks for
-/// a new name, as the menu's first entry does. A tab says whether it is `muted`.
-/// The row is the one at `index` among its like, whose IDs `id` gives; `labels`
-/// name moving it back, moving it on, and closing it.
+/// What a session's or a tab's menu was asked, if anything. A tab says whether it
+/// is `muted`. The row is the one at `index` among its like, whose IDs `id` gives;
+/// `labels` name moving it back, moving it on, and closing it, and `ask` says
+/// what choosing to close it will do.
 fn menu(
     response: &egui::Response,
     labels: [&str; 3],
     muted: Option<bool>,
     index: usize,
     id: impl Fn(usize) -> Option<String>,
+    ask: Ask,
 ) -> Option<Choice> {
-    let mut picked = response.double_clicked().then_some(Choice::Rename);
-    response.context_menu(|ui| {
+    let mut picked = None;
+    asking(response).show(|ui| {
         let mute = |muted| if muted { "Unmute Tab" } else { "Mute Tab" };
         let entries = [
             Some(("Rename", true, Choice::Rename)),
@@ -1450,16 +1748,41 @@ fn menu(
             Some((labels[2], true, Choice::Edit(Edit::Close))),
         ];
         for (label, enabled, choice) in entries.into_iter().flatten() {
-            if matches!(choice, Choice::Edit(Edit::Close)) {
+            let close = matches!(choice, Choice::Edit(Edit::Close));
+            if close {
                 ui.separator();
             }
-            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+            let entry = match close {
+                true => closer(label, ask),
+                false => egui::Button::new(label),
+            };
+            if ui.add_enabled(enabled, entry).clicked() {
                 picked = Some(choice);
-                ui.close();
+                // The entry that waits to be chosen again stays under the pointer.
+                if !(close && ask == Ask::First) {
+                    ui.close();
+                }
             }
         }
     });
     picked
+}
+
+/// The menu of whatever was clicked with the other button. A click in it leaves
+/// it open: its entries close it, but for one that asks to be chosen twice.
+fn asking(response: &egui::Response) -> egui::Popup<'_> {
+    egui::Popup::context_menu(response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+}
+
+/// The entry of a menu that closes something, which shows when it has been
+/// chosen once and waits to be chosen again.
+fn closer(label: &str, ask: Ask) -> egui::Button<'_> {
+    let entry = egui::Button::new(label);
+    match ask {
+        Ask::Again => entry.fill(DANGER),
+        _ => entry,
+    }
 }
 
 /// A row of controls, such as the toolbar or a server's heading.
@@ -1630,3 +1953,7 @@ fn mouse_button(button: egui::PointerButton) -> &'static str {
         _ => "left",
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/ui.rs"]
+mod tests;
