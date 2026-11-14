@@ -11,6 +11,8 @@ use crate::model::{self, Action};
 pub struct Keyboard {
     held: HashMap<Key, Held>,
     pub preedit: String,
+    /// An input method was last heard to be composing something.
+    composing: bool,
 }
 
 struct Held {
@@ -21,6 +23,20 @@ struct Held {
 }
 
 impl Keyboard {
+    /// Drop the news that nothing is being composed when nothing was. On Wayland
+    /// it comes in answer to the input method being told where the cursor is, and
+    /// that is told it after every frame that had news: each would bring on the
+    /// next, and the window would draw without end.
+    pub fn settle(&mut self, events: &mut Vec<Event>) {
+        events.retain(|event| {
+            let Event::Ime(ImeEvent::Preedit { text, .. }) = event else {
+                return true;
+            };
+            let composing = !text.is_empty();
+            std::mem::replace(&mut self.composing, composing) || composing
+        });
+    }
+
     pub fn translate(&mut self, pane: &str, events: &[Event]) -> Vec<Action> {
         let mut actions = Vec::new();
         let mut used_text = HashSet::new();

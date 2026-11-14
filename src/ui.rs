@@ -1073,6 +1073,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        self.keyboard.settle(&mut input.events);
+    }
+
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
         let home = self.servers[0].client.snapshot();

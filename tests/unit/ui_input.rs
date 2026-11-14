@@ -134,3 +134,27 @@ fn only_real_input_clears_a_selection() {
     assert!(clears_selection(&actions[0]));
     assert!(!clears_selection(&actions[1]), "a release never does");
 }
+
+#[test]
+fn news_of_nothing_composed_is_kept_only_when_something_was() {
+    let preedit = |text: &str| {
+        let (text, active_range_chars) = (text.to_owned(), None);
+        Event::Ime(ImeEvent::Preedit {
+            text,
+            active_range_chars,
+        })
+    };
+    let commit = || Event::Ime(ImeEvent::Commit("に".into()));
+    let mut keyboard = Keyboard::default();
+    let mut settled = |mut events: Vec<Event>| {
+        keyboard.settle(&mut events);
+        events
+    };
+    // What Wayland says when told where the cursor is: nothing, over and over.
+    assert_eq!(settled(vec![preedit("")]), []);
+    assert_eq!(settled(vec![preedit(""), Event::Text("a".into())]).len(), 1);
+    // A composition is heard through to the end of it, and no further.
+    assert_eq!(settled(vec![preedit("n"), preedit("に")]).len(), 2);
+    assert_eq!(settled(vec![preedit(""), commit()]).len(), 2);
+    assert_eq!(settled(vec![preedit("")]), []);
+}
