@@ -24,8 +24,8 @@ use crate::{
 const PANE_HEADER: f32 = 28.0;
 
 impl App {
-    /// A pane of the tab on show. In a view that is not connected it shows the
-    /// last screen of a connection that was lost.
+    /// A pane of the tab on show. It may show a last screen: of a connection
+    /// that was lost, or of its own terminal where that alone is fed no more.
     pub(super) fn terminal_pane(
         &mut self,
         ui: &mut egui::Ui,
@@ -34,7 +34,8 @@ impl App {
         pane: &Pane,
         rect: Rect,
     ) {
-        let live = view.connected;
+        // A screen with something to say of its terminal is its last.
+        let live = view.connected && (pane.frame.is_none() || pane.status.is_empty());
         let active = self.focused.as_deref() == Some(&pane.id);
         // The focused pane holds the keyboard whenever nothing else is taking it.
         let keyboard = active && !self.busy(ui.ctx());
@@ -264,6 +265,17 @@ impl App {
             if !live {
                 let veil = rgb(frame.bg).gamma_multiply(0.5);
                 ui.painter().rect_filled(terminal_rect, 0, veil);
+            }
+            // Under a connection that stands, nothing else says what is wrong
+            // with the one terminal: it is said over its last screen.
+            if !live && view.connected {
+                let font = FontId::proportional(SMALL);
+                let said = fitted(ui, &pane.status, font, TEXT, grid.rect.width() - 20.0);
+                let size = said.size() + egui::vec2(20.0, 10.0);
+                let pill = Rect::from_min_size(grid.rect.min, size);
+                ui.painter().rect_filled(pill, size.y / 2.0, POPOVER);
+                ui.painter()
+                    .galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
             }
         } else {
             ui.painter().text(
