@@ -38,7 +38,7 @@ fn every_icon_at_hand_is_listed_and_can_be_drawn() {
     for (name, drawing) in DRAWINGS {
         assert!(ICONS.contains(name), "{name}");
         let tree = resvg::usvg::Tree::from_str(drawing, &Default::default());
-        assert_eq!(tree.expect(name).size().width(), 31.25, "{name}");
+        assert_eq!(tree.expect(name).size().width(), 60.0, "{name}");
     }
     for line in ALIASES.lines() {
         let (icon, names) = line.split_once(": ").expect(line);

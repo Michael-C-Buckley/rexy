@@ -34,7 +34,7 @@ SOFTWARE.
 
 ## Program icons
 
-Tabs show the glyphs of Superlogical's Rex icon set, as converted by rex-rune. They are Superlogical's artwork of other owners' logos, with no published terms, so they are not kept in this repository: `scripts/icons` fetches them into `assets/icons/`, and a build includes whichever are there. See `assets/icons/NOTICE.md` before passing such a build on.
+Tabs show the tiles of Superlogical's Rex icon set, as converted by rex-rune. They are Superlogical's artwork of other owners' logos, with no published terms, so they are not kept in this repository: `scripts/icons` fetches them into `assets/icons/`, and a build includes whichever are there. See `assets/icons/NOTICE.md` before passing such a build on.
 
 ## Libraries
 

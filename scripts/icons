@@ -5,5 +5,5 @@ set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 commit=db0f86cc3ec5aaf72cfed89b1cbbbdad20e7868f
 curl -fsSL "https://github.com/shuv1337/rex-rune/archive/$commit.tar.gz" |
-    tar -xz -C assets/icons --strip-components=4 --wildcards '*/resources/program-icons/glyphs/*.svg'
+    tar -xz -C assets/icons --strip-components=4 --wildcards '*/resources/program-icons/tiles/*.svg'
 echo "$(ls assets/icons/*.svg | wc -l) icons in assets/icons"

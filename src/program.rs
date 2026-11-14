@@ -169,7 +169,7 @@ impl Program {
         self.0
     }
 
-    /// The icon as an SVG, if it was at hand. Its colours say only where the ink goes.
+    /// The icon as an SVG, if it was at hand.
     pub fn drawing(self) -> Option<&'static str> {
         let icon = DRAWINGS.iter().find(|(icon, _)| *icon == self.0)?;
         Some(icon.1)

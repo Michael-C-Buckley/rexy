@@ -34,8 +34,8 @@ pub const TOOLBAR: f32 = 44.0;
 pub const BODY: f32 = 14.5;
 pub const SMALL: f32 = 12.5;
 const RADIUS: u8 = 6;
-/// The side of a program's icon.
-const GLYPH: f32 = 16.0;
+/// The side of a program's icon: a tile, wider than it is tall, on a square.
+const TILE: f32 = 20.0;
 
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
@@ -209,14 +209,15 @@ impl Icon {
     }
 }
 
-/// Draw a program's icon in one colour, as sharp as the screen allows.
-fn glyph(painter: &egui::Painter, program: Program, left: Pos2, color: Color32) {
+/// Draw a program's icon, as sharp as the screen allows. Where it is not at hand
+/// a prompt stands in for it, in `ink`.
+fn tile(painter: &egui::Painter, program: Program, left: Pos2, ink: Color32) {
     let Some(drawing) = program.drawing() else {
-        return Icon::Prompt.paint(painter, left + egui::vec2(GLYPH / 2.0, 0.0), color);
+        return Icon::Prompt.paint(painter, left + egui::vec2(TILE / 2.0, 0.0), ink);
     };
     let ctx = painter.ctx();
     let scale = ctx.pixels_per_point();
-    let pixels = (GLYPH * scale).round() as usize;
+    let pixels = (TILE * scale).round() as usize;
     let key = egui::Id::unique((program.name(), pixels));
     let texture = ctx.data(|data| data.get_temp::<egui::TextureHandle>(key));
     let texture = texture.unwrap_or_else(|| {
@@ -226,13 +227,13 @@ fn glyph(painter: &egui::Painter, program: Program, left: Pos2, color: Color32) 
         texture
     });
     // One texel to a pixel: an icon that straddles pixels blurs.
-    let corner = (left - egui::vec2(0.0, GLYPH / 2.0)).round_to_pixels(scale);
+    let corner = (left - egui::vec2(0.0, TILE / 2.0)).round_to_pixels(scale);
     let rect = Rect::from_min_size(corner, Vec2::splat(pixels as f32 / scale));
     let whole = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
-    painter.image(texture.id(), rect, whole, color);
+    painter.image(texture.id(), rect, whole, Color32::WHITE);
 }
 
-/// An icon as a mask: white, as opaque as its drawing is anywhere.
+/// An icon in its own colours.
 fn raster(drawing: &str, pixels: usize) -> egui::ColorImage {
     use resvg::{tiny_skia, usvg};
     let tree = usvg::Tree::from_str(drawing, &usvg::Options::default());
@@ -242,9 +243,11 @@ fn raster(drawing: &str, pixels: usize) -> egui::ColorImage {
     let scale = pixels as f32 / tree.size().width();
     let scale = tiny_skia::Transform::from_scale(scale, scale);
     resvg::render(&tree, scale, &mut canvas.as_mut());
-    let ink = canvas.pixels().iter();
-    let ink = ink.map(|pixel| Color32::from_white_alpha(pixel.alpha()));
-    egui::ColorImage::new([pixels; 2], ink.collect())
+    let colors = canvas.pixels().iter().map(|pixel| {
+        let rgba = [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()];
+        Color32::from_rgba_premultiplied(rgba[0], rgba[1], rgba[2], rgba[3])
+    });
+    egui::ColorImage::new([pixels; 2], colors.collect())
 }
 
 /// A flat button that draws its own symbol.
@@ -290,7 +293,7 @@ pub struct Item<'a> {
 /// Draw a row. Returns its response, and which of its buttons was pressed.
 pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, Option<usize>) {
     const BUTTON: f32 = 24.0;
-    const ICON: f32 = GLYPH + 7.0;
+    const ICON: f32 = TILE + 7.0;
     let sense = if item.movable {
         Sense::click_and_drag()
     } else {
@@ -326,8 +329,8 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let place = anchor.align_size_within_rect(label.size() + egui::vec2(lead, 0.0), text);
     if let Some(program) = item.icon {
         let left = egui::pos2(place.left(), rect.center().y);
-        let color = if item.selected { TEXT } else { DIM };
-        glyph(ui.painter(), program, left, color);
+        let ink = if item.selected { TEXT } else { DIM };
+        tile(ui.painter(), program, left, ink);
     }
     ui.painter()
         .galley(place.min + egui::vec2(lead, 0.0), label, color);
