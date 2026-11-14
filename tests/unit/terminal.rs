@@ -150,6 +150,56 @@ fn frames_reuse_unchanged_rows_and_copy_whole_graphemes() {
 }
 
 #[test]
+fn a_cursor_that_only_moved_and_colours_that_changed_are_drawn() {
+    let mut terminal = terminal(20, 3);
+    terminal.vt_write(b"\x1b[31mred\x1b[m plain");
+    let mut renderer = Renderer::new().unwrap();
+    let first = renderer.frame(&terminal).unwrap().unwrap();
+    assert_eq!(first.cursor, Some((9, 0)));
+    assert!(renderer.frame(&terminal).unwrap().is_none());
+    let mut drawn = |terminal: &mut Terminal<'static, 'static>, bytes: &[u8]| {
+        terminal.vt_write(bytes);
+        let frame = renderer.frame(terminal).unwrap().expect("a change to draw");
+        assert!(renderer.frame(terminal).unwrap().is_none());
+        frame
+    };
+    // Moved along its row, hidden, reshaped: none of it writes a cell, and every
+    // row is kept.
+    let moved = drawn(&mut terminal, b"\x1b[1;2H");
+    assert_eq!(moved.cursor, Some((1, 0)));
+    assert!(Arc::ptr_eq(&first.lines[0], &moved.lines[0]));
+    assert_eq!(drawn(&mut terminal, b"\x1b[?25l").cursor, None);
+    let shaped = drawn(&mut terminal, b"\x1b[?25h\x1b[6 q");
+    let cursor = (shaped.cursor, shaped.cursor_shape);
+    assert_eq!(cursor, (Some((1, 0)), CursorShape::Bar));
+    assert!(Arc::ptr_eq(&first.lines[0], &shaped.lines[0]));
+    let colored = drawn(&mut terminal, b"\x1b]12;#0a0b0c\x1b\\");
+    assert_eq!(colored.cursor_color, 0x0a0b0c);
+    // The colours cells fall back on are held by every cell.
+    let ground = drawn(&mut terminal, b"\x1b]10;#f0f0f0\x1b\\\x1b]11;#102030\x1b\\");
+    assert_eq!((ground.fg, ground.bg), (0xf0f0f0, 0x102030));
+    let plain = &ground.lines[0].cells[5];
+    assert_eq!((plain.fg, plain.bg), (0xf0f0f0, 0x102030));
+    let reversed = drawn(&mut terminal, b"\x1b[?5h");
+    assert_eq!((reversed.fg, reversed.bg), (0x102030, 0xf0f0f0));
+}
+
+#[test]
+fn a_theme_keeps_none_of_the_colours_a_program_set() {
+    let mut terminal = terminal(20, 2);
+    terminal.vt_write(b"\x1b]4;1;#aabbcc\x1b\\");
+    let theme = serde_json::json!({"type": "theme", "palette": ["2=#010203"]});
+    apply_metadata(&mut terminal, &theme).unwrap();
+    let default = terminal.default_color_palette().unwrap().0;
+    assert_eq!(rgb(default[2]), 0x010203);
+    assert_ne!(rgb(default[1]), 0xaabbcc);
+    // The program's colour still shows, until the program gives it up.
+    assert_eq!(rgb(terminal.color_palette().unwrap().0[1]), 0xaabbcc);
+    terminal.vt_write(b"\x1b]104;1\x1b\\");
+    assert_ne!(rgb(terminal.color_palette().unwrap().0[1]), 0xaabbcc);
+}
+
+#[test]
 fn copying_soft_wrapped_lines_does_not_insert_newlines() {
     let mut terminal = terminal(5, 3);
     terminal.vt_write(b"abcdefgh\r\nlast");

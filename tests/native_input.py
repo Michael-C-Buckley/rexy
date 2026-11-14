@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in X11 smoke check on an existing isolated display and disposable Rex pane.
 
-Requires libX11, libXtst, and the Rex CLI. Never uses the default display/server.
+Requires libX11, libXtst, xclip, and the Rex CLI. Never uses the default display/server.
 """
 import argparse
 import ctypes as C
@@ -90,6 +90,15 @@ def click(px, py, twice=False):
 def capture():
     return subprocess.check_output(['rex', '-S', args.server, '--autostart=false', 'capture', '-s', args.session, '-b', args.pane, '--trim'], text=True)
 
+def clipboard(text=None):
+    """Read the test display's clipboard as another program would, or set it."""
+    xclip = ['xclip', '-selection', 'clipboard', '-display', args.display]
+    if text is None:
+        return subprocess.run(xclip + ['-o'], capture_output=True, text=True, timeout=5).stdout
+    # It stays behind to hand the text over, and ends with the display.
+    subprocess.run(xclip + ['-i'], input=text, text=True, check=True, timeout=5,
+        stderr=subprocess.DEVNULL)
+
 def expect(label, predicate):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
@@ -120,6 +129,11 @@ chord(RETURN)
 expect('clipboard fixture', lambda text: text.strip().startswith('CLIPBOARD'))
 click(290, 18, twice=True)
 chord(ord('c'), ctrl=True, shift=True)
+deadline = time.monotonic() + 5
+while clipboard() != 'CLIPBOARD':
+    assert time.monotonic() < deadline, 'a copy reaches other programs: ' + repr(clipboard())
+    time.sleep(.1)
+print('a copy reaches other programs: passed', flush=True)
 chord(ESCAPE)
 type_text('cat')
 chord(RETURN)
@@ -127,6 +141,13 @@ expect('first character after leaving selection', lambda text: text.rstrip().end
 chord(ord('v'), ctrl=True, shift=True)
 chord(RETURN)
 expect('native selection copy and bracketed paste', lambda text: text.count('CLIPBOARD') >= 3)
+chord(ord('c'), ctrl=True)
+clipboard(f'outside-{nonce}')
+type_text('cat')
+chord(RETURN)
+chord(ord('v'), ctrl=True, shift=True)
+chord(RETURN)
+expect('paste of what another program copied', lambda text: text.count(f'outside-{nonce}') >= 2)
 chord(ord('c'), ctrl=True)
 
 # A program tracking the mouse gets the clicks on its pane.

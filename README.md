@@ -44,7 +44,7 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## Controls
 
-- The sidebar lists every server, its sessions, and each session's tabs. Click a tab to show it, wherever it is. `+` beside a server creates a session there, which the server names. Pointing at a session shows `+` for a new tab in it and `×` to close it; pointing at a tab shows `×` to close it. Closing a tab happens at once; a session's `×` asks for a second press.
+- The sidebar lists every server, its sessions, and each session's tabs. Click a tab to show it, wherever it is. `+` beside a server creates a session there, which the server names. Pointing at a session shows `+` for a new tab in it and `×` to close it; pointing at a tab shows `×` to close it. Closing a tab happens at once; closing a session asks a second time, from its `×` or from its menu.
 - **Ctrl Shift B** hides the sidebar and puts the tabs along the top instead. The button at their left lists the sessions on every server: type to find one, walk the list with the arrow keys, and press **Enter** to show the one picked out. A name that finds nothing creates a session with that name; `+` beside a server creates it there.
 - Right-click a session or a tab to rename it, move it, or close it. Double-click renames too, and dragging moves it among its like. A tab nobody has named goes by its terminal's title; renaming one to nothing gives it back that name.
 - The icon before a tab's name is that of the program in its foreground: Claude Code, Neovim, Python and some 150 more, from Rex's own icon set. A shell's prompt stands for shells and for programs without an icon. The set is Superlogical's and is not kept in this repository: run `./scripts/icons` once before building to fetch it, or every tab shows the prompt.
@@ -52,14 +52,14 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 - What a tab has to say while you are not looking at it also goes to the desktop as a notification, which says which tab, session and server it is from: the words above, and any notice the program sends for itself (OSC 9 or 777). Looking at the pane takes its notification back, and clicking the notification shows the pane and puts the keyboard in it. A pane counts as looked at only while its tab is on show and the window is the one in use. One that is out of sight there does not count: behind a zoomed pane, or in a floating layer that another client has minimized. Clicking its notification brings it out. So does picking it from the list of the panes out of sight, which a button at the top opens whenever the tab on show has any: getting to a tab never rearranges it. This needs a notification service on the session's D-Bus, as GNOME, KDE and most desktops have; without one, nothing is sent and nothing else changes.
 - **Mute Tab**, in a tab's menu, silences all of that for the tab. Muted tabs are remembered on this computer, in `rex-lite/muted` under `$XDG_STATE_HOME` or `~/.local/state`, and no server is told.
 - The two buttons at the top split the focused pane right or down, as **Ctrl Shift D** and **Ctrl Shift E** do.
-- Click a pane to focus it, or press **Ctrl Shift** and an arrow to move to the pane on that side. Input and focus take ownership; only owned panes are resized.
+- Click a pane to focus it, or press **Ctrl Shift** and an arrow to move to the pane on that side. Input and focus take ownership. A pane is the size its owner gives it: one that another client owns keeps that client's size until you click it or type in it.
 - **Ctrl Shift Enter** zooms the focused pane, so that it fills the tab, and pressed again restores the others. **Ctrl Shift W** closes it at once, with the program in it; a tab closes with its last pane. Pointing at a pane of a split tab shows both as buttons in its header, and the pane menu has them too.
 - **Ctrl Tab** and **Ctrl Shift Tab** show the next and the previous tab of the session, round and round. So do **Ctrl PageDown** and **Ctrl PageUp**.
-- Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes. **Shift** overrides a program's mouse capture for selection and scrollback.
+- Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes, to and from the desktop's clipboard. **Shift** overrides a program's mouse capture for selection and scrollback.
 - Hold **Ctrl** over a link to underline it and be told where it leads, and click to open it with `xdg-open`. A link is an `http`, `https`, `ftp` or `mailto` address, written out in the text or marked by a program (OSC 8). A `file` link is never opened: the terminal may be showing another machine.
 - A program can copy to the clipboard (OSC 52) from the pane you are at, while the window is the one you are at. None can read the clipboard.
 - **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: sidebar, or tabs along the top.
-- **Ctrl + / - / 0**: terminal font size. **Esc** clears selection.
+- **Ctrl + / - / 0**: terminal font size. With Shift or Alt as well, these go to the terminal's programs. **Esc** clears selection.
 - The pane menu also offers copy/paste. **Ctrl C** still interrupts terminal programs.
 - Nothing is shown while all is well. A lost connection says so above the last screen, and a failed action says so briefly at the foot of the window.
 - The terminal keeps the colours Rex gives it. The tabs along the top and the headers of split panes take a dark terminal's background, so they read as one surface with it.
@@ -98,7 +98,7 @@ python3 tests/smoke.py
 
 It tries the debug build, which is the quick one to make. Before a release, try that build too, with `--binary target/release/rex-lite`.
 
-This additionally needs `rex`, `Xvfb`, `dbus-run-session`, ImageMagick's `import` (for optional screenshots), and the X11/XTest libraries. It checks real typing, Ctrl+C, selection/copy/paste, and typing immediately after clearing a selection. This is X11 validation; Wayland is checked by hand.
+This additionally needs `rex`, `Xvfb`, `dbus-run-session`, ImageMagick's `import` (for optional screenshots), `xclip`, and the X11/XTest libraries. It checks real typing, Ctrl+C, selection/copy/paste, that copies reach other programs and theirs come back, and typing immediately after clearing a selection. This is X11 validation; Wayland is checked by hand.
 
 For a backend-only run, `tests/live.rs` is opt-in and requires `REX_LITE_TEST_SERVER` pointing to a disposable Unix socket under this project's `work/` directory. It sends input and creates panes/tabs; never aim it at personal sessions.
 

@@ -3,7 +3,7 @@
 
 Build first: ./scripts/dev build --locked
 Run: python3 tests/smoke.py [--binary target/release/rex-lite] [--screenshot /absolute/path.png]
-Requires rex, Xvfb, dbus-run-session, import, libX11, and libXtst.
+Requires rex, Xvfb, dbus-run-session, import, xclip, libX11, and libXtst.
 """
 import argparse
 import json

@@ -56,12 +56,12 @@ pub async fn socket(endpoint: &str, path: &str, protocol: &str) -> Result<Socket
                     .context("Connect to Rex Unix socket")?,
             )
         } else {
-            let tcp = tokio::net::TcpStream::connect((
-                url.host_str().context("Missing endpoint host")?,
-                url.port_or_known_default()
-                    .context("Missing endpoint port")?,
-            ))
-            .await?;
+            // An IPv6 address is written in brackets, and looked up without them.
+            let host = url.host_str().context("Missing endpoint host")?;
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            let port = url.port_or_known_default();
+            let port = port.context("Missing endpoint port")?;
+            let tcp = tokio::net::TcpStream::connect((host, port)).await?;
             tcp.set_nodelay(true)?;
             Box::new(tcp)
         };

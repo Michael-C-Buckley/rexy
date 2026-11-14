@@ -24,7 +24,7 @@ use crate::{
     notify::{Desktop, Herald},
     terminal::Frame,
 };
-use input::{Keyboard, modifier_bits};
+use input::Keyboard;
 use muted::Muted;
 use raise::Raise;
 use render::{Grid, PaneView, Selection, rgb};
@@ -297,6 +297,11 @@ impl App {
     fn shortcuts(&mut self, ctx: &egui::Context, view: &View) {
         let chord = Modifiers::CTRL | Modifiers::SHIFT;
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
+        // With these modifiers and no others, which `pressed` lets by.
+        let exactly = |modifiers: Modifiers, key| {
+            let held = ctx.input(|i| i.modifiers.matches_exact(modifiers));
+            held && pressed(modifiers, key)
+        };
         let paste = || ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         if pressed(chord, Key::B) {
             self.sidebar = !self.sidebar;
@@ -372,13 +377,18 @@ impl App {
                 self.send(Action::ClosePane { pane });
             }
         }
-        if pressed(Modifiers::CTRL, Key::Plus) || pressed(Modifiers::CTRL, Key::Equals) {
+        // Ctrl with Shift or Alt and these keys is for the terminal's programs. On
+        // most keyboards a plus is typed with Shift, though.
+        if exactly(Modifiers::CTRL, Key::Plus)
+            || exactly(chord, Key::Plus)
+            || exactly(Modifiers::CTRL, Key::Equals)
+        {
             self.font_size = (self.font_size + 1.0).min(32.0);
         }
-        if pressed(Modifiers::CTRL, Key::Minus) {
+        if exactly(Modifiers::CTRL, Key::Minus) {
             self.font_size = (self.font_size - 1.0).max(9.0);
         }
-        if pressed(Modifiers::CTRL, Key::Num0) {
+        if exactly(Modifiers::CTRL, Key::Num0) {
             self.font_size = DEFAULT_FONT_SIZE;
         }
     }
@@ -763,22 +773,25 @@ impl App {
         let id = |index: usize| sessions.get(index).map(|s| s.id.clone());
         match (button, menu(&response, labels, None, index, id)) {
             (Some(0), _) => self.open(server, Action::CreateWindow(session.id.clone())),
-            // One press is easily a slip, and this ends every program in the session.
-            (Some(_), _) => {
-                let now = Instant::now();
-                let armed = self.closing.take();
-                if armed.is_some_and(|(id, until)| id == session.id && now < until) {
-                    self.edit(target, Edit::Close);
-                } else {
-                    let name = &session.name;
-                    self.toast.say(format!(
-                        "Press again to close {name} and all that runs in it"
-                    ));
-                    self.closing = Some((session.id.clone(), now + Toast::TIME));
-                }
+            (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
+                self.close_session(target, &session.name);
             }
             (None, Some(choice)) => self.choose(target, &session.name, choice),
             (None, None) => {}
+        }
+    }
+
+    /// End a session, if asked a second time: once is easily a slip, and this ends
+    /// every program in it.
+    fn close_session(&mut self, target: Target, name: &str) {
+        let now = Instant::now();
+        let armed = self.closing.take();
+        if armed.is_some_and(|(id, until)| id == target.session && now < until) {
+            self.edit(target, Edit::Close);
+        } else {
+            self.toast
+                .say(format!("Close again to end {name} and all that runs in it"));
+            self.closing = Some((target.session, now + Toast::TIME));
         }
     }
 
@@ -948,14 +961,15 @@ impl App {
             // Home's address is the one typed here. Another server's comes from home.
             if self.current == 0 {
                 ui.add_space(12.0);
-                ui.add(
+                let field = ui.add(
                     egui::TextEdit::singleline(&mut self.endpoint)
                         .desired_width(380.0)
                         .margin(egui::vec2(10.0, 8.0))
                         .font(egui::TextStyle::Monospace)
                         .hint_text("unix:/path/to/rex/server.sock"),
                 );
-                if ui.add(action("Connect")).clicked() {
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                if ui.add(action("Connect")).clicked() || enter {
                     self.servers[0] = Server::home(ui.ctx(), self.endpoint.trim(), &self.herald);
                     self.toast = Toast::default();
                 }
@@ -1075,21 +1089,22 @@ impl App {
                 .say(format!("The link could not be opened: {error}"));
         }
         let size = grid.size(ui.ctx().pixels_per_point());
-        // Only owned panes are resized, so report the size again when ownership returns.
-        if !pane.owner {
-            state.last_size = None;
-        } else if state.last_size != Some(size) {
-            state.last_size = Some(size);
-            actions.push(Action::Resize {
-                pane: pane.id.clone(),
-                size,
-            });
+        if state.last_size != Some(size) {
+            let (pane, client) = (pane.id.clone(), &self.servers[self.current].client);
+            // A size that could not be sent is sent when it can be.
+            if client.try_send(Action::Resize { pane, size }).is_ok() {
+                state.last_size = Some(size);
+            }
         }
         if response.clicked() || response.drag_started() {
             self.focused = Some(pane.id.clone());
-            actions.push(Action::FocusPane {
-                pane: pane.id.clone(),
-            });
+            // A pane that is this window's, and where the server has the keyboard
+            // already, needs no telling.
+            if !active || !pane.owner || window.focus.as_ref() != Some(&pane.id) {
+                actions.push(Action::FocusPane {
+                    pane: pane.id.clone(),
+                });
+            }
             state.selection = None;
         }
         // Shift overrides a program's mouse capture.
@@ -1104,6 +1119,7 @@ impl App {
                 grid,
                 frame,
                 pane: &pane.id,
+                keyboard: &self.keyboard,
                 tracking: tracking && link.is_none(),
             };
             pointer.forward(state, &mut actions);
@@ -1121,12 +1137,15 @@ impl App {
                 lines => {
                     if let Some(pos) = response.hover_pos() {
                         let (x, y) = grid.cell_at(pos, frame);
-                        actions.push(Action::Wheel {
+                        // A program is told of one step at a time: the server
+                        // takes each turn for one, however far it says it went.
+                        let step = Action::Wheel {
                             pane: pane.id.clone(),
                             x,
                             y,
-                            lines,
-                        });
+                            lines: lines.signum(),
+                        };
+                        actions.extend(std::iter::repeat_n(step, lines.unsigned_abs() as usize));
                     }
                 }
             }
@@ -1244,6 +1263,7 @@ impl eframe::App for App {
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
         self.keyboard.settle(&mut input.events);
+        self.keyboard.watch(&input.events);
     }
 
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1327,6 +1347,12 @@ impl eframe::App for App {
             self.terminal_keys(&ctx, &pane);
         }
         self.panes.retain(|id, _| view.pane(id).is_some());
+        // A connection that returns is told every size again.
+        if !view.connected {
+            for pane in self.panes.values_mut() {
+                pane.last_size = None;
+            }
+        }
         if let Some(rename) = &mut self.rename
             && !std::mem::take(&mut rename.shown)
         {
@@ -1455,6 +1481,7 @@ struct Pointer<'a> {
     grid: Grid,
     frame: &'a Arc<Frame>,
     pane: &'a str,
+    keyboard: &'a Keyboard,
     /// The program in the pane has captured the mouse.
     tracking: bool,
 }
@@ -1483,7 +1510,7 @@ impl Pointer<'_> {
                             x,
                             y,
                             button: Some(mouse_button(*button)),
-                            modifiers: modifier_bits(*modifiers),
+                            modifiers: self.keyboard.bits(*modifiers),
                         });
                         state.mouse_button = pressed.then_some(*button);
                         if *pressed {
@@ -1506,11 +1533,11 @@ impl Pointer<'_> {
             state.mouse_cell = Some((x, y));
             actions.push(Action::Mouse {
                 pane: self.pane.into(),
-                kind: "move",
+                kind: "motion",
                 x,
                 y,
                 button: state.mouse_button.map(mouse_button),
-                modifiers: modifier_bits(self.ui.input(|i| i.modifiers)),
+                modifiers: self.keyboard.bits(self.ui.input(|i| i.modifiers)),
             });
         }
     }

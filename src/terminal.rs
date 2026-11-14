@@ -8,7 +8,7 @@ use libghostty_vt::{
     color::Rgb,
     mode::Mode,
     point::{Coordinate, Point},
-    render::{CellIterator, CursorVisualStyle, Dirty, RowIterator},
+    render::{CellIterator, Colors, Cursor, CursorVisualStyle, Dirty, RowIterator},
     screen::CellWide,
     snapshot,
     style::{Style, StyleColor},
@@ -556,7 +556,7 @@ fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
             terminal.set_default_cursor_color(parse_color(value["cursor"].as_str()))?;
             terminal.set_default_color_palette(None)?;
             if let Some(entries) = value["palette"].as_array() {
-                let mut palette = terminal.color_palette()?;
+                let mut palette = terminal.default_color_palette()?;
                 for entry in entries.iter().filter_map(Value::as_str) {
                     if let Some((index, color)) = entry.split_once('=')
                         && let (Ok(index), Some(color)) =
@@ -595,6 +595,10 @@ struct Renderer {
     rows: RowIterator<'static>,
     cells: CellIterator<'static>,
     previous: Option<Arc<Frame>>,
+    /// The cursor and the colours of that frame. Ghostty marks nothing dirty when
+    /// only these change.
+    cursor: Option<Cursor>,
+    colors: Option<Colors>,
 }
 
 impl Renderer {
@@ -604,6 +608,8 @@ impl Renderer {
             rows: RowIterator::new()?,
             cells: CellIterator::new()?,
             previous: None,
+            cursor: None,
+            colors: None,
         })
     }
 
@@ -615,19 +621,26 @@ impl Renderer {
             .saturating_sub(scrollbar.offset + scrollbar.len) as usize;
         let mouse_tracking = terminal.is_mouse_tracking()?;
         let dirty = snapshot.dirty()?;
+        let cursor = snapshot.cursor()?;
+        let colors = snapshot.colors()?;
+        let recolored = self.colors.as_ref() != Some(&colors);
         if dirty == Dirty::Clean
+            && !recolored
+            && self.cursor == Some(cursor)
             && self.previous.as_ref().is_some_and(|old| {
                 old.scroll_offset == scroll_offset && old.mouse_tracking == mouse_tracking
             })
         {
             return Ok(None);
         }
-        let colors = snapshot.colors()?;
         let fg = rgb(colors.foreground);
         let bg = rgb(colors.background);
         let cols = snapshot.cols()?;
         let rows = snapshot.rows()?;
+        // Every cell holds the colours it is drawn in, so new ones are new cells.
+        // A cursor that only moved leaves every row as it was.
         let full = dirty == Dirty::Full
+            || recolored
             || self
                 .previous
                 .as_ref()
@@ -712,13 +725,12 @@ impl Renderer {
             bg,
             scroll_offset,
             mouse_tracking,
-            cursor: if snapshot.cursor_visible()? {
-                snapshot.cursor_viewport()?.map(|p| (p.x, p.y))
-            } else {
-                None
-            },
-            cursor_color: snapshot.cursor_color()?.map(rgb).unwrap_or(fg),
-            cursor_shape: match snapshot.cursor_visual_style()? {
+            cursor: cursor
+                .viewport
+                .filter(|_| cursor.visible)
+                .map(|p| (p.x, p.y)),
+            cursor_color: colors.cursor.map(rgb).unwrap_or(fg),
+            cursor_shape: match cursor.visual_style {
                 CursorVisualStyle::Bar => CursorShape::Bar,
                 CursorVisualStyle::Underline => CursorShape::Underline,
                 CursorVisualStyle::BlockHollow => CursorShape::Hollow,
@@ -727,6 +739,8 @@ impl Renderer {
         });
         snapshot.clean()?;
         self.previous = Some(frame.clone());
+        self.cursor = Some(cursor);
+        self.colors = Some(colors);
         Ok(Some(frame))
     }
 }

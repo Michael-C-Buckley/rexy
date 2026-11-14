@@ -13,6 +13,8 @@ pub struct Keyboard {
     pub preedit: String,
     /// An input method was last heard to be composing something.
     composing: bool,
+    /// The Super keys that are down, left and right.
+    supers: [bool; 2],
 }
 
 struct Held {
@@ -37,15 +39,45 @@ impl Keyboard {
         });
     }
 
+    /// Note which Super keys are down. egui counts Super among the modifiers only
+    /// on a Mac, so it is told from its own presses and releases, whatever they
+    /// were meant for.
+    pub fn watch(&mut self, events: &[Event]) {
+        for event in events {
+            match event {
+                Event::Key {
+                    key,
+                    physical_key,
+                    pressed,
+                    ..
+                } => match physical_key.unwrap_or(*key) {
+                    Key::SuperLeft => self.supers[0] = *pressed,
+                    Key::SuperRight => self.supers[1] = *pressed,
+                    _ => {}
+                },
+                // Its release goes to whatever window has the keyboard by then.
+                Event::WindowFocused(false) => self.supers = [false; 2],
+                _ => {}
+            }
+        }
+    }
+
+    /// The modifiers held, as bits, Super among them.
+    pub fn bits(&self, modifiers: Modifiers) -> u8 {
+        let held = self.supers.contains(&true) || modifiers.mac_cmd;
+        modifier_bits(modifiers) | (u8::from(held) * model::SUPER)
+    }
+
     pub fn translate(&mut self, pane: &str, events: &[Event]) -> Vec<Action> {
         let mut actions = Vec::new();
         let mut used_text = HashSet::new();
-        let key_action = |held: &Held, modifiers, pressed| Action::Key {
+        let key_action = |held: &Held, modifiers, pressed, repeat| Action::Key {
             pane: held.pane.clone(),
             key: held.key.clone(),
             code: held.code.clone(),
             modifiers,
             pressed,
+            repeat,
         };
         for (index, event) in events.iter().enumerate() {
             match event {
@@ -57,7 +89,7 @@ impl Keyboard {
                     ..
                 } => {
                     if let Some(held) = self.held.remove(&physical_key.unwrap_or(*key)) {
-                        actions.push(key_action(&held, modifier_bits(*modifiers), false));
+                        actions.push(key_action(&held, self.bits(*modifiers), false, false));
                     }
                 }
                 Event::Key {
@@ -65,7 +97,7 @@ impl Keyboard {
                     physical_key,
                     pressed: true,
                     modifiers,
-                    ..
+                    repeat,
                 } => {
                     let identity = physical_key.unwrap_or(*key);
                     let Some(code) = key_code(identity) else {
@@ -81,7 +113,8 @@ impl Keyboard {
                             Event::Text(text) => Some((i, text)),
                             _ => None,
                         });
-                    let chord = modifiers.ctrl || modifiers.mac_cmd;
+                    let bits = self.bits(*modifiers);
+                    let chord = bits & (model::CTRL | model::SUPER) != 0;
                     let key = match text {
                         Some((i, text)) => {
                             used_text.insert(i);
@@ -99,9 +132,9 @@ impl Keyboard {
                         pane: pane.into(),
                         key,
                         code,
-                        modifiers: modifier_bits(*modifiers),
+                        modifiers: bits,
                     };
-                    actions.push(key_action(&held, held.modifiers, true));
+                    actions.push(key_action(&held, bits, true, *repeat));
                     self.held.insert(identity, held);
                 }
                 Event::Text(text) if !used_text.contains(&index) && !text.is_empty() => {
@@ -128,8 +161,9 @@ impl Keyboard {
                 }
                 Event::WindowFocused(false) => {
                     let released = self.held.drain();
-                    actions
-                        .extend(released.map(|(_, held)| key_action(&held, held.modifiers, false)));
+                    let release =
+                        |(_, held): (_, Held)| key_action(&held, held.modifiers, false, false);
+                    actions.extend(released.map(release));
                     self.preedit.clear();
                 }
                 _ => {}
@@ -148,26 +182,16 @@ pub fn clears_selection(action: &Action) -> bool {
             pressed: true,
             code,
             ..
-        } => !matches!(
-            code.as_str(),
-            "shift_left"
-                | "shift_right"
-                | "control_left"
-                | "control_right"
-                | "alt_left"
-                | "alt_right"
-                | "super_left"
-                | "super_right"
-        ),
+        } => !model::is_modifier(code),
         _ => false,
     }
 }
 
-pub fn modifier_bits(mods: Modifiers) -> u8 {
+/// All but Super, which `Keyboard::bits` adds.
+fn modifier_bits(mods: Modifiers) -> u8 {
     (u8::from(mods.shift) * model::SHIFT)
         | (u8::from(mods.ctrl) * model::CTRL)
         | (u8::from(mods.alt) * model::ALT)
-        | (u8::from(mods.mac_cmd) * model::SUPER)
 }
 
 fn between(key: Key, first: Key, last: Key) -> bool {
@@ -243,14 +267,15 @@ fn key_code(key: Key) -> Option<String> {
         Key::ControlRight => "control_right",
         Key::AltLeft => "alt_left",
         Key::AltRight => "alt_right",
-        Key::SuperLeft => "super_left",
-        Key::SuperRight => "super_right",
+        Key::SuperLeft => "meta_left",
+        Key::SuperRight => "meta_right",
         Key::IntlBackslash => "intl_backslash",
         _ if between(key, Key::Num0, Key::Num9) => return Some(format!("digit_{}", key.name())),
         _ if between(key, Key::A, Key::Z) => {
             return Some(format!("key_{}", key.name().to_lowercase()));
         }
-        _ if between(key, Key::F1, Key::F35) => return Some(key.name().to_lowercase()),
+        // The server knows none past this.
+        _ if between(key, Key::F1, Key::F25) => return Some(key.name().to_lowercase()),
         _ => return None,
     };
     Some(code.into())

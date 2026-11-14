@@ -280,6 +280,21 @@ pub const CTRL: u8 = 2;
 pub const ALT: u8 = 4;
 pub const SUPER: u8 = 8;
 
+/// Whether a key's code names a modifier, which held alone asks for nothing.
+pub fn is_modifier(code: &str) -> bool {
+    matches!(
+        code,
+        "shift_left"
+            | "shift_right"
+            | "control_left"
+            | "control_right"
+            | "alt_left"
+            | "alt_right"
+            | "meta_left"
+            | "meta_right"
+    )
+}
+
 #[derive(Clone, Debug)]
 pub enum Action {
     SelectSession(String),
@@ -304,6 +319,8 @@ pub enum Action {
         code: String,
         modifiers: u8,
         pressed: bool,
+        /// Pressed by being held down.
+        repeat: bool,
     },
     Text {
         pane: String,
@@ -317,7 +334,7 @@ pub enum Action {
         pane: String,
         size: Size,
     },
-    /// `kind` is `press`, `release` or `move`; `button` is `left`, `middle` or `right`.
+    /// `kind` is `press`, `release` or `motion`; `button` is `left`, `middle` or `right`.
     Mouse {
         pane: String,
         kind: &'static str,
@@ -326,7 +343,7 @@ pub enum Action {
         button: Option<&'static str>,
         modifiers: u8,
     },
-    /// A wheel turn forwarded to a program that tracks the mouse. Negative is up.
+    /// One step of the wheel, for a program that tracks the mouse. Negative is up.
     Wheel {
         pane: String,
         x: u16,

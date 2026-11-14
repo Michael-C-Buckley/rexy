@@ -1,7 +1,7 @@
 //! Run only against a disposable server, never the default personal socket.
 use rex_lite::{
     backend::Client,
-    model::{Action, Activity, Direction, Edit, Size, View, Wait, Window},
+    model::{self, Action, Activity, Direction, Edit, Size, View, Wait, Window},
     notify::Herald,
     terminal::Frame,
 };
@@ -56,6 +56,7 @@ fn enter(client: &Client, pane: &str) {
                 code: "enter".into(),
                 modifiers: 0,
                 pressed,
+                repeat: false,
             },
         );
     }
@@ -116,6 +117,49 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     wait(&client, "paste and live output", |v| {
         screen(v, &pane).contains("paste-verified")
     });
+
+    // A program that asks is told where the mouse moves and of each step of the
+    // wheel, and can tell Shift+Tab and Shift+Enter from Tab and Enter. It reads
+    // one line, which the terminal shows as it comes.
+    let tracking = |v: &View| frame(v, &pane).is_some_and(|f| f.mouse_tracking);
+    run(
+        "printf '\\033[?1003h\\033[?1006h\\033[>1u'; head -n 1 | cat -v; \
+        printf '\\033[<u\\033[?1003l\\033[?1006l'",
+    );
+    wait(&client, "a program tracking the mouse", tracking);
+    let (id, x, y) = (pane.clone(), 3, 4);
+    let motion = Action::Mouse {
+        pane: pane.clone(),
+        kind: "motion",
+        x,
+        y,
+        button: None,
+        modifiers: 0,
+    };
+    send(&client, motion);
+    for _ in 0..3 {
+        let (pane, lines) = (id.clone(), -1);
+        send(&client, Action::Wheel { pane, x, y, lines });
+    }
+    for (key, code) in [("\t", "tab"), ("\n", "enter")] {
+        let key = Action::Key {
+            pane: pane.clone(),
+            key: key.into(),
+            code: code.into(),
+            modifiers: model::SHIFT,
+            pressed: true,
+            repeat: false,
+        };
+        send(&client, key);
+    }
+    wait(&client, "the mouse and shifted keys reported", |v| {
+        let screen = screen(v, &pane);
+        let wheel = screen.matches("[<64;4;5M").count();
+        let keys = screen.contains("[9;2u") && screen.contains("[13;2u");
+        screen.contains("[<35;4;5M") && wheel == 3 && keys
+    });
+    enter(&client, &pane);
+    wait(&client, "the mouse let go", |v| !tracking(v));
 
     let old_frame = frame(&client.snapshot(), &pane).unwrap().clone();
     send(&client, Action::Reconnect);

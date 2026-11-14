@@ -834,11 +834,8 @@ impl Connection<'_> {
                     size.cols > 0 && size.rows > 0,
                     "Terminal dimensions must be nonzero"
                 );
-                // Only an owner may resize. The UI reports the size again
-                // whenever ownership returns.
-                if !shared.owns(&pane) {
-                    return Ok(None);
-                }
+                // The server holds the size asked by a client that does not own the
+                // terminal, for when it does.
                 let args = json!({
                     "columns": size.cols,
                     "rows": size.rows,
@@ -855,12 +852,20 @@ impl Connection<'_> {
                 code,
                 modifiers,
                 pressed,
+                repeat,
             } => {
-                let payload = key_request(&pane, key_payload(&key, &code, modifiers, pressed));
-                (pane, "client.key", payload, pressed)
+                let stroke = match (pressed, repeat) {
+                    (false, _) => "release",
+                    (true, false) => "press",
+                    (true, true) => "repeat",
+                };
+                let payload = key_request(&pane, key_payload(&key, &code, modifiers, stroke));
+                // A modifier held alone asks nothing of the terminal.
+                let engage = pressed && !model::is_modifier(&code);
+                (pane, "client.key", payload, engage)
             }
             Action::Text { pane, text } => {
-                let payload = key_request(&pane, key_payload(&text, "unidentified", 0, true));
+                let payload = key_request(&pane, key_payload(&text, "unidentified", 0, "press"));
                 (pane, "client.key", payload, true)
             }
             Action::Paste { pane, text } => {
@@ -1121,28 +1126,68 @@ fn modifier_names(bits: u8) -> String {
     .join("+")
 }
 
-fn key_payload(key: &str, code: &str, bits: u8, pressed: bool) -> Value {
+/// A key as the server is told of it. `key` is what it types, `code` the name of
+/// the key itself, and `stroke` is `press`, `repeat` or `release`.
+fn key_payload(key: &str, code: &str, bits: u8, stroke: &str) -> Value {
     // Releases and Control/Super chords do not type anything.
-    let text = if pressed && bits & (model::CTRL | model::SUPER) == 0 {
+    let text = if stroke != "release" && bits & (model::CTRL | model::SUPER) == 0 {
         key
     } else {
         ""
     };
-    let shifted = bits & model::SHIFT != 0 && !text.is_empty() && text != " ";
-    let mut chars = key.chars();
-    let codepoint = match (chars.next(), chars.next()) {
-        (Some(only), None) => only.to_ascii_lowercase() as u32,
-        _ => 0,
-    };
+    let shift = bits & model::SHIFT != 0;
+    // Shift is used up in typing a capital or a symbol. In Shift+Tab it is not, nor
+    // in Shift+Enter or Shift+Space: those type what they would without it.
+    let shifted = shift && text.chars().any(|c| !c.is_control() && c != ' ');
     json!({
         "key": code,
         "mods": modifier_names(bits),
         "consumed_mods": if shifted { "shift" } else { "" },
         "text": text,
-        "unshifted_codepoint": codepoint,
+        "unshifted_codepoint": unshifted(key, code, shift),
         "composing": false,
-        "action": if pressed { "press" } else { "release" },
+        "action": stroke,
     })
+}
+
+/// The character a key types without Shift, or 0. What it typed says, unless Shift
+/// was held. Then a letter is itself in small, and any other key is taken for the
+/// one of a US keyboard, which is all that is known of it.
+fn unshifted(key: &str, code: &str, shift: bool) -> u32 {
+    let mut chars = key.chars();
+    let typed = match (chars.next(), chars.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    };
+    let legend = || {
+        Some(match code {
+            "space" => ' ',
+            "tab" => '\t',
+            "enter" => '\n',
+            "backquote" => '`',
+            "backslash" | "intl_backslash" => '\\',
+            "bracket_left" => '[',
+            "bracket_right" => ']',
+            "comma" => ',',
+            "equal" => '=',
+            "minus" => '-',
+            "period" => '.',
+            "quote" => '\'',
+            "semicolon" => ';',
+            "slash" => '/',
+            _ => {
+                let name = code.strip_prefix("digit_");
+                let mut name = name.or_else(|| code.strip_prefix("key_"))?.chars();
+                name.next().filter(|_| name.next().is_none())?
+            }
+        })
+    };
+    let small = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let unshifted = match typed {
+        Some(typed) if !shift || typed.is_alphabetic() => Some(small(typed)),
+        _ => legend().or(typed),
+    };
+    unshifted.map_or(0, u32::from)
 }
 
 fn shell() -> Value {

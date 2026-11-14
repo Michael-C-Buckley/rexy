@@ -87,9 +87,51 @@ fn zoom_and_minimized_layers_are_respected() {
 
 #[test]
 fn control_and_release_keys_never_duplicate_text() {
-    assert_eq!(key_payload("c", "key_c", model::CTRL, true)["text"], "");
-    assert_eq!(key_payload("A", "key_a", model::SHIFT, true)["text"], "A");
-    assert_eq!(key_payload("a", "key_a", 0, false)["text"], "");
+    assert_eq!(key_payload("c", "key_c", model::CTRL, "press")["text"], "");
+    assert_eq!(
+        key_payload("A", "key_a", model::SHIFT, "press")["text"],
+        "A"
+    );
+    assert_eq!(key_payload("a", "key_a", 0, "release")["text"], "");
+    assert_eq!(key_payload("a", "key_a", 0, "repeat")["text"], "a");
+    assert_eq!(key_payload("a", "key_a", 0, "repeat")["action"], "repeat");
+}
+
+#[test]
+fn shift_is_used_up_only_in_typing_something_else() {
+    let shift = model::SHIFT;
+    let consumed = |key, code| key_payload(key, code, shift, "press")["consumed_mods"].clone();
+    assert_eq!(consumed("A", "key_a"), "shift");
+    assert_eq!(consumed("!", "digit_1"), "shift");
+    // Or a program could not tell these from Tab, Enter and Space.
+    assert_eq!(consumed("\t", "tab"), "");
+    assert_eq!(consumed("\n", "enter"), "");
+    assert_eq!(consumed(" ", "space"), "");
+    assert_eq!(key_payload("\t", "tab", shift, "press")["mods"], "shift");
+    assert_eq!(key_payload("a", "key_a", 0, "press")["consumed_mods"], "");
+}
+
+#[test]
+fn a_key_is_known_by_what_it_types_without_shift() {
+    let (shift, ctrl) = (model::SHIFT, model::CTRL);
+    let unshifted = |key, code, bits| {
+        let key = key_payload(key, code, bits, "press");
+        key["unshifted_codepoint"]
+            .as_u64()
+            .and_then(|c| char::from_u32(c as u32))
+    };
+    assert_eq!(unshifted("n", "key_n", 0), Some('n'));
+    assert_eq!(unshifted("N", "key_n", shift), Some('n'));
+    assert_eq!(unshifted("!", "digit_1", shift), Some('1'));
+    assert_eq!(unshifted("?", "slash", shift | ctrl), Some('/'));
+    assert_eq!(unshifted("\t", "tab", shift), Some('\t'));
+    // A letter follows the keyboard's layout, with Shift or without.
+    assert_eq!(unshifted("a", "key_q", ctrl), Some('a'));
+    assert_eq!(unshifted("É", "key_e", shift), Some('é'));
+    assert_eq!(unshifted("é", "unidentified", 0), Some('é'));
+    // A key that types nothing, and text that came from no one key.
+    assert_eq!(unshifted("", "arrow_up", 0), Some('\0'));
+    assert_eq!(unshifted("日本", "unidentified", 0), Some('\0'));
 }
 
 #[test]
