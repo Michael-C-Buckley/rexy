@@ -4,6 +4,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 use ghostty_vt::style::Underline;
 
+use super::style;
 use crate::{
     model::Size,
     terminal::{CursorShape, Frame, Row},
@@ -27,8 +28,18 @@ impl Grid {
         let width = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
         Self {
             rect,
-            cell: egui::vec2(width, (font_size * 1.4).ceil()),
+            cell: egui::vec2(width, (font_size * 1.35).ceil()),
             font_size,
+        }
+    }
+
+    /// How many cells fit, and a cell's size in physical pixels.
+    pub fn size(&self, pixels_per_point: f32) -> Size {
+        Size {
+            cols: (self.rect.width() / self.cell.x).clamp(2.0, 1000.0) as u16,
+            rows: (self.rect.height() / self.cell.y).clamp(1.0, 1000.0) as u16,
+            cell_width: (self.cell.x * pixels_per_point).ceil() as u16,
+            cell_height: (self.cell.y * pixels_per_point).ceil() as u16,
         }
     }
 
@@ -91,7 +102,6 @@ struct GlyphRun {
     column: usize,
     width: usize,
     galley: Arc<egui::Galley>,
-    bold: bool,
 }
 
 impl PaneView {
@@ -128,7 +138,7 @@ impl PaneView {
                     painter.rect_filled(
                         grid.span(y, start - y * cols, end - y * cols),
                         0,
-                        Color32::from_rgba_unmultiplied(140, 180, 150, 70),
+                        style::ACCENT.gamma_multiply(0.4),
                     );
                 }
             }
@@ -140,9 +150,6 @@ impl PaneView {
                 );
                 let clipped = painter.with_clip_rect(painter.clip_rect().intersect(clip));
                 clipped.galley(pos, Arc::clone(&glyph.galley), fg);
-                if glyph.bold {
-                    clipped.galley(pos + egui::vec2(0.4, 0.0), Arc::clone(&glyph.galley), fg);
-                }
             }
             for &(start, end, height, color) in &cached.decorations {
                 let span = grid.span(y, start, end);
@@ -158,16 +165,16 @@ impl PaneView {
         }
         if selection.is_some() {
             let text = painter.layout_no_wrap(
-                "SELECTION · Esc to resume".into(),
-                FontId::proportional(10.0),
-                super::ACCENT,
+                "Selection · Esc to resume".into(),
+                FontId::proportional(style::SMALL),
+                style::TEXT,
             );
             let rect = Rect::from_min_size(
-                grid.rect.right_top() - egui::vec2(text.size().x + 12.0, 0.0),
-                text.size() + egui::vec2(12.0, 8.0),
+                grid.rect.right_top() - egui::vec2(text.size().x + 20.0, 0.0),
+                text.size() + egui::vec2(20.0, 10.0),
             );
-            painter.rect_filled(rect, 3, super::SIDEBAR);
-            painter.galley(rect.min + egui::vec2(6.0, 4.0), text, super::ACCENT);
+            painter.rect_filled(rect, rect.height() / 2.0, style::POPOVER);
+            painter.galley(rect.min + egui::vec2(10.0, 5.0), text, style::TEXT);
         } else if let Some((x, y)) = frame.cursor {
             let rect = grid.span(y.into(), x.into(), usize::from(x) + 1);
             let color = rgb(frame.cursor_color);
@@ -237,8 +244,13 @@ impl CachedRow {
                 rgb(cell.fg)
             };
             if !text.trim().is_empty() {
+                let font_id = if cell.style.bold {
+                    style::mono_bold(font_size)
+                } else {
+                    FontId::monospace(font_size)
+                };
                 let format = egui::TextFormat {
-                    font_id: FontId::monospace(font_size),
+                    font_id,
                     color,
                     italics: cell.style.italic,
                     ..Default::default()
@@ -249,7 +261,6 @@ impl CachedRow {
                     column: start,
                     width: x - start,
                     galley: ctx.fonts_mut(|f| f.layout_job(job)),
-                    bold: cell.style.bold,
                 });
             }
             let underline = cell.underline_color.map_or(color, rgb);

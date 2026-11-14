@@ -99,8 +99,8 @@ def expect(label, predicate):
         time.sleep(.1)
     raise AssertionError(label + ': ' + capture())
 
-# First pane: sidebar 204, title row 50, pane header + padding 34.
-click(350, 110)
+# First pane: sidebar 240, toolbar 44, pane header 28, padding 8.
+click(400, 140)
 chord(ord('c'), ctrl=True)
 nonce = str(time.monotonic_ns())[-8:]
 type_text(f"printf 'native-%s\\n' {nonce}")
@@ -118,7 +118,7 @@ expect('native Ctrl+C interrupts', lambda text: f'interrupt-{nonce}' in text)
 type_text("printf '\\033[3J\\033[2J\\033[HCLIP%s\\n' BOARD")
 chord(RETURN)
 expect('clipboard fixture', lambda text: text.strip().startswith('CLIPBOARD'))
-click(255, 95, twice=True)
+click(290, 90, twice=True)
 chord(ord('c'), ctrl=True, shift=True)
 chord(ESCAPE)
 type_text('cat')
@@ -128,7 +128,20 @@ chord(ord('v'), ctrl=True, shift=True)
 chord(RETURN)
 expect('native selection copy and bracketed paste', lambda text: text.count('CLIPBOARD') >= 3)
 chord(ord('c'), ctrl=True)
-print('Native X11 keyboard and clipboard smoke passed.', flush=True)
+
+# A program tracking the mouse gets the clicks on its pane, not those on a dialog over it.
+presses = lambda text: text.count('[<0;') // 2
+type_text("printf '\\033[?1000h\\033[?1006h'; cat -v")
+chord(RETURN)
+click(400, 300)
+expect('mouse click reaches a tracking program', lambda text: presses(text) == 1)
+chord(ord('n'), ctrl=True, shift=True)
+click(450, 320)
+chord(ESCAPE)
+click(400, 340)
+expect('a dialog keeps its clicks', lambda text: presses(text) == 2)
+chord(ord('c'), ctrl=True)
+print('Native X11 keyboard, mouse and clipboard smoke passed.', flush=True)
 
 if args.screenshot:
     subprocess.run(['import', '-display', args.display, '-window', str(window), args.screenshot], check=True)

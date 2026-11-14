@@ -1,32 +1,38 @@
-//! A deliberately small desktop shell. Terminal content never becomes an egui widget tree.
+//! A deliberately small desktop shell: a sidebar of sessions, one row of tabs, and
+//! the terminal. Terminal content never becomes an egui widget tree.
 mod input;
 mod render;
+mod style;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use eframe::egui::{self, Color32, FontId, Key, Margin, Modifiers, RichText, Stroke, Vec2};
+use eframe::egui::{
+    self, Align, Align2, FontId, Key, Layout, Margin, Modifiers, Rect, RichText, Sense, Stroke,
+    UiBuilder, Vec2,
+};
 
 use crate::{
     backend::Client,
-    model::{Action, Direction, Pane, Size, View},
+    model::{Action, Direction, Pane, View},
     terminal::Frame,
 };
 use input::{Keyboard, modifier_bits};
 use render::{Grid, PaneView, Selection, rgb};
-
-const BACKGROUND: Color32 = Color32::from_rgb(17, 21, 19);
-const SIDEBAR: Color32 = Color32::from_rgb(22, 27, 24);
-const SURFACE: Color32 = Color32::from_rgb(31, 38, 33);
-const BORDER: Color32 = Color32::from_rgb(45, 54, 47);
-const TEXT: Color32 = Color32::from_rgb(220, 229, 221);
-const MUTED: Color32 = Color32::from_rgb(132, 148, 137);
-const ACCENT: Color32 = Color32::from_rgb(164, 198, 174);
+use style::{
+    BODY, BORDER, DIM, HOVER, Icon, POPOVER, SIDEBAR, SMALL, TEXT, TOOLBAR, VIEW, bold,
+    icon_button, item, suggested,
+};
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
-const PANE_HEADER: f32 = 26.0;
-const SPLITS: [(&str, Direction); 2] = [
-    ("Split right", Direction::Right),
-    ("Split down", Direction::Down),
+const SIDEBAR_WIDTH: f32 = 240.0;
+const PANE_HEADER: f32 = 28.0;
+const SPLITS: [(Icon, &str, Direction); 2] = [
+    (Icon::SplitRight, "Split Right", Direction::Right),
+    (Icon::SplitDown, "Split Down", Direction::Down),
 ];
 
 pub struct App {
@@ -35,18 +41,12 @@ pub struct App {
     sidebar: bool,
     /// The name being typed while the new-session dialog is open.
     new_session: Option<String>,
-    focus_name: bool,
+    /// The pane that has the keyboard, while one is on screen.
     focused: Option<String>,
-    /// Give the focused pane keyboard focus on the next frame.
-    focus_terminal: bool,
-    /// Whether the focused pane held keyboard focus this frame.
-    terminal_keyboard: bool,
     panes: HashMap<String, PaneView>,
     keyboard: Keyboard,
     font_size: f32,
-    notice: Option<String>,
-    previous_session: Option<String>,
-    previous_window: Option<String>,
+    toast: Toast,
 }
 
 fn connect(ctx: &egui::Context, endpoint: &str) -> Client {
@@ -56,69 +56,67 @@ fn connect(ctx: &egui::Context, endpoint: &str) -> Client {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, endpoint: String) -> Self {
-        theme(&cc.egui_ctx);
+        style::apply(&cc.egui_ctx);
         Self {
             client: connect(&cc.egui_ctx, &endpoint),
             endpoint,
             sidebar: true,
             new_session: None,
-            focus_name: false,
             focused: None,
-            focus_terminal: true,
-            terminal_keyboard: false,
             panes: HashMap::new(),
             keyboard: Keyboard::default(),
             font_size: DEFAULT_FONT_SIZE,
-            notice: None,
-            previous_session: None,
-            previous_window: None,
+            toast: Toast::default(),
         }
     }
 
     fn send(&mut self, action: Action) {
         if let Err(error) = self.client.try_send(action) {
-            self.notice = Some(error);
+            self.toast.say(error);
         }
     }
 
-    fn open_session_dialog(&mut self) {
-        self.new_session = Some(String::new());
-        self.focus_name = true;
+    /// A dialog or a menu is up, and keeps the keyboard to itself.
+    fn modal(&self, ctx: &egui::Context) -> bool {
+        self.new_session.is_some() || egui::Popup::is_any_open(ctx)
     }
 
-    fn reset_focus(&mut self) {
-        self.focused = None;
-        self.focus_terminal = true;
-        self.keyboard.clear();
-    }
-
-    fn copy_selection(&self, ctx: &egui::Context) {
-        let pane = self.focused.as_ref().and_then(|id| self.panes.get(id));
-        if let Some(selection) = pane.and_then(|pane| pane.selection.as_ref()) {
-            ctx.copy_text(selection.text());
-        }
-    }
-
-    fn global_shortcuts(&mut self, ctx: &egui::Context, view: &View) {
+    fn shortcuts(&mut self, ctx: &egui::Context, view: &View) {
         let chord = Modifiers::CTRL | Modifiers::SHIFT;
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
+        let paste = || ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         if pressed(chord, Key::B) {
             self.sidebar = !self.sidebar;
         }
-        if pressed(chord, Key::N) {
-            self.open_session_dialog();
+        // A terminal's programs own Ctrl+C, X and V. In a text field they mean
+        // what they usually do.
+        if ctx.text_edit_focused() {
+            for (key, event) in [(Key::C, egui::Event::Copy), (Key::X, egui::Event::Cut)] {
+                if pressed(Modifiers::CTRL, key) {
+                    ctx.input_mut(|i| i.events.push(event));
+                }
+            }
+            if pressed(Modifiers::CTRL, Key::V) {
+                paste();
+            }
         }
-        // egui-winit reports the copy and paste chords as clipboard events, never
-        // as key presses. A copy is taken here; a paste reaches the focused pane.
-        if self.new_session.is_none() && ctx.input_mut(|i| self.keyboard.take_copy(&mut i.events)) {
-            self.copy_selection(ctx);
-        }
-        if self.new_session.is_some() || egui::Popup::is_any_open(ctx) {
+        if self.modal(ctx) {
             return;
+        }
+        if pressed(chord, Key::N) {
+            self.new_session = Some(String::new());
         }
         if pressed(chord, Key::T) && view.connected {
             self.send(Action::CreateWindow);
-            self.focus_terminal = true;
+        }
+        if (pressed(chord, Key::C) || pressed(Modifiers::NONE, Key::Copy))
+            && let Some(pane) = self.focused.as_ref().and_then(|id| self.panes.get(id))
+            && let Some(selection) = &pane.selection
+        {
+            ctx.copy_text(selection.text());
+        }
+        if pressed(chord, Key::V) || pressed(Modifiers::NONE, Key::Paste) {
+            paste();
         }
         if pressed(Modifiers::CTRL, Key::Plus) || pressed(Modifiers::CTRL, Key::Equals) {
             self.font_size = (self.font_size + 1.0).min(32.0);
@@ -131,237 +129,137 @@ impl App {
         }
     }
 
-    fn status_bar(&mut self, root_ui: &mut egui::Ui, view: &View) {
-        egui::Panel::bottom("status")
-            .exact_size(29.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(SIDEBAR)
-                    .inner_margin(Margin::symmetric(14, 4)),
-            )
-            .show(root_ui, |ui| {
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
-                    ui.painter().circle_filled(
-                        rect.center(),
-                        3.0,
-                        if view.connected { ACCENT } else { MUTED },
-                    );
-                    let text = self.notice.as_deref().unwrap_or(&view.status);
-                    ui.add(
-                        egui::Label::new(RichText::new(text).size(11.0).color(MUTED)).truncate(),
-                    )
-                    .on_hover_text(text);
-                    if self.notice.is_some() && ui.small_button("Dismiss").clicked() {
-                        self.notice = None;
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new("Ctrl Shift B  sidebar")
-                                .size(10.5)
-                                .color(MUTED),
-                        );
-                    });
-                });
-            });
-    }
-
     fn sidebar(&mut self, root_ui: &mut egui::Ui, view: &View) {
         egui::Panel::left("sessions")
-            .exact_size(204.0)
+            .exact_size(SIDEBAR_WIDTH)
             .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(SIDEBAR)
-                    .inner_margin(Margin::symmetric(14, 18)),
-            )
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(SIDEBAR))
             .show(root_ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("rex").size(23.0).strong().color(TEXT));
-                    ui.label(RichText::new("lite").size(13.0).color(ACCENT));
-                });
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new(endpoint_label(&self.endpoint))
-                        .size(11.0)
-                        .color(MUTED),
-                )
-                .on_hover_text(&self.endpoint);
-                ui.add_space(28.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("SESSIONS").size(10.0).color(MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(view.connected, egui::Button::new("+").frame(false))
-                            .on_hover_text("New session · Ctrl Shift N")
-                            .clicked()
-                        {
-                            self.open_session_dialog();
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let mut bar = bar(ui);
+                bar.add_space(8.0);
+                bar.label(RichText::new("Sessions").font(bold(BODY)));
+                bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_enabled_ui(view.connected, |ui| {
+                        if icon_button(ui, Icon::Plus, "New session (Ctrl+Shift+N)").clicked() {
+                            self.new_session = Some(String::new());
                         }
                     });
                 });
-                ui.add_space(8.0);
+                let rows = egui::Frame::new().inner_margin(Margin::symmetric(6, 0));
                 egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
+                    .auto_shrink(false)
                     .show(ui, |ui| {
-                        for session in &view.sessions {
-                            let selected = view.selected_session.as_deref() == Some(&session.id);
-                            let response = ui.add_sized(
-                                [ui.available_width(), 36.0],
-                                item(&session.name, 13.0, selected).corner_radius(5),
-                            );
-                            if selected {
-                                let r = response.rect;
-                                ui.painter().line_segment(
-                                    [
-                                        r.left_top() + egui::vec2(0.0, 10.0),
-                                        r.left_bottom() - egui::vec2(0.0, 10.0),
-                                    ],
-                                    Stroke::new(2.0, ACCENT),
-                                );
+                        rows.show(ui, |ui| {
+                            for session in &view.sessions {
+                                let selected =
+                                    view.selected_session.as_deref() == Some(&session.id);
+                                let size = Vec2::new(ui.available_width(), 34.0);
+                                let row = item(ui, size, &session.name, selected, Align::LEFT);
+                                if row.clicked() {
+                                    self.send(Action::SelectSession(session.id.clone()));
+                                }
                             }
-                            if response.on_hover_text(&session.name).clicked() {
-                                self.send(Action::SelectSession(session.id.clone()));
-                                self.reset_focus();
-                            }
-                            ui.add_space(3.0);
-                        }
-                        if view.connected && view.sessions.is_empty() {
-                            ui.label(RichText::new("No sessions yet").size(12.0).color(MUTED));
-                        }
+                        });
                     });
             });
     }
 
-    fn tabs(&mut self, ui: &mut egui::Ui, view: &View) {
-        ui.horizontal(|ui| {
-            if !self.sidebar && ui.button("☰").on_hover_text("Show sessions").clicked() {
-                self.sidebar = true;
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_enabled_ui(view.connected && self.focused.is_some(), |ui| {
-                    ui.menu_button("Split", |ui| {
-                        for (label, direction) in SPLITS {
-                            if ui.button(label).clicked() {
-                                if let Some(pane) = self.focused.clone() {
-                                    self.send(Action::Split { pane, direction });
-                                    self.focus_terminal = true;
-                                }
-                                ui.close();
+    /// One row: the sidebar toggle, the session's tabs, and what can be added to it.
+    fn toolbar(&mut self, ui: &mut egui::Ui, view: &View) {
+        let mut bar = bar(ui);
+        if icon_button(&mut bar, Icon::Sidebar, "Toggle sidebar (Ctrl+Shift+B)").clicked() {
+            self.sidebar = !self.sidebar;
+        }
+        bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_enabled_ui(view.connected && self.focused.is_some(), |ui| {
+                for (icon, label, direction) in SPLITS.into_iter().rev() {
+                    if icon_button(ui, icon, label).clicked()
+                        && let Some(pane) = self.focused.clone()
+                    {
+                        self.send(Action::Split { pane, direction });
+                    }
+                }
+            });
+            ui.add_enabled_ui(view.connected && view.selected_session.is_some(), |ui| {
+                if icon_button(ui, Icon::Plus, "New tab (Ctrl+Shift+T)").clicked() {
+                    self.send(Action::CreateWindow);
+                }
+            });
+            ui.add_space(4.0);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add_space(4.0);
+                egui::ScrollArea::horizontal()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let count = view.windows.len().max(1) as f32;
+                        let width = (ui.available_width() - 4.0 * (count - 1.0)) / count;
+                        let size = Vec2::new(width.clamp(96.0, 200.0), 30.0);
+                        for window in &view.windows {
+                            let selected = view.selected_window.as_deref() == Some(&window.id);
+                            if item(ui, size, &window.name, selected, Align::Center).clicked() {
+                                self.send(Action::SelectWindow(window.id.clone()));
                             }
                         }
                     });
-                });
-                if ui
-                    .add_enabled(
-                        view.connected && view.selected_session.is_some(),
-                        egui::Button::new("+"),
-                    )
-                    .on_hover_text("New tab · Ctrl Shift T")
-                    .clicked()
-                {
-                    self.send(Action::CreateWindow);
-                    self.focus_terminal = true;
-                }
-                let width = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    Vec2::new(width, 30.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        egui::ScrollArea::horizontal()
-                            .id_salt("tabs-scroll")
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    for window in &view.windows {
-                                        let selected =
-                                            view.selected_window.as_deref() == Some(&window.id);
-                                        if ui
-                                            .add(
-                                                item(&window.name, 12.0, selected)
-                                                    .min_size(Vec2::new(72.0, 30.0)),
-                                            )
-                                            .on_hover_text(&window.name)
-                                            .clicked()
-                                        {
-                                            self.send(Action::SelectWindow(window.id.clone()));
-                                            self.reset_focus();
-                                        }
-                                    }
-                                });
-                            });
-                    },
-                );
             });
         });
     }
 
+    /// What to show when there is no terminal to show.
     fn empty(&mut self, ui: &mut egui::Ui, view: &View) {
-        let height = ui.available_height();
-        ui.add_space((height * 0.35).max(20.0));
+        let (title, detail, action) = if view.connected {
+            (
+                "No Terminals",
+                "Programs you start keep running on the server.",
+                "New Session",
+            )
+        } else {
+            ("Not Connected", view.status.as_str(), "Connect")
+        };
+        ui.add_space((ui.available_height() * 0.28).max(20.0));
         ui.vertical_centered(|ui| {
-            if view.connected {
-                ui.label(
-                    RichText::new("A little room to work.")
-                        .size(25.0)
-                        .color(TEXT),
-                );
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new("Start a session. Your programs stay on the server.")
-                        .color(MUTED),
-                );
-                ui.add_space(24.0);
-                if ui
-                    .add(egui::Button::new("New session").min_size(Vec2::new(135.0, 38.0)))
-                    .clicked()
-                {
-                    self.open_session_dialog();
-                }
-            } else {
-                ui.label(
-                    RichText::new("Your terminal, minus the noise.")
-                        .size(25.0)
-                        .color(TEXT),
-                );
-                ui.add_space(12.0);
-                ui.label(RichText::new("Connect to a running Rex server.").color(MUTED));
-                ui.add_space(22.0);
+            ui.spacing_mut().item_spacing.y = 12.0;
+            ui.heading(title);
+            ui.add(egui::Label::new(RichText::new(detail).color(DIM)).wrap());
+            ui.add_space(12.0);
+            if !view.connected {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.endpoint)
-                        .desired_width(390.0)
+                        .desired_width(380.0)
+                        .margin(egui::vec2(10.0, 8.0))
                         .font(egui::TextStyle::Monospace)
                         .hint_text("unix:/path/to/rex/server.sock"),
                 );
-                ui.add_space(12.0);
-                if ui
-                    .add(egui::Button::new("Connect").min_size(Vec2::new(115.0, 36.0)))
-                    .clicked()
-                {
+            }
+            let button = suggested(action)
+                .corner_radius(19)
+                .min_size(Vec2::new(140.0, 38.0));
+            if ui.add(button).clicked() {
+                if view.connected {
+                    self.new_session = Some(String::new());
+                } else {
                     self.client = connect(ui.ctx(), self.endpoint.trim());
-                    self.reset_focus();
-                    self.notice = None;
+                    self.toast = Toast::default();
                 }
-                ui.add_space(15.0);
-                ui.add(
-                    egui::Label::new(RichText::new(&view.status).size(12.0).color(MUTED)).wrap(),
-                );
             }
         });
     }
 
-    fn terminal_pane(&mut self, ui: &mut egui::Ui, pane: &Pane, rect: egui::Rect, split: bool) {
+    fn terminal_pane(&mut self, ui: &mut egui::Ui, pane: &Pane, rect: Rect, split: bool) {
         let active = self.focused.as_deref() == Some(&pane.id);
+        // The focused pane holds the keyboard whenever a dialog or a menu does not.
+        let keyboard = active && !self.modal(ui.ctx());
         let mut terminal_rect = rect;
         if split {
-            let header = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), PANE_HEADER));
-            ui.painter().rect_filled(header, 0, SIDEBAR);
-            ui.painter().text(
-                header.left_center() + egui::vec2(10.0, 0.0),
-                egui::Align2::LEFT_CENTER,
+            ui.painter().with_clip_rect(rect).text(
+                rect.left_top() + egui::vec2(12.0, PANE_HEADER / 2.0 + 2.0),
+                Align2::LEFT_CENTER,
                 &pane.title,
-                FontId::proportional(11.0),
-                if active { ACCENT } else { MUTED },
+                FontId::proportional(SMALL),
+                if active { TEXT } else { DIM },
             );
             terminal_rect.min.y += PANE_HEADER;
         }
@@ -370,44 +268,34 @@ impl App {
         // frame of the click that clears it.
         let selected = state.selection.as_ref().map(|s| s.frame.clone());
         let frame = selected.or_else(|| pane.frame.clone());
-        let background = frame.as_ref().map_or(BACKGROUND, |f| rgb(f.bg));
-        ui.painter().rect_filled(terminal_rect, 0, background);
+        if let Some(frame) = &frame {
+            ui.painter().rect_filled(terminal_rect, 0, rgb(frame.bg));
+        }
         let grid = Grid::new(
             ui.ctx(),
-            terminal_rect.shrink2(egui::vec2(12.0, 9.0)),
+            terminal_rect.shrink2(egui::vec2(12.0, 8.0)),
             self.font_size,
         );
-        let id = ui.id().with(("terminal", &pane.id));
-        let response = ui.interact(terminal_rect, id, egui::Sense::click_and_drag());
-        if active && self.focus_terminal {
-            response.request_focus();
-            self.focus_terminal = false;
-        }
-        if active {
-            self.terminal_keyboard |= response.has_focus();
-            ui.memory_mut(|m| {
-                m.set_focus_lock_filter(
-                    id,
-                    egui::EventFilter {
-                        tab: true,
-                        horizontal_arrows: true,
-                        vertical_arrows: true,
-                        escape: true,
-                    },
-                )
-            });
+        let id = ui.scope_id().with(("terminal", &pane.id));
+        let response = ui.interact(terminal_rect, id, Sense::click_and_drag());
+        if keyboard {
+            if !response.has_focus() {
+                response.request_focus();
+            }
+            // Including the keys that would otherwise move it elsewhere.
+            let keys = egui::EventFilter {
+                tab: true,
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+            };
+            ui.memory_mut(|m| m.set_focus_lock_filter(id, keys));
         }
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
         let mut actions = Vec::new();
-        let scale = ui.ctx().pixels_per_point();
-        let size = Size {
-            cols: (grid.rect.width() / grid.cell.x).clamp(2.0, 1000.0) as u16,
-            rows: (grid.rect.height() / grid.cell.y).clamp(1.0, 1000.0) as u16,
-            cell_width: (grid.cell.x * scale).ceil() as u16,
-            cell_height: (grid.cell.y * scale).ceil() as u16,
-        };
+        let size = grid.size(ui.ctx().pixels_per_point());
         // Only owned panes are resized, so report the size again when ownership returns.
         if !pane.owner {
             state.last_size = None;
@@ -420,7 +308,6 @@ impl App {
         }
         if response.clicked() || response.drag_started() {
             self.focused = Some(pane.id.clone());
-            response.request_focus();
             actions.push(Action::FocusPane {
                 pane: pane.id.clone(),
             });
@@ -448,7 +335,7 @@ impl App {
                 0 => {}
                 lines if !tracking => {
                     if let Err(error) = self.client.scroll(&pane.id, lines) {
-                        self.notice = Some(error);
+                        self.toast.say(error);
                     }
                 }
                 lines => {
@@ -470,20 +357,19 @@ impl App {
         } else {
             ui.painter().text(
                 grid.rect.center(),
-                egui::Align2::CENTER_CENTER,
+                Align2::CENTER_CENTER,
                 &pane.status,
-                FontId::proportional(12.0),
-                MUTED,
+                FontId::proportional(BODY),
+                DIM,
             );
         }
-        if split {
-            let color = if active {
-                BORDER.gamma_multiply(1.5)
-            } else {
-                BORDER
-            };
-            ui.painter()
-                .rect_stroke(rect, 0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+        // One line between neighbours, none around the outside.
+        let line = Stroke::new(1.0, BORDER);
+        if pane.x > 0.0 {
+            ui.painter().vline(rect.left(), rect.y_range(), line);
+        }
+        if pane.y > 0.0 {
+            ui.painter().hline(rect.x_range(), rect.top(), line);
         }
         if !tracking {
             response.context_menu(|ui| {
@@ -498,11 +384,10 @@ impl App {
                     ui.ctx()
                         .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
                     self.focused = Some(pane.id.clone());
-                    self.focus_terminal = true;
                     ui.close();
                 }
                 ui.separator();
-                for (label, direction) in SPLITS {
+                for (_, label, direction) in SPLITS {
                     if ui.button(label).clicked() {
                         actions.push(Action::Split {
                             pane: pane.id.clone(),
@@ -522,39 +407,47 @@ impl App {
         let Some(name) = &mut self.new_session else {
             return;
         };
-        let mut open = true;
-        let mut create = false;
-        egui::Window::new("New session")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(320.0)
+        let (mut create, mut cancel) = (false, false);
+        let frame = egui::Frame::new()
+            .fill(POPOVER)
+            .corner_radius(14)
+            .inner_margin(24);
+        let modal = egui::Modal::new(egui::Id::unique("new-session"))
+            .frame(frame)
             .show(ctx, |ui| {
-                ui.label(RichText::new("Give this workspace a name.").color(MUTED));
-                ui.add_space(12.0);
+                ui.set_width(300.0);
+                ui.spacing_mut().item_spacing.y = 12.0;
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("New Session").font(bold(17.0)));
+                    ui.label(RichText::new("Its programs keep running on the server.").color(DIM));
+                });
                 let field = ui.add(
                     egui::TextEdit::singleline(name)
-                        .hint_text("e.g. backend")
+                        .hint_text("Name")
+                        .margin(egui::vec2(10.0, 8.0))
                         .desired_width(f32::INFINITY),
                 );
-                if std::mem::take(&mut self.focus_name) {
+                if !field.has_focus() {
                     field.request_focus();
                 }
-                ui.add_space(15.0);
-                let enabled = !name.trim().is_empty();
-                create = ui
-                    .add_enabled(enabled, egui::Button::new("Create session"))
-                    .clicked()
-                    || (enabled && ctx.input(|i| i.key_pressed(Key::Enter)));
+                let named = !name.trim().is_empty();
+                ui.columns(2, |columns| {
+                    let size = [columns[0].available_width(), 36.0];
+                    cancel = columns[0]
+                        .add_sized(size, egui::Button::new("Cancel"))
+                        .clicked();
+                    columns[1].add_enabled_ui(named, |ui| {
+                        create = ui.add_sized(size, suggested("Create")).clicked();
+                    });
+                });
+                create |= named && ui.input(|i| i.key_pressed(Key::Enter));
             });
         if create {
             let name = name.trim().to_owned();
             self.send(Action::CreateSession { name });
         }
-        if create || !open || ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if create || cancel || modal.should_close() {
             self.new_session = None;
-            self.focus_terminal = true;
         }
     }
 
@@ -582,65 +475,111 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
-        self.terminal_keyboard = false;
-        let view = self.client.snapshot();
-        if self.previous_session != view.selected_session
-            || self.previous_window != view.selected_window
-        {
-            self.previous_session.clone_from(&view.selected_session);
-            self.previous_window.clone_from(&view.selected_window);
-            self.reset_focus();
+        let mut view = self.client.snapshot();
+        if let Some(error) = view.error.take() {
+            self.toast.say(error);
         }
-        self.global_shortcuts(&ctx, &view);
-        self.status_bar(root_ui, &view);
+        let view = &view;
+        // Whether this frame's keys were pressed with a dialog or a menu up.
+        let modal = self.modal(&ctx);
+        self.shortcuts(&ctx, view);
         if self.sidebar {
-            self.sidebar(root_ui, &view);
+            self.sidebar(root_ui, view);
         }
+        let panes = view.current_window().map_or(&[][..], |w| &w.panes);
+        // Focus stays with a pane while it is on screen, and otherwise goes to the first.
+        if !panes.iter().any(|p| Some(&p.id) == self.focused.as_ref()) {
+            self.focused = panes.first().map(|p| p.id.clone());
+        }
+        let terminal = panes.iter().find_map(|p| p.frame.as_ref());
+        let ground = terminal.map_or(VIEW, |frame| style::ground(rgb(frame.bg)));
         egui::CentralPanel::no_frame()
-            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(0))
+            .frame(egui::Frame::new().fill(ground))
             .show(root_ui, |ui| {
-                egui::Frame::new()
-                    .fill(SIDEBAR)
-                    .inner_margin(Margin::symmetric(10, 7))
-                    .show(ui, |ui| {
-                        self.tabs(ui, &view);
-                    });
-                let Some(window) = view.current_window().filter(|w| !w.panes.is_empty()) else {
-                    self.empty(ui, &view);
-                    return;
-                };
-                if !window
-                    .panes
-                    .iter()
-                    .any(|p| self.focused.as_ref() == Some(&p.id))
-                {
-                    self.focused = Some(window.panes[0].id.clone());
-                    self.focus_terminal = true;
+                ui.spacing_mut().item_spacing.y = 0.0;
+                self.toolbar(ui, view);
+                if panes.is_empty() {
+                    return self.empty(ui, view);
+                }
+                // Healthy needs no words. A lost connection says so above its last screen.
+                if !view.connected {
+                    let size = Vec2::new(ui.available_width(), 36.0);
+                    let (banner, _) = ui.allocate_exact_size(size, Sense::hover());
+                    ui.painter().rect_filled(banner, 0, HOVER);
+                    ui.painter().with_clip_rect(banner).text(
+                        banner.center(),
+                        Align2::CENTER_CENTER,
+                        &view.status,
+                        FontId::proportional(BODY),
+                        TEXT,
+                    );
                 }
                 let area = ui.available_rect_before_wrap();
-                for pane in &window.panes {
+                for pane in panes {
                     let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
                     let size = area.size() * egui::vec2(pane.width, pane.height);
-                    self.terminal_pane(
-                        ui,
-                        pane,
-                        egui::Rect::from_min_size(min, size),
-                        window.panes.len() > 1,
-                    );
+                    let rect = Rect::from_min_size(min, size);
+                    self.terminal_pane(ui, pane, rect, panes.len() > 1);
                 }
             });
         self.session_dialog(&ctx);
-        // The pane has explicit focus; dialogs and popups always keep their own input.
+        self.toast.show(&ctx);
         if view.connected
-            && self.new_session.is_none()
-            && !egui::Popup::is_any_open(&ctx)
-            && self.terminal_keyboard
+            && !modal
             && let Some(pane) = self.focused.clone()
         {
             self.terminal_keys(&ctx, &pane);
         }
         self.panes.retain(|id, _| view.pane(id).is_some());
     }
+}
+
+/// Trouble is said once, briefly, at the foot of the window.
+#[derive(Default)]
+struct Toast(Option<(String, Instant)>);
+
+impl Toast {
+    fn say(&mut self, message: String) {
+        self.0 = Some((message, Instant::now() + Duration::from_secs(5)));
+    }
+
+    fn show(&mut self, ctx: &egui::Context) {
+        let Some((message, until)) = &self.0 else {
+            return;
+        };
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            self.0 = None;
+            return;
+        }
+        ctx.request_repaint_after(left);
+        let frame = egui::Frame::new()
+            .fill(POPOVER)
+            .corner_radius(12)
+            .inner_margin(Margin::symmetric(16, 10))
+            .shadow(ctx.global_style().visuals.popup_shadow);
+        egui::Area::new(egui::Id::unique("toast"))
+            .order(egui::Order::Foreground)
+            .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -24.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                frame.show(ui, |ui| {
+                    ui.set_max_width(520.0);
+                    ui.label(message);
+                });
+            });
+    }
+}
+
+/// A row of controls at the top of the sidebar or the content.
+fn bar(ui: &mut egui::Ui) -> egui::Ui {
+    let size = Vec2::new(ui.available_width(), TOOLBAR);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let rect = rect.shrink2(egui::vec2(6.0, 0.0));
+    let layout = Layout::left_to_right(Align::Center);
+    let mut bar = ui.new_child(UiBuilder::new().max_rect(rect).layout(layout));
+    bar.spacing_mut().item_spacing.x = 2.0;
+    bar
 }
 
 /// One pane's pointer input for one frame.
@@ -668,7 +607,8 @@ impl Pointer<'_> {
                     pressed,
                     modifiers,
                 } => {
-                    let start = *pressed && self.tracking && self.response.rect.contains(*pos);
+                    // Hovered, not merely inside: a dialog or a menu over the pane keeps its clicks.
+                    let start = *pressed && self.tracking && self.response.hovered();
                     let end = !pressed && state.mouse_button == Some(*button);
                     if start || end {
                         let (x, y) = self.grid.cell_at(*pos, self.frame);
@@ -785,58 +725,10 @@ fn compose(ui: &egui::Ui, grid: Grid, frame: &Frame, preedit: &str) {
             FontId::monospace(grid.font_size),
             TEXT,
         );
-        let background = egui::Rect::from_min_size(cursor.min, galley.size()).expand(3.0);
-        ui.painter().rect_filled(background, 2, SURFACE);
+        let background = Rect::from_min_size(cursor.min, galley.size()).expand(3.0);
+        ui.painter().rect_filled(background, 4, POPOVER);
         ui.painter().galley(cursor.min, galley, TEXT);
     }
-}
-
-/// A session or tab button, quiet unless it is the selected one.
-fn item(label: &str, size: f32, selected: bool) -> egui::Button<'_> {
-    let (color, fill) = if selected {
-        (TEXT, SURFACE)
-    } else {
-        (MUTED, Color32::TRANSPARENT)
-    };
-    egui::Button::new(RichText::new(label).size(size).color(color))
-        .fill(fill)
-        .stroke(Stroke::NONE)
-}
-
-fn endpoint_label(endpoint: &str) -> &str {
-    if endpoint.starts_with("unix:") || endpoint.starts_with('/') {
-        "LOCAL WORKSPACE"
-    } else {
-        endpoint
-    }
-}
-
-fn theme(ctx: &egui::Context) {
-    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
-    style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = BACKGROUND;
-    style.visuals.window_fill = SIDEBAR;
-    style.visuals.extreme_bg_color = BACKGROUND;
-    style.visuals.faint_bg_color = SURFACE;
-    style.visuals.override_text_color = Some(TEXT);
-    style.visuals.selection.bg_fill = Color32::from_rgb(53, 73, 59);
-    style.visuals.selection.stroke = Stroke::new(1.0, ACCENT);
-    style.visuals.window_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.widgets.inactive.weak_bg_fill = SURFACE;
-    style.visuals.widgets.inactive.bg_fill = SURFACE;
-    style.visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(43, 54, 46);
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.widgets.active.weak_bg_fill = Color32::from_rgb(51, 68, 56);
-    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(11.0, 7.0);
-    style.animation_time = 0.0;
-    ctx.set_style_of(egui::Theme::Dark, style.clone());
-    ctx.set_style_of(egui::Theme::Light, style);
-    // A terminal owns Ctrl+/- itself. Avoid a second, implicit zoom of the whole UI.
-    ctx.options_mut(|o| o.zoom_with_keyboard = false);
 }
 
 fn mouse_button(button: egui::PointerButton) -> &'static str {

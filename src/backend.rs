@@ -60,6 +60,9 @@ impl Shared {
             s.view.connected = connected;
         });
     }
+    fn fail(&self, error: String) {
+        self.change(|s| s.view.error = Some(error));
+    }
     fn selected(&self) -> Option<String> {
         self.lock().view.selected_session.clone()
     }
@@ -109,8 +112,9 @@ impl Client {
     pub fn snapshot(&self) -> View {
         // Reset before reading: an update arriving during the copy schedules another paint.
         self.shared.wake.pending.store(false, Ordering::Release);
-        let state = self.shared.lock();
+        let mut state = self.shared.lock();
         let mut view = state.view.clone();
+        state.view.error = None;
         for pane in view.panes_mut() {
             if let Some(terminal) = state.terminals.get(&pane.id) {
                 pane.frame = terminal.latest();
@@ -205,7 +209,7 @@ async fn run_connected(
         streams: HashMap::new(),
     };
     connection.refresh().await?;
-    shared.status("Connected", true);
+    shared.status("", true);
     connection.reconcile();
     let mut replies = FuturesUnordered::new();
     let mut refresh = tokio::time::interval(Duration::from_millis(75));
@@ -233,12 +237,12 @@ async fn run_connected(
                 match connection.perform(action).await {
                     Ok(Some(reply)) => replies.push(reply),
                     Ok(None) => {}
-                    Err(error) => shared.status(format!("Action failed: {error:#}"), true),
+                    Err(error) => shared.fail(format!("{error:#}")),
                 }
                 connection.reconcile();
             }
             reply = replies.next(), if !replies.is_empty() => match reply {
-                Some(Ok(Err(error))) => shared.status(format!("Input failed: {error}"), true),
+                Some(Ok(Err(error))) => shared.fail(format!("Input failed: {error}")),
                 Some(Err(_)) => bail!("Control connection ended; input was not retried"),
                 Some(Ok(Ok(_))) | None => {}
             }
@@ -513,10 +517,15 @@ impl Connection<'_> {
                 return Ok(None);
             }
         };
-        let terminal = shared
+        let ready = shared
             .terminal(&pane)
-            .filter(|terminal| terminal.latest().is_some() && terminal.status().is_none())
-            .context("Terminal is not ready; input was not sent")?;
+            .filter(|terminal| terminal.latest().is_some() && terminal.status().is_none());
+        let Some(terminal) = ready else {
+            // A release or a motion may trail a pane that has left the screen.
+            // Only input that would have done something is worth a complaint.
+            ensure!(!engage, "Terminal is not ready; input was not sent");
+            return Ok(None);
+        };
         if engage {
             self.claim(&session, &pane).await?;
             terminal.scroll_to_bottom();
@@ -715,8 +724,7 @@ pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
         let frames = view.panes().filter(|p| p.frame.is_some()).count();
         if view.connected && (view.windows.is_empty() || frames > 0) {
             return Ok(format!(
-                "{}; {} sessions, {} tabs, {} decoded terminal frames",
-                view.status,
+                "Connected; {} sessions, {} tabs, {} decoded terminal frames",
                 view.sessions.len(),
                 view.windows.len(),
                 frames

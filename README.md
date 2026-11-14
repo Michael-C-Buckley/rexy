@@ -1,6 +1,6 @@
 # Rex Lite
 
-A small native Linux client for [Rex](https://www.superlogical.com/rex). Rust 1.100, egui, and libghostty. A quiet sidebar, tabs, and the terminal.
+A small native Linux client for [Rex](https://www.superlogical.com/rex). Rust 1.100, egui, and libghostty. A quiet sidebar, one row of tabs, and the terminal, set in Inter and JetBrains Mono.
 
 Early working client. Closing the window leaves server sessions running. Connecting never starts or installs a server.
 
@@ -34,12 +34,14 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## Controls
 
-- Click a session or tab to switch. `+` creates a session or tab; **Split** opens split directions.
+- Click a session or tab to switch. `+` creates a session or tab; the two buttons beside it split the focused pane right or down.
 - Click a pane to focus it. Input and focus take ownership; only owned panes are resized.
 - Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes. **Shift** overrides a program's mouse capture for selection and scrollback.
 - **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: toggle sidebar.
 - **Ctrl + / - / 0**: terminal font size. **Esc** clears selection.
 - The pane menu also offers copy/paste. **Ctrl C** still interrupts terminal programs.
+- Nothing is shown while all is well. A lost connection says so above the last screen, and a failed action says so briefly at the foot of the window.
+- The terminal keeps the colours Rex gives it. The toolbar takes a dark terminal's background, so the two read as one surface.
 
 ## What is here
 

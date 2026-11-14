@@ -28,6 +28,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Fonts
+
+`assets/fonts/` holds [Inter](https://github.com/rsms/inter) 4.1 and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304, unmodified variable fonts under the SIL Open Font License 1.1. Each licence is beside its font.
+
 ## Libraries
 
 libghostty is used through the `ghostty-vt` Rust bindings. egui/eframe supplies the desktop interface. These and the remaining Cargo dependencies retain their respective upstream licenses; exact versions and sources are recorded in `Cargo.lock`.

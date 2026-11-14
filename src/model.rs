@@ -4,8 +4,11 @@ use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub struct View {
+    /// Connection trouble in words. Empty while connected.
     pub status: String,
     pub connected: bool,
+    /// An action that failed, reported by one snapshot only.
+    pub error: Option<String>,
     pub sessions: Vec<Session>,
     pub selected_session: Option<String>,
     pub selected_window: Option<String>,
