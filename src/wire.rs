@@ -266,6 +266,14 @@ pub enum Event {
         text: Option<String>,
         id: u64,
     },
+    /// A program in a terminal has rung the bell.
+    Bell { block: String },
+    /// One has a notice for the desktop. Either part of it may be empty.
+    Notice {
+        block: String,
+        title: String,
+        body: String,
+    },
 }
 
 /// The icon of a process, if any of its names has one. The most telling come first:
@@ -313,6 +321,15 @@ fn event(message: &Value) -> Option<Event> {
             text: block["payload"]["text"].as_str().map(str::to_owned),
             id: block["payload"]["id"].as_u64().unwrap_or_default(),
         }),
+        ("block_event", Some("bell")) => Some(Event::Bell { block: id()? }),
+        ("block_event", Some("desktop_notification")) => {
+            let text = |key| block["payload"][key].as_str().unwrap_or_default();
+            Some(Event::Notice {
+                block: id()?,
+                title: text("title").to_owned(),
+                body: text("body").to_owned(),
+            })
+        }
         _ => None,
     }
 }

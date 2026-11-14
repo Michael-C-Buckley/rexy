@@ -31,6 +31,10 @@ impl Muted {
         self.tabs.contains(tab)
     }
 
+    pub fn tabs(&self) -> &HashSet<String> {
+        &self.tabs
+    }
+
     /// Mute a tab, or let a muted one speak again.
     pub fn toggle(&mut self, tab: &str) -> io::Result<()> {
         if !self.tabs.remove(tab) {

@@ -6,6 +6,7 @@ fn pane(id: &str, [x, y, width, height]: [f32; 4]) -> Pane {
         title: String::new(),
         program: Program::default(),
         activity: Activity::Idle,
+        message: String::new(),
         x,
         y,
         width,
@@ -24,6 +25,7 @@ fn the_pane_beside_another_is_the_nearest_alongside_it() {
         label: None,
         focus: None,
         zoomed: false,
+        hidden: Vec::new(),
         panes: vec![
             pane("left", [0.0, 0.0, 0.6, 1.0]),
             pane("top", [0.6, 0.0, 0.4, 0.25]),
@@ -49,4 +51,43 @@ fn the_pane_beside_another_is_the_nearest_alongside_it() {
         assert_eq!(beside(pane, toward), None);
     }
     assert_eq!(beside("gone", right), None);
+}
+
+#[test]
+fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
+    let says = |id: &str, activity, message: &str| Pane {
+        activity,
+        message: message.into(),
+        ..pane(id, [0.0; 4])
+    };
+    let tab = |panes, hidden| Window {
+        id: "w".into(),
+        label: None,
+        focus: None,
+        zoomed: true,
+        panes,
+        hidden,
+    };
+    // One out of sight is heard too, and of two as pressing, the first.
+    let hidden = vec![
+        says("b", Activity::Done, "Built"),
+        says("c", Activity::Done, "Later"),
+    ];
+    let busy = tab(vec![says("a", Activity::Working, "Thinking")], hidden);
+    assert_eq!(busy.says(), (Activity::Done, "Built"));
+    let quiet = tab(vec![pane("d", [0.0; 4])], Vec::new());
+    assert_eq!(quiet.says(), (Activity::Idle, ""));
+    assert_eq!(tab(Vec::new(), Vec::new()).says(), (Activity::Idle, ""));
+    let session = Session {
+        id: "s".into(),
+        name: "s".into(),
+        active: None,
+        windows: vec![quiet, busy],
+    };
+    assert_eq!(session.activity(), Activity::Done);
+    // It is told as one line, of whichever parts there are.
+    assert_eq!(line("Done", "Built"), "Done: Built");
+    assert_eq!(line("Done", ""), "Done");
+    assert_eq!(line("", "Thinking"), "Thinking");
+    assert_eq!(line("", ""), "");
 }

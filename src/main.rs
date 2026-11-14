@@ -72,7 +72,7 @@ fn main() -> eframe::Result {
             .with_title("Rex Lite")
             .with_inner_size([1120.0, 760.0])
             .with_min_inner_size([640.0, 420.0])
-            .with_app_id("dev.rex-lite.client"),
+            .with_app_id(rex_lite::notify::APP_ID),
         renderer: eframe::Renderer::Glow,
         // Ctrl+C, X and V belong to terminal programs; the UI maps the clipboard itself.
         clipboard_shortcuts: false,

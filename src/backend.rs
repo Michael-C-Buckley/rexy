@@ -1,6 +1,7 @@
 //! A thin Rex client: one I/O runtime, bounded actions, separate terminal CPU workers.
 use crate::{
-    model::{self, Action, Activity, Direction, Edit, Host, Pane, Session, View, Window},
+    model::{self, Action, Activity, Direction, Edit, Host, Pane, Session, View, Wait, Window},
+    notify::Herald,
     program::Program,
     ssh,
     terminal::{Notify, TerminalHandle},
@@ -10,6 +11,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use serde_json::{Value, json};
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     convert::Infallible,
     sync::{
@@ -60,6 +62,7 @@ struct State {
 struct Shared {
     state: Arc<Mutex<State>>,
     wake: Arc<Wake>,
+    herald: Herald,
 }
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -94,7 +97,8 @@ pub struct Client {
 impl Client {
     /// Connect to a server at the first of its endpoints that answers, and keep
     /// connected. Unless `away`, its first session is shown without being asked for.
-    pub fn spawn(endpoints: Vec<String>, away: bool, wake: Notify) -> Self {
+    /// What its panes have to say to someone not looking goes to `herald`.
+    pub fn spawn(endpoints: Vec<String>, away: bool, wake: Notify, herald: Herald) -> Self {
         let state = State {
             away,
             ..Default::default()
@@ -105,6 +109,7 @@ impl Client {
                 pending: AtomicBool::new(false),
                 callback: wake,
             }),
+            herald,
         };
         let (actions, receiver) = mpsc::channel(256);
         let worker = shared.clone();
@@ -135,6 +140,7 @@ impl Client {
         state.view.error = None;
         state.view.made = None;
         state.view.copied = None;
+        state.view.rang.clear();
         for pane in view.panes_mut() {
             if let Some(terminal) = state.terminals.get(&pane.id) {
                 pane.frame = terminal.latest();
@@ -189,6 +195,13 @@ impl Client {
             self.shared.wake.notify();
         }
         Ok(())
+    }
+
+    /// The session and the tab that hold a pane, if this server has the pane.
+    pub fn place(&self, pane: &str) -> Option<(String, String)> {
+        let state = self.shared.lock();
+        let (session, tab, _) = state.view.find(pane)?;
+        Some((session.id.clone(), tab.id.clone()))
     }
 
     /// Stop showing this server's session. Its programs keep running there.
@@ -320,6 +333,10 @@ async fn run_connected(
                 Event::Status { block } => {
                     connection.stale.insert(block);
                 }
+                Event::Bell { block } => connection.rang(block),
+                Event::Notice { block, title, body } => {
+                    connection.tell(&block, &model::line(&title, &body));
+                }
                 Event::Copied { block, text, id } => {
                     if let Err(error) = connection.copied(block, text, id).await {
                         shared.fail(format!("Nothing was copied: {error:#}"));
@@ -379,6 +396,16 @@ struct Block {
     /// That of a program reporting its status, which tells more, while one is.
     app: Option<Program>,
     activity: Activity,
+    /// The line said of that.
+    message: String,
+}
+
+impl Block {
+    /// What it has to say to someone not looking, if that is other than it was `before`.
+    fn news(&self, before: Activity) -> Option<String> {
+        let word = self.activity.word().filter(|_| self.activity != before)?;
+        Some(model::line(word, &self.message))
+    }
 }
 
 impl Drop for Connection<'_> {
@@ -481,12 +508,12 @@ impl Connection<'_> {
         Ok(())
     }
 
-    /// Ask of each terminal not seen before its title and its program, and forget
-    /// those that are gone.
+    /// Ask of each terminal not seen before its title, its program and what that says
+    /// it is doing, and forget those that are gone.
     async fn learn(&mut self, sessions: &[Session]) -> Result<()> {
         let panes = || {
             sessions.iter().flat_map(|session| {
-                let panes = session.windows.iter().flat_map(|w| &w.panes);
+                let panes = session.windows.iter().flat_map(Window::every);
                 panes.map(move |pane| (&session.id, &pane.id))
             })
         };
@@ -494,22 +521,31 @@ impl Connection<'_> {
         for (session, pane) in panes().filter(|(_, pane)| !self.blocks.contains_key(*pane)) {
             let request = json!({"session_id": session, "block_id": pane, "args": {}});
             let title = self.rpc.enqueue(TITLE, request.clone()).await?;
-            let process = self.rpc.enqueue(PROCESS, request).await?;
-            asked.push((session, pane, title, process));
+            let process = self.rpc.enqueue(PROCESS, request.clone()).await?;
+            let status = self.rpc.enqueue(STATUS, request).await?;
+            asked.push((session, pane, title, process, status));
         }
-        for (session, pane, title, process) in asked {
+        for (session, pane, title, process, status) in asked {
             // A server too old to be asked has nothing to say.
             let title = title.await.context(ENDED)?.unwrap_or_default();
             let process = process.await.context(ENDED)?.unwrap_or_default();
+            let status = status.await.context(ENDED)?.unwrap_or_default();
+            let (activity, message, app) = reported(&status["records"]);
             let block = Block {
                 session: session.clone(),
                 title: title["title"].as_str().unwrap_or_default().into(),
                 process: wire::program(&process["foreground"]),
-                app: None,
-                activity: Activity::Idle,
+                app,
+                activity,
+                message,
             };
+            // How a pane stood when first seen is not news. How one that the last
+            // connection knew has changed since that was lost is.
+            let known = self.shared.lock().view.find(pane).map(|(.., p)| p.activity);
+            if let Some(said) = known.and_then(|before| block.news(before)) {
+                self.tell(pane, &said);
+            }
             self.blocks.insert(pane.clone(), block);
-            self.stale.insert(pane.clone());
         }
         let seen: HashSet<_> = panes().map(|(_, pane)| pane).collect();
         self.blocks.retain(|id, _| seen.contains(id));
@@ -530,28 +566,43 @@ impl Connection<'_> {
         if replies.is_empty() {
             return Ok(());
         }
+        let mut news = Vec::new();
         for (id, reply) in replies {
             let status = reply.await.context(ENDED)?.unwrap_or_default();
-            // What a program that has finished left behind says nothing of now.
-            let live = || {
-                items(&status["records"]).filter_map(|record| {
-                    let state = match record["state"].as_str()? {
-                        "done" | "error" => return None,
-                        "blocked" => Activity::Blocked,
-                        "working" => Activity::Working,
-                        _ => Activity::Idle,
-                    };
-                    Some((state, record["effective_app"].as_str()))
-                })
+            let Some(block) = self.blocks.get_mut(&id) else {
+                continue;
             };
-            if let Some(block) = self.blocks.get_mut(&id) {
-                block.activity = live().map(|(state, _)| state).max().unwrap_or_default();
-                block.app = Program::named(live().filter_map(|(_, app)| app));
-            }
+            let before = block.activity;
+            (block.activity, block.message, block.app) = reported(&status["records"]);
+            news.extend(block.news(before).map(|said| (id, said)));
         }
         self.shared
             .change(|s| fill(&mut s.view.sessions, &self.blocks));
+        for (pane, said) in news {
+            self.tell(&pane, &said);
+        }
         Ok(())
+    }
+
+    /// Pass on what a pane's programs have to say, if anything, for whoever is not
+    /// looking at it.
+    fn tell(&self, pane: &str, said: &str) {
+        let state = self.shared.lock();
+        let held = state.view.find(pane).filter(|_| !said.is_empty());
+        if let Some((session, tab, _)) = held {
+            let herald = &self.shared.herald;
+            herald.say(pane, &tab.id, tab.name(), &session.name, said);
+            // A window that is looking at the pane draws, and so says that it is.
+            self.shared.wake.notify();
+        }
+    }
+
+    /// A terminal's bell has rung. One that rings and rings is heard as one.
+    fn rang(&self, pane: String) {
+        self.tell(&pane, Activity::Rang.word().unwrap_or_default());
+        self.shared.change(|s| {
+            s.view.rang.insert(pane);
+        });
     }
 
     /// Take in news of one terminal. One not seen yet is asked about when it is.
@@ -737,6 +788,14 @@ impl Connection<'_> {
                 rpc.call("block.close", payload).await?;
                 None
             }
+            Action::Reveal { pane } => {
+                // Focus ends a zoom that hides the pane, and brings back a floating
+                // layer that was put away.
+                let payload = json!({"session_id": self.shown()?, "block_id": pane});
+                rpc.call("session.focus_block", payload).await?;
+                made = Some(pane);
+                None
+            }
             Action::Leave => None,
             input => return self.input(input).await,
         };
@@ -914,26 +973,32 @@ fn parse_windows(view: &Value, client_id: &str) -> Vec<Window> {
         .filter_map(|window| {
             let id: String = window["window_id"].as_str()?.into();
             let zoom = window["zoomed_block_id"].as_str();
-            let mut panes = Vec::new();
-            for layer in items(&window["layers"]).filter(|l| l["state"] != "minimized") {
+            let (mut panes, mut hidden) = (Vec::new(), Vec::new());
+            for layer in items(&window["layers"]) {
                 let mut geometry = Vec::new();
                 let bounds = rect(&layer["bounds"]).unwrap_or(FULL);
                 layout(&layer["layout"], bounds, 0, &mut geometry);
                 for (id, bounds) in geometry {
-                    if zoom.is_some_and(|zoom| zoom != id) {
-                        continue;
-                    }
                     let block = block(&layer["blocks"], &id);
                     let creator = block["creator_name"].as_str();
                     if creator.is_some_and(|creator| creator != "com.superlogical.terminal") {
                         continue;
                     }
-                    let [x, y, width, height] = if zoom.is_some() { FULL } else { bounds };
+                    // A zoomed pane fills the tab, and the rest are out of sight behind
+                    // it. So are those of a floating layer that has been put away.
+                    let (panes, bounds) = match zoom {
+                        _ if layer["state"] == "minimized" => (&mut hidden, bounds),
+                        Some(zoom) if zoom == id => (&mut panes, FULL),
+                        Some(_) => (&mut hidden, bounds),
+                        None => (&mut panes, bounds),
+                    };
+                    let [x, y, width, height] = bounds;
                     panes.push(Pane {
                         id,
                         title: label(&block["label"], "Terminal"),
                         program: Program::default(),
                         activity: Activity::Idle,
+                        message: String::new(),
                         x,
                         y,
                         width,
@@ -955,15 +1020,44 @@ fn parse_windows(view: &Value, client_id: &str) -> Vec<Window> {
                 zoomed: zoom.is_some(),
                 id,
                 panes,
+                hidden,
             })
         })
         .collect()
 }
 
+/// What a terminal's programs say they are doing, of all that each has reported:
+/// the most pressing of it, the line said of that, and the icon of one still at it.
+fn reported(records: &Value) -> (Activity, String, Option<Program>) {
+    let activity = |record: &Value| match record["state"].as_str() {
+        Some("working") => Activity::Working,
+        Some("done") => Activity::Done,
+        Some("error") => Activity::Error,
+        Some("blocked") => Activity::Blocked(match record["kind"].as_str() {
+            Some("permission") => Wait::Approval,
+            Some("question") => Wait::Question,
+            Some("auth") => Wait::SignIn,
+            _ => Wait::Input,
+        }),
+        _ => Activity::Idle,
+    };
+    // Of several as pressing, the first: a program comes before its parts.
+    let records = || items(records).map(|record| (activity(record), record));
+    let top = records().min_by_key(|(state, _)| Reverse(*state));
+    let (top, message) = match top {
+        Some((top, record)) => (top, record["msg"].as_str().unwrap_or_default()),
+        None => (Activity::Idle, ""),
+    };
+    // What a program that has finished left behind says nothing of what runs now.
+    let live = records().filter(|(state, _)| !matches!(state, Activity::Done | Activity::Error));
+    let app = Program::named(live.filter_map(|(_, record)| record["effective_app"].as_str()));
+    (top, message.to_owned(), app)
+}
+
 /// Give every pane what is known of its terminal.
 fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
     let windows = sessions.iter_mut().flat_map(|s| &mut s.windows);
-    for pane in windows.flat_map(|w| &mut w.panes) {
+    for pane in windows.flat_map(Window::every_mut) {
         if let Some(block) = blocks.get(&pane.id) {
             // One with no title keeps its label.
             if !block.title.is_empty() {
@@ -971,6 +1065,7 @@ fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
             }
             pane.program = block.app.or(block.process).unwrap_or_default();
             pane.activity = block.activity;
+            pane.message.clone_from(&block.message);
         }
     }
 }
@@ -1056,7 +1151,7 @@ fn shell() -> Value {
 
 /// Read-only connectivity probe used by --probe: no sessions are created and no input is sent.
 pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
-    let client = Client::spawn(vec![endpoint], false, Arc::new(|| {}));
+    let client = Client::spawn(vec![endpoint], false, Arc::new(|| {}), Herald::new().0);
     let started = std::time::Instant::now();
     loop {
         let view = client.snapshot();

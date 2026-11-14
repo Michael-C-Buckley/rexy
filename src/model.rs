@@ -1,6 +1,6 @@
 //! Small UI-facing value model. Terminal frames are immutable, shared snapshots.
 use crate::{program::Program, terminal::Frame};
-use std::sync::Arc;
+use std::{cmp::Reverse, collections::HashSet, sync::Arc};
 
 #[derive(Clone, Default)]
 pub struct View {
@@ -9,10 +9,13 @@ pub struct View {
     pub connected: bool,
     /// An action that failed, reported by one snapshot only.
     pub error: Option<String>,
-    /// A pane this client has just made by a split, reported likewise.
+    /// A pane this client has just made by a split, or brought out from out of
+    /// sight, reported likewise.
     pub made: Option<String>,
     /// A pane on show, and text a program in it has just copied, reported likewise.
     pub copied: Option<(String, String)>,
+    /// The panes whose bells have rung since the last snapshot.
+    pub rang: HashSet<String>,
     /// The other servers this one knows of.
     pub hosts: Vec<Host>,
     /// Every session on the server, each with its tabs.
@@ -36,6 +39,20 @@ impl View {
     pub fn current_window(&self) -> Option<&Window> {
         let selected = self.selected_window.as_ref()?;
         self.windows().iter().find(|w| &w.id == selected)
+    }
+
+    /// Every tab of every session, with its session.
+    pub fn tabs(&self) -> impl Iterator<Item = (&Session, &Window)> {
+        let sessions = self.sessions.iter();
+        sessions.flat_map(|session| session.windows.iter().map(move |tab| (session, tab)))
+    }
+
+    /// A pane of any tab, on show or not, with the session and the tab that hold it.
+    pub fn find(&self, pane: &str) -> Option<(&Session, &Window, &Pane)> {
+        self.tabs().find_map(|(session, tab)| {
+            let pane = tab.every().find(|held| held.id == pane)?;
+            Some((session, tab, pane))
+        })
     }
 
     /// The panes of the session on show.
@@ -77,6 +94,14 @@ pub struct Session {
     pub windows: Vec<Window>,
 }
 
+impl Session {
+    /// The most pressing thing its tabs have to say.
+    pub fn activity(&self) -> Activity {
+        let said = self.windows.iter().map(|tab| tab.says().0);
+        said.max().unwrap_or_default()
+    }
+}
+
 /// A tab.
 #[derive(Clone)]
 pub struct Window {
@@ -85,12 +110,32 @@ pub struct Window {
     pub label: Option<String>,
     /// The pane that typing goes to.
     pub focus: Option<String>,
-    /// One pane fills the tab, and is the only one of them listed.
+    /// One pane fills the tab, and is the only one of them on show.
     pub zoomed: bool,
+    /// The panes on show.
     pub panes: Vec<Pane>,
+    /// Those out of sight, which run on unseen: behind the one that fills the tab,
+    /// or in a floating layer that has been put away.
+    pub hidden: Vec<Pane>,
 }
 
 impl Window {
+    /// Every pane, on show or not.
+    pub fn every(&self) -> impl Iterator<Item = &Pane> {
+        self.panes.iter().chain(&self.hidden)
+    }
+
+    pub fn every_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
+        self.panes.iter_mut().chain(&mut self.hidden)
+    }
+
+    /// The most pressing thing its panes have to say, and the line said of it. Of
+    /// several as pressing, the first.
+    pub fn says(&self) -> (Activity, &str) {
+        let top = self.every().min_by_key(|pane| Reverse(pane.activity));
+        top.map_or((Activity::Idle, ""), |pane| (pane.activity, &pane.message))
+    }
+
     /// The pane that speaks for the tab: the one typing goes to.
     pub fn front(&self) -> Option<&Pane> {
         let focused = |pane: &&Pane| Some(&pane.id) == self.focus.as_ref();
@@ -105,11 +150,6 @@ impl Window {
 
     pub fn program(&self) -> Program {
         self.front().map(|pane| pane.program).unwrap_or_default()
-    }
-
-    pub fn activity(&self) -> Activity {
-        let panes = self.panes.iter().map(|p| p.activity);
-        panes.max().unwrap_or_default()
     }
 
     /// Whether it holds more panes than one, on show or not.
@@ -155,8 +195,50 @@ pub enum Activity {
     #[default]
     Idle,
     Working,
+    /// The terminal's bell has rung, and the pane has not been looked at since.
+    /// No server reports this: a window makes it of the bells it hears.
+    Rang,
+    /// Finished, with a result the user has yet to look at.
+    Done,
+    /// Failed and stopped.
+    Error,
     /// Waiting for the user.
-    Blocked,
+    Blocked(Wait),
+}
+
+/// What a program is waiting for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Wait {
+    /// It did not say.
+    Input,
+    Question,
+    /// A password or the like.
+    SignIn,
+    Approval,
+}
+
+impl Activity {
+    /// The word for it, of those that are told in words.
+    pub fn word(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Idle | Self::Working => return None,
+            Self::Rang => "Bell",
+            Self::Done => "Done",
+            Self::Error => "Error",
+            Self::Blocked(Wait::Input) => "Waiting",
+            Self::Blocked(Wait::Question) => "Question",
+            Self::Blocked(Wait::SignIn) => "Needs sign-in",
+            Self::Blocked(Wait::Approval) => "Needs approval",
+        })
+    }
+}
+
+/// Two things said as one line. Either may be left unsaid.
+pub fn line(first: &str, second: &str) -> String {
+    match (first, second) {
+        ("", only) | (only, "") => only.to_owned(),
+        _ => format!("{first}: {second}"),
+    }
 }
 
 /// Geometry is a fraction of the tab area.
@@ -167,6 +249,8 @@ pub struct Pane {
     pub title: String,
     pub program: Program,
     pub activity: Activity,
+    /// The line its program has to say of that, if it has one.
+    pub message: String,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -206,6 +290,11 @@ pub enum Action {
     },
     /// Stop watching the session on show. Sent by `Client::leave`.
     Leave,
+    /// Bring a pane of the session on show out from out of sight, and take the
+    /// keyboard to it.
+    Reveal {
+        pane: String,
+    },
     FocusPane {
         pane: String,
     },

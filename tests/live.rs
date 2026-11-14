@@ -1,9 +1,11 @@
 //! Run only against a disposable server, never the default personal socket.
 use rex_lite::{
     backend::Client,
-    model::{Action, Activity, Direction, Edit, Size, View, Window},
+    model::{Action, Activity, Direction, Edit, Size, View, Wait, Window},
+    notify::Herald,
     terminal::Frame,
 };
+use serde_json::{Value, json};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -69,7 +71,8 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
             && endpoint.contains("/work/"),
         "refusing to mutate a non-test Rex server"
     );
-    let client = Client::spawn(vec![endpoint.clone()], false, Arc::new(|| {}));
+    let (herald, notes) = Herald::new();
+    let client = Client::spawn(vec![endpoint.clone()], false, Arc::new(|| {}), herald);
     let initial = wait(&client, "initial Ghostty snapshot", |v| {
         v.connected && v.panes().any(|p| p.frame.is_some())
     });
@@ -132,6 +135,18 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     let mut others = find(&split, &window).unwrap().panes.iter();
     let other = others.find(|p| p.id != pane).unwrap().id.clone();
+    // The server is told some things from outside: this window types only into
+    // what it shows, and makes no floating layers.
+    let rex = |args: &[&str]| {
+        let rex = std::process::Command::new("rex")
+            .args(["-S", &endpoint, "--autostart=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&rex.stderr);
+        assert!(rex.status.success(), "{error}");
+        String::from_utf8(rex.stdout).unwrap()
+    };
     // A pane fills its tab in place of the rest, and gives it back to them.
     for (label, zoomed, panes) in [("a pane zoomed", true, 1), ("a pane restored", false, 2)] {
         send(&client, Action::Zoom { pane: pane.clone() });
@@ -139,7 +154,55 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
             let shown = |w: &Window| w.panes.len() == panes && w.panes[0].id == pane;
             find(v, &window).is_some_and(|w| w.zoomed == zoomed && shown(w))
         });
+        if !zoomed {
+            continue;
+        }
+        // The pane behind it runs on, and what it has to say is still heard.
+        let report = "printf '\\033]7501;state=done\\007'\n";
+        rex(&["send", "-s", &session, "-b", &other, report]);
+        wait(&client, "a pane out of sight heard", |v| {
+            let behind = find(v, &window).and_then(|w| w.hidden.first());
+            behind.is_some_and(|p| p.id == other && p.activity == Activity::Done)
+        });
+        let note = notes.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            (note.pane.as_str(), note.body.as_str()),
+            (other.as_str(), "Done")
+        );
     }
+    // A pane of a floating layer that has been put away runs on out of sight too,
+    // and comes back, with the keyboard, when it is revealed.
+    let call = |method: &str, payload: Value| -> Value {
+        let reply = rex(&["api", "call", method, &payload.to_string()]);
+        serde_json::from_str(&reply).unwrap()
+    };
+    let layout = json!({"block": {"flavor": "com.superlogical.terminal.shell"}});
+    let bounds = [0.2, 0.2, 0.5, 0.5];
+    let layer =
+        json!({"session_id": session, "window_id": window, "bounds": bounds, "layout": layout});
+    let layer = call("session.new_layer", layer);
+    let floating = layer["block_ids"][0].as_str().unwrap().to_owned();
+    let away = json!({"session_id": session, "layer_id": layer["layer_id"], "state": "minimized"});
+    call("session.set_layer_state", away);
+    let tab = |v: &View, shown: usize, hidden: &[&str]| {
+        let hides = |w: &Window| {
+            w.hidden
+                .iter()
+                .map(|p| p.id.as_str())
+                .eq(hidden.iter().copied())
+        };
+        find(v, &window).is_some_and(|w| w.panes.len() == shown && hides(w))
+    };
+    wait(&client, "a pane put away", |v| tab(v, 2, &[&floating]));
+    let reveal = Action::Reveal {
+        pane: floating.clone(),
+    };
+    send(&client, reveal);
+    wait(&client, "a pane brought back", |v| {
+        v.made.as_ref() == Some(&floating) && tab(v, 3, &[])
+    });
+    send(&client, Action::ClosePane { pane: floating });
+    wait(&client, "a floating pane closed", |v| tab(v, 2, &[]));
     send(&client, Action::CreateWindow(session.clone()));
     let next = wait(&client, "new tab", |v| {
         v.windows().len() == initial.windows().len() + 1
@@ -176,13 +239,50 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     wait(&client, "a tab going by its terminal's title", |v| {
         find(v, &window).is_some_and(|w| w.name() == "Titled")
     });
-    // Programs say what they are doing, and a tab shows the most pressing of it.
-    for (state, activity) in [("blocked", Activity::Blocked), ("idle", Activity::Idle)] {
-        run(&format!("printf '\\033]7501;state=%s\\007' {state}"));
+    // Programs say what they are doing, and what they wait for or end with is
+    // passed on, for whoever is not looking. The message is "Run it?" in base64.
+    let said = |report: &str, activity, note: Option<&str>| {
+        run(&format!("printf '\\033]7501;{report}\\007'"));
         wait(&client, "a program's status", |v| {
-            find(v, &window).is_some_and(|w| w.activity() == activity)
+            v.pane(&pane).is_some_and(|p| p.activity == activity)
         });
-    }
+        let heard = notes.recv_timeout(Duration::from_millis(300)).ok();
+        assert_eq!(heard.as_ref().map(|note| note.body.as_str()), note);
+        assert!(
+            heard.is_none_or(|note| note.tab == window && note.summary.starts_with("Titled — "))
+        );
+    };
+    let asked = Activity::Blocked(Wait::Approval);
+    let ask = "state=blocked:kind=permission:msg=UnVuIGl0Pw";
+    said(ask, asked, Some("Needs approval: Run it?"));
+    assert_eq!(client.snapshot().pane(&pane).unwrap().message, "Run it?");
+    said("state=working", Activity::Working, None);
+    // What a program comes to while the connection is lost is news when it is back.
+    run("sleep 1; printf '\\033]7501;state=%s\\007' error");
+    wait(&client, "a report to come", |v| {
+        screen(v, &pane).contains("sleep 1")
+    });
+    let old_frame = frame(&client.snapshot(), &pane).unwrap().clone();
+    send(&client, Action::Reconnect);
+    wait(&client, "a status that changed out of hearing", |v| {
+        let fresh = frame(v, &pane).is_some_and(|f| !Arc::ptr_eq(f, &old_frame));
+        v.connected && fresh && v.pane(&pane).is_some_and(|p| p.activity == Activity::Error)
+    });
+    let late = notes.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(late.body, "Error");
+    said("state=done", Activity::Done, Some("Done"));
+    // Running something else does not take back what a program ended with.
+    run("true");
+    said("state=error", Activity::Error, Some("Error"));
+    said("state=idle", Activity::Idle, None);
+    // A bell is news to the window as well, and a notice is for the desktop alone.
+    run("printf '\\007'");
+    wait(&client, "a bell", |v| v.rang.contains(&pane));
+    let bell = notes.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(bell.body, "Bell");
+    run("printf '\\033]777;notify;Build;All green\\007'");
+    let notice = notes.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(notice.body, "Build: All green");
     // A tab has the icon of the program in its foreground, or of the one that
     // reports from it.
     let program = |label: &str, icon: &str| {
@@ -268,7 +368,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
 
     // A client for a server the UI is not showing lists sessions and selects none.
-    let other = Client::spawn(vec![endpoint], true, Arc::new(|| {}));
+    let other = Client::spawn(vec![endpoint], true, Arc::new(|| {}), Herald::new().0);
     let listed = wait(&other, "sessions without a selection", |v| {
         v.connected && !v.sessions.is_empty()
     });

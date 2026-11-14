@@ -47,6 +47,16 @@ fn keeps_up_with_structure_titles_and_programs_and_nothing_else() {
     assert_eq!(event(&short), copied(Some("hello"), 3));
     let long = block("clipboard_written", json!({"id": 4, "bytes": 200_000}));
     assert_eq!(event(&long), copied(None, 4));
+    // A program may ring its terminal's bell, or have a notice for the desktop.
+    let bell = Some(Event::Bell { block: "b".into() });
+    assert_eq!(event(&block("bell", json!({}))), bell);
+    let notice = block("desktop_notification", json!({"title": "", "body": "hi"}));
+    let said = Event::Notice {
+        block: "b".into(),
+        title: String::new(),
+        body: "hi".into(),
+    };
+    assert_eq!(event(&notice), Some(said));
     assert_eq!(event(&block("size_changed", json!({}))), None);
     assert_eq!(event(&json!({"payload": {"type": "client_joined"}})), None);
 }

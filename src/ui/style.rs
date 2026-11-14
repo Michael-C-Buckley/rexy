@@ -20,6 +20,10 @@ pub const BORDER: Color32 = white(24);
 pub const ACCENT: Color32 = Color32::from_rgb(0x35, 0x84, 0xe4);
 /// Something is waiting for the user.
 pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x2e);
+/// Something has failed.
+pub const RED: Color32 = Color32::from_rgb(0xf6, 0x61, 0x51);
+/// Something has finished.
+pub const GREEN: Color32 = Color32::from_rgb(0x57, 0xe3, 0x89);
 /// Fills of flat controls: under the pointer, selected, and pressed.
 pub const HOVER: Color32 = white(18);
 pub const ACTIVE: Color32 = white(28);
@@ -144,6 +148,8 @@ pub enum Icon {
     /// Let a pane fill its tab, and give the tab back to them all.
     Zoom,
     Restore,
+    /// Panes that are out of sight.
+    Behind,
     Down,
     /// A shell's, for a program whose icon is not at hand.
     Prompt,
@@ -194,6 +200,14 @@ impl Icon {
                     line([x, y], [x + side * arm, y]);
                     line([x, y], [x, y - side * arm]);
                 }
+            }
+            // One window, and the edges of another that shows from behind it.
+            Icon::Behind => {
+                let front =
+                    Rect::from_center_size(center + egui::vec2(-1.5, 1.5), egui::vec2(13.0, 11.0));
+                painter.rect_stroke(front, 3, stroke, StrokeKind::Inside);
+                line([-4.0, -6.5], [7.5, -6.5]);
+                line([7.5, -6.5], [7.5, 3.0]);
             }
             Icon::Down => {
                 line([-4.0, -2.0], [0.0, 2.0]);
@@ -309,6 +323,9 @@ pub struct Item<'a> {
     pub menu: bool,
     /// A mark at its trailing edge.
     pub mark: Option<(Icon, Color32)>,
+    /// What the mark means, to say in its place and its colour. Only a row whose
+    /// label starts at its edge has the room.
+    pub word: Option<&'a str>,
     /// Small buttons that take the mark's place while the pointer is on the row.
     pub buttons: &'a [(Icon, &'a str)],
     /// It can be dragged to another place among its like.
@@ -336,8 +353,16 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     };
     ui.painter().rect_filled(rect, RADIUS, fill);
     // Room at the trailing edge is the label's to lose, so that it never moves.
+    let word = item.word.filter(|_| item.align != Align::Center);
+    let word = word.zip(item.mark).map(|(word, (_, color))| {
+        let font = FontId::proportional(SMALL);
+        ui.painter().layout_no_wrap(word.to_owned(), font, color)
+    });
     let marks = f32::from(u8::from(item.mark.is_some()) + u8::from(item.menu));
-    let room = (12.0 + 14.0 * marks).max(4.0 + BUTTON * item.buttons.len() as f32);
+    let marks = word
+        .as_ref()
+        .map_or(14.0 * marks, |word| word.size().x + 8.0);
+    let room = (12.0 + marks).max(4.0 + BUTTON * item.buttons.len() as f32);
     let mut text = rect.shrink2(egui::vec2(12.0, 0.0));
     text.max.x = rect.right() - room;
     if item.align == Align::Center {
@@ -365,7 +390,9 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         for (index, (icon, tip)) in item.buttons.iter().enumerate().rev() {
             let center = egui::pos2(right - BUTTON / 2.0, rect.center().y);
             let button = Rect::from_center_size(center, Vec2::splat(BUTTON));
-            let button_response = ui.interact(button, response.id.with(index), Sense::click());
+            // By a name of its own: a row's tooltip goes by the row's and a number.
+            let id = response.id.with(("button", index));
+            let button_response = ui.interact(button, id, Sense::click());
             paint_button(ui, button, &button_response, *icon);
             if button_response.on_hover_text(*tip).clicked() {
                 pressed = Some(index);
@@ -378,7 +405,11 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
             Icon::Down.paint(ui.painter(), center, DIM);
             center.x -= 14.0;
         }
-        if let Some((mark, color)) = item.mark {
+        if let Some(word) = word {
+            let corner = egui::pos2(rect.right() - 12.0, rect.center().y)
+                - word.size() * egui::vec2(1.0, 0.5);
+            ui.painter().galley(corner, word, TEXT);
+        } else if let Some((mark, color)) = item.mark {
             mark.paint(ui.painter(), center, color);
         }
     }

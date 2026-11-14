@@ -2,6 +2,7 @@
 //! along the top, and the terminal. Terminal content never becomes an egui widget tree.
 mod input;
 mod muted;
+mod raise;
 mod render;
 mod style;
 
@@ -19,15 +20,17 @@ use eframe::egui::{
 use crate::{
     backend::Client,
     link,
-    model::{Action, Activity, Direction, Edit, Host, Pane, Session, View, Window},
+    model::{self, Action, Activity, Direction, Edit, Host, Pane, Session, View, Window},
+    notify::{Desktop, Herald},
     terminal::Frame,
 };
 use input::{Keyboard, modifier_bits};
 use muted::Muted;
+use raise::Raise;
 use render::{Grid, PaneView, Selection, rgb};
 use style::{
-    ACCENT, AMBER, BODY, BORDER, DIM, HOVER, Icon, Item, POPOVER, SIDEBAR, SMALL, SMALL_BUTTON,
-    TEXT, TOOLBAR, VIEW, bold, icon_button, item, small_button, suggested,
+    ACCENT, AMBER, BODY, BORDER, DIM, GREEN, HOVER, Icon, Item, POPOVER, RED, SIDEBAR, SMALL,
+    SMALL_BUTTON, TEXT, TOOLBAR, VIEW, bold, icon_button, item, small_button, suggested,
 };
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
@@ -54,22 +57,23 @@ struct Server {
 
 impl Server {
     /// Unless `away`, the server's first session is shown without being asked for.
-    fn connect(ctx: &egui::Context, host: Host, away: bool) -> Self {
+    fn connect(ctx: &egui::Context, host: Host, away: bool, herald: &Herald) -> Self {
         let ctx = ctx.clone();
         let wake = Arc::new(move || ctx.request_repaint());
+        let herald = herald.of(&host.label);
         Self {
-            client: Client::spawn(host.endpoints.clone(), away, wake),
+            client: Client::spawn(host.endpoints.clone(), away, wake, herald),
             host,
         }
     }
 
     /// Home, the server this window was opened on, has no label of its own.
-    fn home(ctx: &egui::Context, endpoint: &str) -> Self {
+    fn home(ctx: &egui::Context, endpoint: &str, herald: &Herald) -> Self {
         let host = Host {
             label: String::new(),
             endpoints: vec![endpoint.to_owned()],
         };
-        Self::connect(ctx, host, false)
+        Self::connect(ctx, host, false, herald)
     }
 
     fn label(&self) -> &str {
@@ -98,6 +102,18 @@ struct Rename {
     shown: bool,
 }
 
+/// What a pane's programs have had to say, and what the user has made of it.
+#[derive(Default)]
+struct Heard {
+    said: Activity,
+    /// With that said, the pane has been on show in this window, with the window in use.
+    seen: bool,
+    /// Its bell has rung since then.
+    rang: bool,
+    /// It was on show so when last the window drew.
+    watched: bool,
+}
+
 /// What was asked of a session or a tab through its menu.
 enum Choice {
     Rename,
@@ -123,6 +139,12 @@ pub struct App {
     toast: Toast,
     rename: Option<Rename>,
     muted: Muted,
+    /// By pane.
+    heard: HashMap<String, Heard>,
+    /// Where the servers' connections send what their panes have to say, and what
+    /// passes it on to the desktop.
+    herald: Herald,
+    desktop: Desktop,
     /// What is typed in the list of sessions, and which of its rows Enter would take.
     filter: String,
     cursor: usize,
@@ -133,8 +155,20 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, endpoint: String) -> Self {
         style::apply(&cc.egui_ctx);
+        let (herald, notes) = Herald::new();
+        let (ctx, raise) = (cc.egui_ctx.clone(), Raise::of(cc));
+        // A picked note brings the window forward from the desktop's thread, at once:
+        // a window out of sight is slow to be told anything.
+        let desktop = Desktop::start(notes, move |token| {
+            if let (Some(raise), Some(token)) = (raise, token) {
+                raise.with(token);
+            }
+            ctx.request_repaint();
+        });
+        let muted = Muted::load();
+        desktop.mute(muted.tabs().clone());
         Self {
-            servers: vec![Server::home(&cc.egui_ctx, &endpoint)],
+            servers: vec![Server::home(&cc.egui_ctx, &endpoint, &herald)],
             current: 0,
             endpoint,
             sidebar: true,
@@ -144,7 +178,10 @@ impl App {
             font_size: DEFAULT_FONT_SIZE,
             toast: Toast::default(),
             rename: None,
-            muted: Muted::load(),
+            muted,
+            heard: HashMap::new(),
+            herald,
+            desktop,
             filter: String::new(),
             cursor: 0,
             closing: None,
@@ -188,7 +225,7 @@ impl App {
         for host in &home.hosts {
             let server = match known.iter().position(|server| &server.host == host) {
                 Some(index) => known.swap_remove(index),
-                None => Server::connect(ctx, host.clone(), true),
+                None => Server::connect(ctx, host.clone(), true, &self.herald),
             };
             self.servers.push(server);
         }
@@ -196,10 +233,65 @@ impl App {
         self.current = current.unwrap_or(0);
     }
 
-    /// The most pressing thing a session's tabs have to say, muted ones aside.
-    fn activity(&self, session: &Session) -> Activity {
-        let heard = session.windows.iter().filter(|w| !self.muted.has(&w.id));
-        heard.map(Window::activity).max().unwrap_or_default()
+    /// Take in what every pane has to say, and that the panes on show have been
+    /// seen to say it, unless the window is not the one in use. Each pane is left
+    /// saying only what is still news of it: nothing in a muted tab, a bell that
+    /// rang unseen, and what its program ended with until that has been looked at.
+    fn hear(&mut self, ctx: &egui::Context, views: &mut [View]) {
+        let watching = ctx.input(|i| i.focused);
+        // Something was said for the desktop, which is told what need not be passed on.
+        let news = self.herald.news();
+        let mut open = 0;
+        for (server, view) in views.iter_mut().enumerate() {
+            let shown = view.current_window().map(|tab| tab.id.clone());
+            let shown = shown.filter(|_| watching && server == self.current);
+            let tabs = view.sessions.iter_mut().flat_map(|s| &mut s.windows);
+            for tab in tabs {
+                let shown = shown.as_ref() == Some(&tab.id);
+                let muted = self.muted.has(&tab.id);
+                // Those out of sight are not seen, whatever tab is on show.
+                let panes = tab.panes.iter_mut().map(|pane| (pane, shown));
+                let hidden = tab.hidden.iter_mut().map(|pane| (pane, false));
+                for (pane, seen) in panes.chain(hidden) {
+                    open += 1;
+                    let heard = match self.heard.get_mut(&pane.id) {
+                        Some(heard) => heard,
+                        None => self.heard.entry(pane.id.clone()).or_default(),
+                    };
+                    if heard.said != pane.activity {
+                        heard.said = pane.activity;
+                        heard.seen = false;
+                    }
+                    heard.rang |= view.rang.contains(&pane.id);
+                    if seen {
+                        heard.seen = true;
+                        heard.rang = false;
+                        if news || !heard.watched {
+                            self.desktop.watched(&pane.id);
+                        }
+                    }
+                    heard.watched = seen;
+                    let said = match pane.activity {
+                        _ if muted => Activity::Idle,
+                        Activity::Done | Activity::Error if heard.seen => Activity::Idle,
+                        said => said,
+                    };
+                    let said = match heard.rang && !muted {
+                        true => said.max(Activity::Rang),
+                        false => said,
+                    };
+                    if said != pane.activity {
+                        pane.activity = said;
+                        pane.message.clear();
+                    }
+                }
+            }
+        }
+        // A pane has closed.
+        if self.heard.len() != open {
+            let open = |pane: &str| views.iter().any(|view| view.find(pane).is_some());
+            self.heard.retain(|pane, _| open(pane));
+        }
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context, view: &View) {
@@ -305,6 +397,45 @@ impl App {
         });
     }
 
+    /// A button that lists the panes of the tab on show that are out of sight:
+    /// behind a zoomed one, or in a floating layer that was put away. Picking one
+    /// brings it out. With none, there is no button.
+    fn hidden(&mut self, ui: &mut egui::Ui, view: &View) {
+        let hidden = view.current_window().map_or(&[][..], |tab| &tab.hidden);
+        if hidden.is_empty() {
+            return;
+        }
+        let button = icon_button(ui, Icon::Behind, "Panes out of sight");
+        // It wears the most pressing thing any of them has to say.
+        let said = hidden.iter().map(|pane| pane.activity).max();
+        if let Some((_, color)) = dot(said.unwrap_or_default()) {
+            let corner = button.rect.right_top() + egui::vec2(-3.5, 4.5);
+            ui.painter().circle_filled(corner, 3.5, color);
+        }
+        let mut picked = None;
+        egui::Popup::menu(&button).width(260.0).show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for pane in hidden {
+                let row = Item {
+                    icon: Some(pane.program),
+                    mark: dot(pane.activity),
+                    word: pane.activity.word(),
+                    label: &pane.title,
+                    ..Default::default()
+                };
+                if item(ui, Vec2::new(ui.available_width(), 32.0), row)
+                    .0
+                    .clicked()
+                {
+                    picked = Some(pane.id.clone());
+                }
+            }
+        });
+        if let Some(pane) = picked {
+            self.send(Action::Reveal { pane });
+        }
+    }
+
     /// Every server, each with its sessions beneath it, and under each session its tabs.
     fn sidebar(&mut self, root_ui: &mut egui::Ui, views: &[View]) {
         let rows = egui::Frame::new().inner_margin(Margin {
@@ -326,6 +457,7 @@ impl App {
                 }
                 top.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     self.splits(ui, &views[self.current]);
+                    self.hidden(ui, &views[self.current]);
                 });
                 let list = egui::ScrollArea::vertical().auto_shrink(false);
                 list.show(ui, |ui| {
@@ -461,6 +593,7 @@ impl App {
         self.switcher(&mut bar, views);
         bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
             self.splits(ui, view);
+            self.hidden(ui, view);
             ui.add_enabled_ui(view.connected && view.selected_session.is_some(), |ui| {
                 if icon_button(ui, Icon::Plus, "New tab (Ctrl+Shift+T)").clicked()
                     && let Some(session) = &view.selected_session
@@ -505,7 +638,7 @@ impl App {
         };
         // The tabs of the session on show speak for themselves, right beside this.
         let elsewhere = sessions().filter(|(shown, _)| !shown);
-        let elsewhere = elsewhere.map(|(_, session)| self.activity(session)).max();
+        let elsewhere = elsewhere.map(|(_, session)| session.activity()).max();
         let font = FontId::proportional(BODY);
         let text = ui.painter().layout_no_wrap(name.to_owned(), font, TEXT);
         let size = Vec2::new((text.size().x + 54.0).min(240.0), 30.0);
@@ -579,7 +712,7 @@ impl App {
                             picked = Some((server, create()));
                         }
                         for session in view.sessions.iter().filter(found) {
-                            if row(ui, &session.name, dot(self.activity(session))) {
+                            if row(ui, &session.name, dot(session.activity())) {
                                 picked = Some((server, Action::SelectSession(session.id.clone())));
                             }
                         }
@@ -670,6 +803,7 @@ impl App {
             return field;
         }
         let muted = self.muted.has(&window.id);
+        let (said, message) = window.says();
         let row = Item {
             icon: Some(window.program()),
             selected: shown == Some(&window.id),
@@ -677,14 +811,23 @@ impl App {
             mark: if muted {
                 Some((Icon::Muted, DIM))
             } else {
-                dot(window.activity())
+                dot(said)
             },
+            word: said.word(),
             buttons: &[(Icon::Close, "Close tab")],
             movable: true,
             label: window.name(),
             ..Default::default()
         };
         let (response, button) = item(ui, size, row);
+        // In full, for a row with no room for it, and with the line its program adds.
+        let word = said.word().unwrap_or_default();
+        let response = match (word, message) {
+            ("", "") => response,
+            _ => response.on_hover_ui(|ui| {
+                ui.label(model::line(word, message));
+            }),
+        };
         if response.clicked() {
             let (session, window) = (session.id.clone(), window.id.clone());
             self.open(server, Action::SelectWindow { session, window });
@@ -726,6 +869,7 @@ impl App {
                     let said = format!("Muted tabs could not be saved: {error}");
                     self.toast.say(said);
                 }
+                self.desktop.mute(self.muted.tabs().clone());
             }
             Choice::Edit(edit) => self.edit(target, edit),
         }
@@ -812,7 +956,7 @@ impl App {
                         .hint_text("unix:/path/to/rex/server.sock"),
                 );
                 if ui.add(action("Connect")).clicked() {
-                    self.servers[0] = Server::home(ui.ctx(), self.endpoint.trim());
+                    self.servers[0] = Server::home(ui.ctx(), self.endpoint.trim(), &self.herald);
                     self.toast = Toast::default();
                 }
             } else if ui.add(action("Try Again")).clicked() {
@@ -858,6 +1002,14 @@ impl App {
                 actions.push(Action::Zoom { pane });
             }
             header.max.x -= 2.0 * SMALL_BUTTON + 4.0;
+            // What it has to say sits ahead of them, as on its tab.
+            if let (Some(word), Some((_, color))) = (pane.activity.word(), dot(pane.activity)) {
+                let (edge, font) = (header.right_center(), FontId::proportional(SMALL));
+                let word = ui
+                    .painter()
+                    .text(edge, Align2::RIGHT_CENTER, word, font, color);
+                header.max.x = word.left() - 8.0;
+            }
             ui.painter().with_clip_rect(header).text(
                 header.left_center() + egui::vec2(8.0, 0.0),
                 Align2::LEFT_CENTER,
@@ -1073,6 +1225,23 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// This runs whether or not the window can be seen, as it cannot when the
+    /// user picks one of its notes from the desktop: show the pane the note was about.
+    /// On Wayland the window has been brought forward by now, if it is to be.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        while let Some(pane) = self.desktop.picked() {
+            let place = |server: &Server| server.client.place(&pane);
+            let mut servers = self.servers.iter().enumerate();
+            let found = servers.find_map(|(index, server)| Some((index, place(server)?)));
+            if let Some((server, (session, window))) = found {
+                self.open(server, Action::SelectWindow { session, window });
+                self.tell(server, Action::Reveal { pane });
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
         self.keyboard.settle(&mut input.events);
     }
@@ -1086,13 +1255,14 @@ impl eframe::App for App {
         for error in views.iter_mut().filter_map(|view| view.error.take()) {
             self.toast.say(error);
         }
+        self.hear(&ctx, &mut views);
         let made = views[self.current].made.take();
         let copied = views[self.current].copied.take();
         let view = &views[self.current];
         let window = view.current_window();
         let panes = window.map_or(&[][..], |w| &w.panes);
-        // A pane this window has just made takes the keyboard. One made from
-        // elsewhere does not: that would take it from under the user's hands.
+        // A pane this window has just made or brought out takes the keyboard. One
+        // made from elsewhere does not: that would take it from under the user's hands.
         if made.is_some() {
             self.focused = made;
         }
@@ -1165,8 +1335,8 @@ impl eframe::App for App {
         // A tab that has closed needs no remembering. Which those are is known only
         // with every server heard from.
         if views.iter().all(|view| view.connected) {
-            let sessions = || views.iter().flat_map(|view| &view.sessions);
-            let open = |tab: &str| sessions().flat_map(|s| &s.windows).any(|w| w.id == tab);
+            let tabs = || views.iter().flat_map(View::tabs);
+            let open = |tab: &str| tabs().any(|(_, open)| open.id == tab);
             let _ = self.muted.keep(open);
         }
     }
@@ -1211,13 +1381,16 @@ impl Toast {
     }
 }
 
-/// The mark of a tab whose programs have something to say.
+/// The mark of a tab whose programs have something to say, in the colour of it.
 fn dot(activity: Activity) -> Option<(Icon, Color32)> {
-    match activity {
-        Activity::Idle => None,
-        Activity::Working => Some((Icon::Dot, ACCENT)),
-        Activity::Blocked => Some((Icon::Dot, AMBER)),
-    }
+    let color = match activity {
+        Activity::Idle => return None,
+        Activity::Working => ACCENT,
+        Activity::Done => GREEN,
+        Activity::Error => RED,
+        Activity::Rang | Activity::Blocked(_) => AMBER,
+    };
+    Some((Icon::Dot, color))
 }
 
 /// What a session's or a tab's menu was asked, if anything. A double click asks for
