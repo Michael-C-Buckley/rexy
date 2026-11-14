@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- A window with its sidebar, and a prompt in the terminal beside it. -->
+  <rect x="4" y="8" width="56" height="48" rx="11" fill="#1e1e1e"/>
+  <path d="M4 19a11 11 0 0 1 11-11h8v48h-8a11 11 0 0 1-11-11z" fill="#303030"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 22h6M11 30h6M11 38h6" stroke="#8c8c8c" stroke-width="3"/>
+    <path d="M31 24l8 8-8 8" stroke="#3584e4" stroke-width="4.5"/>
+    <path d="M44 40h8" stroke="#f6f5f4" stroke-width="4.5"/>
+  </g>
+</svg>

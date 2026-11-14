@@ -210,7 +210,7 @@ impl App {
         if let Some(field) = self.renaming(ui, &target, id, size) {
             return field;
         }
-        let muted = self.muted.has(&window.id);
+        let muted = self.remembered.kept.muted.contains(&window.id);
         let (said, message) = window.says();
         let selected = shown == Some(&window.id);
         let spared = window.idle();
@@ -280,11 +280,11 @@ impl App {
             }
             Choice::Mute => {
                 let tab = target.window.as_deref().unwrap_or_default();
-                if let Err(error) = self.muted.toggle(tab) {
-                    let said = format!("Muted tabs could not be saved: {error}");
-                    self.toast.say(said);
+                let muted = &mut self.remembered.kept.muted;
+                if !muted.remove(tab) {
+                    muted.insert(tab.to_owned());
                 }
-                self.desktop.mute(self.muted.tabs().clone());
+                self.desktop.mute(muted.clone());
             }
             Choice::Edit(edit) => self.edit(target, edit),
         }

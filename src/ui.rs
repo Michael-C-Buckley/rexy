@@ -1,13 +1,14 @@
 //! A deliberately small desktop shell: the sessions and their tabs, in a sidebar or
 //! along the top, and the terminal. Terminal content never becomes an egui widget tree.
+mod borders;
 mod close;
 mod heard;
 mod input;
 mod keys;
-mod muted;
 mod pane;
 mod pointer;
 mod raise;
+mod remembered;
 mod render;
 mod rows;
 mod sidebar;
@@ -33,11 +34,10 @@ use crate::{
 use close::Closing;
 use heard::Heard;
 use input::Keyboard;
-use muted::Muted;
 use raise::Raise;
+pub use remembered::{LEAST_WINDOW, Remembered, state_home};
 use render::{PaneView, rgb};
 use rows::Rename;
-use sidebar::SIDEBAR_WIDTH;
 use style::{BODY, DIM, HOVER, POPOVER, RED, SMALL, TEXT, VIEW, fitted, suggested};
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
@@ -68,9 +68,14 @@ impl Server {
         Self::connect(ctx, host, herald)
     }
 
+    /// Home goes by its address, unless that is a socket on this machine.
     fn label(&self) -> &str {
+        let address = self.host.endpoints.first().map_or("", String::as_str);
         match self.host.label.as_str() {
-            "" => "This Computer",
+            "" if address.starts_with('/') || address.starts_with("unix:") => "This Computer",
+            "" => address
+                .split_once("://")
+                .map_or(address, |(_, machine)| machine),
             label => label,
         }
     }
@@ -93,7 +98,9 @@ pub struct App {
     font_size: f32,
     toast: Toast,
     rename: Option<Rename>,
-    muted: Muted,
+    remembered: Remembered,
+    /// The session the window's title names.
+    title: String,
     /// By pane.
     heard: HashMap<String, Heard>,
     /// Where the servers' connections send what their panes have to say, and what
@@ -110,7 +117,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, endpoint: String) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, endpoint: String, remembered: Remembered) -> Self {
         style::apply(&cc.egui_ctx);
         let (herald, notes) = Herald::new();
         let (ctx, raise) = (cc.egui_ctx.clone(), Raise::of(cc));
@@ -122,21 +129,22 @@ impl App {
             }
             ctx.request_repaint();
         });
-        let muted = Muted::load();
-        desktop.mute(muted.tabs().clone());
+        let kept = &remembered.kept;
+        desktop.mute(kept.muted.clone());
         Self {
             servers: vec![Server::home(&cc.egui_ctx, &endpoint, &herald)],
             current: 0,
             endpoint,
-            sidebar: true,
-            sidebar_width: SIDEBAR_WIDTH,
+            sidebar: kept.sidebar,
+            sidebar_width: kept.sidebar_width,
             focused: None,
             panes: HashMap::new(),
             keyboard: Keyboard::default(),
-            font_size: DEFAULT_FONT_SIZE,
+            font_size: kept.font_size,
             toast: Toast::default(),
             rename: None,
-            muted,
+            remembered,
+            title: String::new(),
             heard: HashMap::new(),
             herald,
             desktop,
@@ -303,9 +311,11 @@ impl eframe::App for App {
         self.follow_hosts(&ctx, &home);
         let others = self.servers[1..].iter().map(|s| s.client.snapshot());
         let mut views: Vec<View> = std::iter::once(home).chain(others).collect();
-        // The server on show shows a session if it has one. No other is asked to.
+        // The server on show shows a session if it has one: where the window last
+        // was on it, or failing that its first. No other is asked to.
         if let Some(first) = views[self.current].unshown() {
-            self.send(first);
+            let back = self.returning(&views[self.current]);
+            self.send(back.unwrap_or(first));
         }
         for error in views.iter_mut().filter_map(|view| view.error.take()) {
             self.toast.say(error);
@@ -367,6 +377,9 @@ impl eframe::App for App {
                     let rect = Rect::from_min_size(min, size);
                     self.terminal_pane(ui, window, pane, rect, view.connected);
                 }
+                if view.connected {
+                    self.borders(ui, window, area);
+                }
                 area
             });
         if self.sidebar {
@@ -401,7 +414,18 @@ impl eframe::App for App {
         if views.iter().all(|view| view.connected) {
             let tabs = || views.iter().flat_map(View::tabs);
             let open = |tab: &str| tabs().any(|(_, open)| open.id == tab);
-            let _ = self.muted.keep(open);
+            self.remembered.kept.muted.retain(|tab| open(tab));
+        }
+        self.remember(&ctx, &views);
+        // The window is named for the session it shows.
+        let name = view.session().map_or("", |session| &session.name);
+        if name != self.title {
+            self.title = name.to_owned();
+            let title = match name {
+                "" => "Rex Lite".into(),
+                name => format!("{name} — Rex Lite"),
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
     }
 }

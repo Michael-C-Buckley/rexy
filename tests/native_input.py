@@ -50,7 +50,7 @@ for i in range(count.value):
     if x11.XFetchName(display, children[i], C.byref(name)) and name.value:
         title = name.value.decode(errors='replace')
         x11.XFree(name)
-        if title == 'Rex Lite':
+        if title.endswith('Rex Lite'):
             window = children[i]
             break
 x11.XFree(children)

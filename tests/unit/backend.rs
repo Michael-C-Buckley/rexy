@@ -37,6 +37,62 @@ fn panes_sit_where_the_server_puts_them() {
 }
 
 #[test]
+fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
+    let direction = |mut node: Value, direction: &str| {
+        node["split"]["direction"] = json!(direction);
+        node
+    };
+    // One pane down the left, and two on the right, one above the other.
+    let right = split(
+        [0.6, 0., 0.4, 1.],
+        leaf([0.6, 0., 0.4, 0.25], "b"),
+        leaf([0.6, 0.25, 0.4, 0.75], "c"),
+    );
+    let left = leaf([0., 0., 0.6, 1.], "a");
+    let layout = direction(
+        split(FULL, left, direction(right, "vertical")),
+        "horizontal",
+    );
+    let tiled = json!({"kind": "tiled", "layout": layout});
+    let tab = |layers: Value| json!({"windows": [{"window_id": "w", "layers": layers}]});
+    let borders = |view: &Value| windows(view).remove(0).borders;
+    let border = |before: &str, after: &str, upright, room, at| Border {
+        before: before.into(),
+        after: after.into(),
+        upright,
+        room,
+        at,
+    };
+    // Each is named by the first pane of either side, inner splits first.
+    assert_eq!(
+        borders(&tab(json!([tiled]))),
+        [
+            border("b", "c", false, [0.6, 0., 0.4, 1.], 0.25),
+            border("a", "b", true, FULL, 0.6)
+        ]
+    );
+    // A floating layer has none of its own, and while it is on show it lies over
+    // those of the tab. Put away, it is over nothing.
+    let floating = |state: &str| {
+        let layout = split(
+            [0.2, 0.2, 0.5, 0.5],
+            leaf([0.2, 0.2, 0.25, 0.5], "d"),
+            leaf([0.45, 0.2, 0.25, 0.5], "e"),
+        );
+        json!({"kind": "floating", "state": state, "layout": layout})
+    };
+    assert_eq!(borders(&tab(json!([tiled, floating("normal")]))), []);
+    assert_eq!(
+        borders(&tab(json!([tiled, floating("minimized")]))).len(),
+        2
+    );
+    // Nor has a tab that one pane fills.
+    let mut zoomed = tab(json!([tiled]));
+    zoomed["windows"][0]["zoomed_block_id"] = json!("b");
+    assert_eq!(borders(&zoomed), []);
+}
+
+#[test]
 fn what_is_not_a_terminal_keeps_its_place_and_says_what_it_is() {
     let blocks = json!([
         {"block_id": "t", "creator_name": TERMINAL, "label": "shell"},
@@ -377,6 +433,7 @@ fn what_is_asked_to_be_shown_is_shown_at_once_and_numbered() {
         zoomed: false,
         panes: Vec::new(),
         hidden: Vec::new(),
+        borders: Vec::new(),
     };
     let session = |id: &str, active: &str| Session {
         id: id.into(),

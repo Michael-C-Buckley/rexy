@@ -24,6 +24,11 @@ use url::Url;
 pub const DATA_PROTOCOL: &str = "rex.data.terminal.v1";
 pub const ENDED: &str = "Rex control connection ended";
 const CONTROL_PROTOCOL: &str = "rex.control.v1";
+/// The one revision of the control API this client speaks. It needs what came with
+/// this one, and was written for none newer.
+const REVISION: u64 = 13;
+/// How a server begins its reason for closing on a client it shares no revision with.
+const REFUSAL: &str = "no common API revision";
 const MAX_IN_FLIGHT: usize = 64;
 /// How long one address may take to answer, and to agree to a WebSocket.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -49,7 +54,7 @@ pub enum Ended {
     /// The server closed the control connection, with a WebSocket status and its reason.
     Closed { code: u16, reason: String },
     /// The server and this client have no API revision in common. Trying again will
-    /// not help; the words say which of them is behind.
+    /// not help; the words say what each speaks, and which of them to update.
     Incompatible(String),
     /// The server closed a terminal's stream, likewise.
     StreamClosed { code: u16, reason: String },
@@ -73,8 +78,9 @@ impl Ended {
         match (stream, code) {
             (true, 4000) => Self::BlockClosed,
             (true, _) => Self::StreamClosed { code, reason },
-            (false, 1008) if reason.starts_with("no common API revision") => {
-                Self::Incompatible(reason)
+            (false, 1008) if reason.starts_with(REFUSAL) => {
+                let why = reason[REFUSAL.len()..].trim_start_matches([':', ' ']);
+                Self::Incompatible(why.into())
             }
             (false, _) => Self::Closed { code, reason },
         }
@@ -111,7 +117,7 @@ impl fmt::Display for Ended {
                 _ => unnamed(f, "The server closed the connection", *code, reason),
             },
             Self::Incompatible(why) => {
-                write!(f, "This client and the server cannot talk: {why}")
+                write!(f, "This client and the server share no API revision: {why}")
             }
             Self::StreamClosed { code, reason } => match (*code, reason.as_str()) {
                 (1000 | 1005, _) => f.write_str("The terminal's stream ended"),
@@ -438,16 +444,21 @@ impl Control {
         last: Option<&Target>,
     ) -> Result<Self> {
         let (mut socket, target) = reach(endpoint, last, "/api/control", CONTROL_PROTOCOL).await?;
+        // This machine's name tells this client from the same on another.
+        let machine = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
         let mut hello = json!({
             "type": "hello",
-            "api_revision": 13,
-            "api_min_revision": 10,
+            "api_revision": REVISION,
+            "api_min_revision": REVISION,
             "client": {
                 "kind": "app",
                 "platform": "linux",
                 "name": "Rex Lite",
                 "version": env!("CARGO_PKG_VERSION"),
-                "label": "Rex Lite",
+                "label": match machine.trim() {
+                    "" => "Rex Lite",
+                    machine => machine,
+                },
             },
         });
         if let Some(token) = token {
@@ -466,10 +477,14 @@ impl Control {
             welcome["type"] == "welcome" && welcome["protocol"] == CONTROL_PROTOCOL,
             "Invalid Rex control welcome"
         );
-        let revision = welcome["api_revision"].as_u64().unwrap_or(0);
-        if !(10..=13).contains(&revision) {
+        // A server from before revisions were agreed on welcomes whoever comes. It
+        // is told of in the words of one that refuses.
+        let revision = |field: &str| welcome[field].as_u64().unwrap_or(0);
+        if revision("api_revision") != REVISION {
             let why = format!(
-                "the server chose API revision {revision}, and this client asked for 10 to 13"
+                "server speaks {} to {}, client needs {REVISION} to {REVISION}; update the server",
+                revision("api_min_revision"),
+                revision("api_server_revision"),
             );
             return Err(Ended::Incompatible(why).into());
         }

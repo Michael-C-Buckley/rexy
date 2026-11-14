@@ -12,14 +12,31 @@ Usage: rex-lite [--server ENDPOINT]
   -h, --help    Show this help
       --version Show version
 
-Defaults to REX_SERVER, then the local Rex socket.
-Closing the client leaves your sessions running.";
+Defaults to your Rex home, as REX_HOME or `rex home set` chose it, then the
+local Rex socket. Closing the client leaves your sessions running.";
+
+/// Rex's home, where one has been chosen: the server this machine follows for its
+/// hosts. `named` is what REX_HOME holds, which comes first, and `file` what `rex
+/// home set` wrote to home.json. REX_SERVER is not asked: in a Rex terminal it
+/// names that terminal's server, and Rex does not take it for home either.
+fn home(named: Option<String>, file: Option<String>) -> Option<String> {
+    let chosen = || {
+        let home: serde_json::Value = serde_json::from_str(&file?).ok()?;
+        Some(home["endpoint"].as_str()?.to_owned())
+    };
+    let set = |home: &String| !home.is_empty();
+    named.filter(set).or_else(chosen).filter(set)
+}
 
 fn default_endpoint() -> String {
-    if let Ok(endpoint) = std::env::var("REX_SERVER")
-        && !endpoint.is_empty()
-    {
-        return endpoint;
+    let file = rex_lite::ui::state_home().map(|state| state.join("rex/home.json"));
+    let file = file.and_then(|file| std::fs::read_to_string(file).ok());
+    let chosen = file.is_some();
+    if let Some(home) = home(std::env::var("REX_HOME").ok(), file) {
+        return home;
+    }
+    if chosen {
+        eprintln!("Rex's home.json names no home rex-lite can read; opening the local server.");
     }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -30,17 +47,38 @@ fn default_endpoint() -> String {
     format!("unix:{}", runtime.join("rex/server.sock").display())
 }
 
+/// The window's icon, for a desktop that takes it from the window. One that goes
+/// by the desktop entry draws the same picture.
+fn icon() -> egui::IconData {
+    use resvg::{tiny_skia, usvg};
+    const SIDE: u32 = 128;
+    let drawing = include_str!("../assets/dev.rex-lite.client.svg");
+    let tree = usvg::Tree::from_str(drawing, &usvg::Options::default());
+    let tree = tree.expect("the icon is sound");
+    let mut canvas = tiny_skia::Pixmap::new(SIDE, SIDE).expect("the icon has a size");
+    let scale = SIDE as f32 / tree.size().width();
+    let scale = tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, scale, &mut canvas.as_mut());
+    let colors = canvas.pixels().iter().map(|pixel| pixel.demultiply());
+    let rgba = colors.flat_map(|color| [color.red(), color.green(), color.blue(), color.alpha()]);
+    egui::IconData {
+        rgba: rgba.collect(),
+        width: SIDE,
+        height: SIDE,
+    }
+}
+
 fn main() -> eframe::Result {
-    let mut endpoint = default_endpoint();
+    let mut endpoint = None;
     let mut probe = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--server" | "-S" => {
-                endpoint = args.next().unwrap_or_else(|| {
+                endpoint = Some(args.next().unwrap_or_else(|| {
                     eprintln!("--server requires an endpoint");
                     std::process::exit(2);
-                });
+                }));
             }
             "--probe" => probe = true,
             "--help" | "-h" => {
@@ -57,6 +95,7 @@ fn main() -> eframe::Result {
             }
         }
     }
+    let endpoint = endpoint.unwrap_or_else(default_endpoint);
     if probe {
         match rex_lite::backend::probe(endpoint, std::time::Duration::from_secs(12)) {
             Ok(summary) => println!("{summary}"),
@@ -67,12 +106,14 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    let remembered = rex_lite::ui::Remembered::load();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Rex Lite")
-            .with_inner_size([1120.0, 760.0])
-            .with_min_inner_size([640.0, 420.0])
-            .with_app_id(rex_lite::notify::APP_ID),
+            .with_inner_size(remembered.kept.window)
+            .with_min_inner_size(rex_lite::ui::LEAST_WINDOW)
+            .with_app_id(rex_lite::notify::APP_ID)
+            .with_icon(icon()),
         renderer: eframe::Renderer::Glow,
         // Ctrl+C, X and V belong to terminal programs; the UI maps the clipboard itself.
         clipboard_shortcuts: false,
@@ -81,6 +122,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Rex Lite",
         options,
-        Box::new(move |cc| Ok(Box::new(rex_lite::ui::App::new(cc, endpoint)))),
+        Box::new(move |cc| Ok(Box::new(rex_lite::ui::App::new(cc, endpoint, remembered)))),
     )
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/home.rs"]
+mod tests;

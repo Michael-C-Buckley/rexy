@@ -27,6 +27,7 @@ fn the_pane_beside_another_is_the_nearest_alongside_it() {
         focus: None,
         zoomed: false,
         hidden: Vec::new(),
+        borders: Vec::new(),
         panes: vec![
             pane("left", [0.0, 0.0, 0.6, 1.0]),
             pane("top", [0.6, 0.0, 0.4, 0.25]),
@@ -68,6 +69,7 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
         zoomed: true,
         panes,
         hidden,
+        borders: Vec::new(),
     };
     // One out of sight is heard too, and of two as pressing, the first.
     let hidden = vec![
@@ -101,6 +103,7 @@ fn tab(id: &str) -> Window {
         zoomed: false,
         panes: Vec::new(),
         hidden: Vec::new(),
+        borders: Vec::new(),
     }
 }
 

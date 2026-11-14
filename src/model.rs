@@ -144,6 +144,25 @@ pub struct Window {
     /// Those out of sight, which run on unseen: behind the one that fills the tab,
     /// or in a floating layer that has been put away.
     pub hidden: Vec<Pane>,
+    /// The borders between the panes on show that can be dragged.
+    pub borders: Vec<Border>,
+}
+
+/// The line between the two sides of a split, which drags to give one of them room
+/// from the other.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Border {
+    /// A pane of each side, which name the split to the server: `before` is left
+    /// of the line or above it, `after` right of it or below.
+    pub before: String,
+    pub after: String,
+    /// The sides lie left and right of it, not above and below.
+    pub upright: bool,
+    /// The room the two sides share, as a pane's place is given: x, y, width and
+    /// height, each a fraction of the tab.
+    pub room: [f32; 4],
+    /// Where in the tab it lies, along x if it is upright and along y if not.
+    pub at: f32,
 }
 
 impl Window {
@@ -392,6 +411,14 @@ pub enum Action {
     Split {
         pane: String,
         direction: Direction,
+    },
+    /// Move a border, so that the side before it has `ratio` of the room the two
+    /// sides share.
+    Divide {
+        before: String,
+        after: String,
+        upright: bool,
+        ratio: f32,
     },
     /// Let a pane fill its tab, or give the tab back to all its panes.
     Zoom {

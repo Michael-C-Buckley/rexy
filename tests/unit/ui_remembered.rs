@@ -1,0 +1,113 @@
+use super::*;
+use crate::model::{Session, Window};
+
+fn fresh() -> Kept {
+    Kept::read(&Value::Null)
+}
+
+/// A directory of this test's own, never the user's.
+fn directory(test: &str) -> PathBuf {
+    let directory = format!("rex-lite-{test}-{}", std::process::id());
+    let directory = std::env::temp_dir().join(directory);
+    let _ = std::fs::remove_dir_all(&directory);
+    directory
+}
+
+#[test]
+fn what_changed_is_saved_after_a_moment_and_read_back() {
+    let directory = directory("remembered");
+    let open = || Remembered::open(Some(directory.join("state")));
+    let mut first = open();
+    assert_eq!(first.kept, fresh());
+    let start = Instant::now();
+    // Nothing has changed, so nothing is written.
+    assert_eq!(first.settle(start).unwrap(), None);
+    assert!(!directory.exists());
+    first.kept.font_size = 18.0;
+    first.kept.window = [900.0, 600.0];
+    assert_eq!(first.settle(start).unwrap(), Some(PAUSE));
+    // What changes meanwhile is saved with it, at the time first set.
+    first.kept.sidebar = false;
+    first.kept.muted.insert("window:a".into());
+    let place = ["session:s".to_owned(), "window:a".to_owned()];
+    first.kept.shown.insert("unix:/a".into(), place);
+    let soon = start + PAUSE / 2;
+    assert_eq!(first.settle(soon).unwrap(), Some(PAUSE / 2));
+    assert_eq!(open().kept, fresh());
+    assert_eq!(first.settle(start + PAUSE).unwrap(), None);
+    assert_eq!(open().kept, first.kept);
+    // And what changed in the window's last moment, as it closes.
+    first.kept.sidebar_width = 300.0;
+    let last = first.kept.clone();
+    drop(first);
+    assert_eq!(open().kept, last);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_damaged_file_starts_afresh_and_the_old_muted_tabs_are_kept() {
+    let directory = directory("damaged");
+    std::fs::create_dir_all(&directory).unwrap();
+    let open = || Remembered::open(Some(directory.clone())).kept.clone();
+    let write = |file: &str, text: &str| std::fs::write(directory.join(file), text).unwrap();
+    // Before this file there was one of muted tabs alone.
+    write("muted", "window:a\nwindow:b");
+    let old = Kept {
+        muted: HashSet::from(["window:a".to_owned(), "window:b".to_owned()]),
+        ..fresh()
+    };
+    assert_eq!(open(), old);
+    write("state.json", "{\"font_size\": 18, \"sideb");
+    assert_eq!(open(), old);
+    // What a file has wrong is as at first, and what it has right is kept. Once
+    // it holds the muted tabs, the old file is read no more.
+    let odd = r#"{"font_size": 500, "sidebar": "yes", "sidebar_width": 300,
+        "window": [10, 1e9], "shown": [], "muted": ["window:c"]}"#;
+    write("state.json", odd);
+    let kept = open();
+    assert_eq!((kept.font_size, kept.sidebar), (32.0, true));
+    assert_eq!((kept.sidebar_width, kept.window), (300.0, [640.0, 16384.0]));
+    assert!(kept.shown.is_empty());
+    assert_eq!(kept.muted, HashSet::from(["window:c".to_owned()]));
+    std::fs::remove_dir_all(directory).unwrap();
+    // With nowhere to keep anything, the window still opens, and says so on saving.
+    let mut nowhere = Remembered::open(None);
+    nowhere.kept.sidebar = false;
+    assert!(nowhere.settle(Instant::now() + PAUSE).is_ok());
+    assert!(nowhere.settle(Instant::now() + 2 * PAUSE).is_err());
+}
+
+#[test]
+fn a_window_returns_to_where_it_was_if_that_is_still_there() {
+    let tab = |id: &str| Window {
+        id: id.into(),
+        label: None,
+        focus: None,
+        zoomed: false,
+        panes: Vec::new(),
+        hidden: Vec::new(),
+        borders: Vec::new(),
+    };
+    let session = |id: &str, tabs: &[&str]| Session {
+        id: id.into(),
+        windows: tabs.iter().copied().map(tab).collect(),
+        ..Session::default()
+    };
+    let mut view = View {
+        sessions: vec![session("first", &["a"]), session("second", &["b", "c"])],
+        ..View::default()
+    };
+    let mut kept = fresh();
+    let place = ["second".to_owned(), "c".to_owned()];
+    kept.shown.insert("unix:/here".into(), place);
+    let asked = |kept: &Kept, view: &View| format!("{:?}", kept.place("unix:/here", view));
+    let tab = r#"Some(SelectWindow { session: "second", window: "c" })"#;
+    assert_eq!(asked(&kept, &view), tab);
+    // Each server has its own place.
+    assert!(kept.place("unix:/there", &view).is_none());
+    // A tab that has gone leaves its session, which shows the tab the server has.
+    view.sessions[1].windows.pop();
+    assert_eq!(asked(&kept, &view), r#"Some(SelectSession("second"))"#);
+    view.sessions.pop();
+    assert_eq!(asked(&kept, &view), "None");
+}

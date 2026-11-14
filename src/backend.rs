@@ -6,7 +6,9 @@
 //! of it newer than the one held. Nothing asked is waited for where input is taken:
 //! each answer is dealt with when it comes.
 use crate::{
-    model::{self, Action, Activity, Direction, Edit, Host, Pane, Session, View, Wait, Window},
+    model::{
+        self, Action, Activity, Border, Direction, Edit, Host, Pane, Session, View, Wait, Window,
+    },
     notify::Herald,
     program::Program,
     ssh,
@@ -26,7 +28,10 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 
 /// How long to wait before each try at something that keeps failing.
 const RETRY: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(15)];
@@ -503,6 +508,8 @@ struct Connection<'a> {
     streams: HashMap<String, JoinHandle<()>>,
     /// The fetching of the last text a program copied.
     copying: Option<JoinHandle<()>>,
+    /// Where a border was last asked to go, for `divide` to ask of the server.
+    borders: watch::Sender<Value>,
 }
 
 #[derive(Default)]
@@ -623,6 +630,7 @@ impl<'a> Connection<'a> {
             made: None,
             streams: HashMap::new(),
             copying: None,
+            borders: divide(control.rpc.clone(), shared.clone()),
         };
         match shown {
             Some(shown) if joined.is_object() => connection.view(&shown, joined).await,
@@ -1115,6 +1123,22 @@ impl<'a> Connection<'a> {
                 });
                 (self.session(&pane)?, "session.new_split", payload, None)
             }
+            Action::Divide {
+                before,
+                after,
+                upright,
+                ratio,
+            } => {
+                let request = json!({
+                    "session_id": self.session(&before)?,
+                    "direction": if upright { "horizontal" } else { "vertical" },
+                    "before_block_id": before,
+                    "after_block_id": after,
+                    "ratio": ratio,
+                });
+                let _ = self.borders.send(request);
+                return Ok(());
+            }
             Action::Zoom { pane } => {
                 let session = self.session(&pane)?;
                 // Only an owner may resize it to the room it is given.
@@ -1407,19 +1431,53 @@ fn list(sessions: &mut Vec<Session>, event: &Event) {
     }
 }
 
+/// Move borders as they are asked to be moved, one request at a time: a drag asks
+/// faster than a server answers, and every move reflows the terminals either side.
+/// Only where a border was last asked to go is asked of the server, once it has
+/// answered for the time before. The view that comes of it is in the server's news.
+fn divide(rpc: Rpc, shared: Shared) -> watch::Sender<Value> {
+    let (borders, mut asked) = watch::channel(Value::Null);
+    tokio::spawn(async move {
+        // Until the connection is dropped, and the asking with it.
+        while asked.changed().await.is_ok() {
+            let request = asked.borrow_and_update().clone();
+            if let Err(error) = rpc.call("session.resize_pane", request).await {
+                shared.fail(format!("{error:#}"));
+            }
+        }
+    });
+    borders
+}
+
 /// The panes under one node of a layout, each with the place the server gives it:
-/// a fraction of the tab. A layout is no deeper than the JSON it came in, which the
-/// parser keeps to 128 levels.
-fn layout(node: &Value, panes: &mut Vec<(String, [f32; 4])>) {
-    let Some(bounds) = rect(&node["rect"]) else {
+/// a fraction of the tab. With them, the border of every split under it. A layout
+/// is no deeper than the JSON it came in, which the parser keeps to 128 levels.
+fn layout(node: &Value, panes: &mut Vec<(String, [f32; 4])>, borders: &mut Vec<Border>) {
+    let Some(room) = rect(&node["rect"]) else {
         return;
     };
-    match node["block_id"].as_str() {
-        Some(id) => panes.push((id.into(), bounds)),
-        None => {
-            layout(&node["split"]["before"], panes);
-            layout(&node["split"]["after"], panes);
-        }
+    if let Some(id) = node["block_id"].as_str() {
+        return panes.push((id.into(), room));
+    }
+    let split = &node["split"];
+    let before = panes.len();
+    layout(&split["before"], panes, borders);
+    let after = panes.len();
+    layout(&split["after"], panes, borders);
+    // The first pane of each side names the split, and the second side begins at
+    // the border. A side with no pane has no border to it.
+    if let (Some((first, _)), Some((second, place))) =
+        (panes[..after].get(before), panes.get(after))
+    {
+        // A direction not known is drawn as this one.
+        let upright = split["direction"] != "vertical";
+        borders.push(Border {
+            before: first.clone(),
+            after: second.clone(),
+            upright,
+            room,
+            at: place[usize::from(!upright)],
+        });
     }
 }
 
@@ -1429,10 +1487,17 @@ fn parse_windows(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> 
         .filter_map(|window| {
             let id: String = window["window_id"].as_str()?.into();
             let zoom = window["zoomed_block_id"].as_str();
-            let (mut panes, mut hidden) = (Vec::new(), Vec::new());
+            let (mut panes, mut hidden, mut borders) = (Vec::new(), Vec::new(), Vec::new());
             for layer in items(&window["layers"]) {
-                let mut placed = Vec::new();
-                layout(&layer["layout"], &mut placed);
+                let (mut placed, mut split) = (Vec::new(), Vec::new());
+                layout(&layer["layout"], &mut placed, &mut split);
+                // Only the layer that fills the tab has borders to drag, while its
+                // panes are all on show and no other floats over them.
+                if layer["kind"] == "tiled" && zoom.is_none() {
+                    borders = split;
+                } else if layer["state"] != "minimized" && !placed.is_empty() {
+                    borders.clear();
+                }
                 for (id, bounds) in placed {
                     let block = block(&layer["blocks"], &id);
                     // What is not a terminal keeps its place, and says what it is.
@@ -1482,6 +1547,7 @@ fn parse_windows(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> 
                 id,
                 panes,
                 hidden,
+                borders,
             })
         })
         .collect()

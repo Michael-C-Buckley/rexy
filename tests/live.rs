@@ -192,6 +192,34 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     let mut others = find(&split, &window).unwrap().panes.iter();
     let other = others.find(|p| p.id != pane).unwrap().id.clone();
+    // The border between the two moves where it is asked to, and the server gives
+    // each side its share. Asked faster than the server answers, as a drag asks,
+    // it comes to rest where it was last asked to go.
+    let [border] = &find(&split, &window).unwrap().borders[..] else {
+        panic!("a split of two has one border");
+    };
+    let sides = (&border.before, &border.after, border.upright);
+    assert_eq!(sides, (&pane, &other, true));
+    let divide = |ratio: f32| Action::Divide {
+        before: pane.clone(),
+        after: other.clone(),
+        upright: true,
+        ratio,
+    };
+    let divided = |ratio: f32| {
+        wait(&client, "a border moved", |v| {
+            let near = |at: f32| (at - ratio).abs() < 0.01;
+            find(v, &window).is_some_and(|w| near(w.borders[0].at) && near(w.panes[0].width))
+        });
+    };
+    send(&client, divide(0.3));
+    divided(0.3);
+    for step in 0..=20 {
+        send(&client, divide(0.5 + 0.01 * step as f32));
+    }
+    divided(0.7);
+    send(&client, divide(0.5));
+    divided(0.5);
     // The server is told some things from outside: this window types only into
     // what it shows, and makes no floating layers.
     let rex = |args: &[&str]| {
@@ -208,7 +236,10 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     for (label, zoomed, panes) in [("a pane zoomed", true, 1), ("a pane restored", false, 2)] {
         send(&client, Action::Zoom { pane: pane.clone() });
         wait(&client, label, |v| {
-            let shown = |w: &Window| w.panes.len() == panes && w.panes[0].id == pane;
+            // One pane alone has no border to drag.
+            let shown = |w: &Window| {
+                w.panes.len() == panes && w.panes[0].id == pane && w.borders.len() == panes - 1
+            };
             find(v, &window).is_some_and(|w| w.zoomed == zoomed && shown(w))
         });
         if !zoomed {
@@ -255,11 +286,15 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         pane: floating.clone(),
     };
     send(&client, reveal);
-    wait(&client, "a pane brought back", |v| {
+    // Nor is there one to drag under a pane that floats over it.
+    let borders = |v: &View| find(v, &window).unwrap().borders.len();
+    let back = wait(&client, "a pane brought back", |v| {
         v.made.as_ref() == Some(&floating) && tab(v, 3, &[])
     });
+    assert_eq!(borders(&back), 0);
     send(&client, Action::ClosePane { pane: floating });
-    wait(&client, "a floating pane closed", |v| tab(v, 2, &[]));
+    let closed = wait(&client, "a floating pane closed", |v| tab(v, 2, &[]));
+    assert_eq!(borders(&closed), 1);
     send(&client, Action::CreateWindow(session.clone()));
     let next = wait(&client, "new tab", |v| {
         v.windows().len() == initial.windows().len() + 1
@@ -404,6 +439,16 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     wait(&client, "a session moved first", |v| {
         v.sessions[0].id == second
     });
+    // A window that opens is shown the server's first session, and asks at once
+    // to be where it last was instead. That is where it comes to be.
+    let again = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), Herald::new().0);
+    let opened = wait(&again, "a window opened again", |v| v.connected);
+    send(&again, opened.unshown().unwrap());
+    send(&again, show(&window));
+    wait(&again, "a window back where it was", |v| {
+        v.selected_window.as_ref() == Some(&window) && v.panes().any(|p| p.frame.is_some())
+    });
+    drop(again);
     // Its last tab closed, a session remains, empty.
     let only = client.snapshot().windows()[0].id.clone();
     send(&client, edit(&second, Some(&only), Edit::Close));
@@ -435,10 +480,14 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     wait(&other, "a session shown on request", |v| {
         v.panes().any(|p| p.frame.is_some())
     });
+    // Each goes by this machine's name, which tells it from one on another.
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap();
     let clients = || {
         let listed = call("session.list_clients", json!({"session_id": session}));
         let clients = listed["clients"].as_array().unwrap().iter();
-        clients.filter(|c| c["info"]["name"] == "Rex Lite").count()
+        let ours = clients.filter(|c| c["info"]["name"] == "Rex Lite");
+        ours.filter(|c| c["info"]["label"] == hostname.trim())
+            .count()
     };
     assert_eq!(clients(), 2);
     std::thread::sleep(Duration::from_millis(300));

@@ -411,10 +411,13 @@ async fn the_server_says_why_it_closes_the_control_connection() {
     assert_eq!(behind, Ended::Closed { code, reason });
     let words = "This client fell too far behind the server's news";
     assert_eq!(behind.to_string(), words);
-    let reason = "no common API revision: update the client";
-    let old = ended(close(1008, reason)).await;
-    assert_eq!(old, Ended::Incompatible(reason.into()));
-    assert!(old.to_string().ends_with(reason));
+    let reason = "no common API revision: server speaks 14 to 15, client needs 13 to 13; \
+                  update the client";
+    let new = ended(close(1008, reason)).await;
+    let why = "server speaks 14 to 15, client needs 13 to 13; update the client";
+    assert_eq!(new, Ended::Incompatible(why.into()));
+    let words = format!("This client and the server share no API revision: {why}");
+    assert_eq!(new.to_string(), words);
     let plain = ended(None).await.to_string();
     assert_eq!(plain, "The server closed the connection");
     let unknown = ended(close(4321, "new")).await.to_string();
@@ -548,20 +551,30 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     let (hello, last) = server.await.unwrap();
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["reconnect_token"], "last");
+    // It offers the one revision it speaks, and no older.
+    assert_eq!(
+        (&hello["api_revision"], &hello["api_min_revision"]),
+        (&json!(13), &json!(13))
+    );
     let Some(Message::Close(Some(frame))) = last else {
         panic!("the server was sent no close frame");
     };
     assert_eq!(frame.code, CloseCode::Normal);
-    // A server that cannot serve the client closes instead of welcoming it.
     std::fs::remove_file(&path).unwrap();
-    let reason = "no common API revision: update the server";
-    let refusal = Message::Close(close(1008, reason));
-    let server = tokio::spawn(serve(listener(), refusal));
-    let Err(error) = connect(None).await else {
-        panic!("welcomed by a server that closed");
-    };
-    let refused = Ended::Incompatible(reason.into());
-    assert_eq!(error.downcast_ref(), Some(&refused));
-    server.await.unwrap();
-    std::fs::remove_file(&path).unwrap();
+    // A server that cannot serve the client closes instead of welcoming it. One too
+    // old to know that welcomes it at a revision it did not offer. Both are told
+    // of in the same words.
+    let why = "server speaks 0 to 12, client needs 13 to 13; update the server";
+    let refusal = Message::Close(close(1008, &format!("no common API revision: {why}")));
+    let old = json!({"type": "welcome", "protocol": CONTROL_PROTOCOL, "api_server_revision": 12});
+    for answer in [refusal, Message::Text(old.to_string().into())] {
+        let server = tokio::spawn(serve(listener(), answer));
+        let Err(error) = connect(None).await else {
+            panic!("welcomed by a server too old");
+        };
+        let refused = Ended::Incompatible(why.into());
+        assert_eq!(error.downcast_ref(), Some(&refused));
+        server.await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
 }

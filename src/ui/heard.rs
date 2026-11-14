@@ -35,7 +35,7 @@ impl App {
             let tabs = view.sessions.iter_mut().flat_map(|s| &mut s.windows);
             for tab in tabs {
                 let shown = shown.as_ref() == Some(&tab.id);
-                let muted = self.muted.has(&tab.id);
+                let muted = self.remembered.kept.muted.contains(&tab.id);
                 // Those out of sight are not seen, whatever tab is on show.
                 let panes = tab.panes.iter_mut().map(|pane| (pane, shown));
                 let hidden = tab.hidden.iter_mut().map(|pane| (pane, false));
