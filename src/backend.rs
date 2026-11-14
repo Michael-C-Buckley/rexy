@@ -56,6 +56,8 @@ struct State {
     terminals: HashMap<String, TerminalHandle>,
     /// The UI is showing another server, so no session is picked unasked.
     away: bool,
+    /// Closes when the network worker has ended. Kept for `Client` to wait on as it goes.
+    done: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 #[derive(Clone)]
@@ -94,13 +96,30 @@ pub struct Client {
     shared: Shared,
 }
 
+impl Drop for Client {
+    fn drop(&mut self) {
+        // The worker stops when its queue closes, first telling a server it is
+        // connected to that this client has gone. The process may be about to end,
+        // so wait a moment for that to be said. With no connection there is nothing to say.
+        drop(std::mem::replace(&mut self.actions, mpsc::channel(1).0));
+        let mut state = self.shared.lock();
+        let done = state.done.take().filter(|_| state.view.connected);
+        drop(state);
+        if let Some(done) = done {
+            let _ = done.recv_timeout(Duration::from_millis(400));
+        }
+    }
+}
+
 impl Client {
     /// Connect to a server at the first of its endpoints that answers, and keep
     /// connected. Unless `away`, its first session is shown without being asked for.
     /// What its panes have to say to someone not looking goes to `herald`.
     pub fn spawn(endpoints: Vec<String>, away: bool, wake: Notify, herald: Herald) -> Self {
+        let (ended, done) = std::sync::mpsc::channel();
         let state = State {
             away,
+            done: Some(done),
             ..Default::default()
         };
         let shared = Shared {
@@ -116,6 +135,8 @@ impl Client {
         let started = std::thread::Builder::new()
             .name("rex-io".into())
             .spawn(move || {
+                // Dropped last, once the runtime and all it carried are gone.
+                let _ended = ended;
                 match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -285,6 +306,8 @@ async fn connect(
                 (None, endpoint.clone())
             };
             let control = Control::connect(&endpoint, token).await?;
+            // A bare host name stands for several addresses. Streams go to the one found.
+            let endpoint = control.endpoint.clone();
             anyhow::Ok((tunnel, endpoint, control))
         };
         match attempt.await {
@@ -352,7 +375,11 @@ async fn run_connected(
                 }
             }
             action = actions.recv(), if replies.len() < 64 => {
-                let Some(action) = action else { return Ok(()) };
+                let Some(action) = action else {
+                    // The client is going. The server need not keep its place.
+                    control.close().await;
+                    return Ok(());
+                };
                 if matches!(action, Action::Reconnect) {
                     return Ok(());
                 }

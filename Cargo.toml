@@ -16,6 +16,8 @@ futures-util = { version = "0.3", features = ["sink"] }
 # Ghostty's terminal. No release can restore a snapshot yet, so a commit is named.
 libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "483ea3d5247b214060da58ef6037a95f30ae89fb" }
 libc = "0.2"
+# Already here through url. Rex writes a socket's path percent-encoded.
+percent-encoding = "2"
 # The window's own display and surface, for the three below.
 raw-window-handle = "0.6"
 # Draws the program icons. This release shares tiny-skia with the title bar's.

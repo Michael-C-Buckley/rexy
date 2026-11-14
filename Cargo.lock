@@ -2458,6 +2458,7 @@ dependencies = [
  "futures-util",
  "libc",
  "libghostty-vt",
+ "percent-encoding",
  "raw-window-handle",
  "resvg",
  "rustls",

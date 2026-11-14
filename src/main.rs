@@ -7,7 +7,7 @@ rex-lite — a minimal Rex client
 
 Usage: rex-lite [--server ENDPOINT]
 
-  -S, --server  Unix socket, ssh://, ws:// or wss:// Rex endpoint
+  -S, --server  Unix socket, host name, ssh://, ws:// or wss:// Rex endpoint
       --probe   Verify attachment and Ghostty decoding without opening a window
   -h, --help    Show this help
       --version Show version
@@ -27,7 +27,7 @@ fn default_endpoint() -> String {
             // SAFETY: geteuid has no arguments and cannot fail.
             PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
         });
-    format!("unix://{}", runtime.join("rex/server.sock").display())
+    format!("unix:{}", runtime.join("rex/server.sock").display())
 }
 
 fn main() -> eframe::Result {
