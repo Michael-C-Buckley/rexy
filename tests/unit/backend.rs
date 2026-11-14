@@ -462,3 +462,49 @@ fn what_is_asked_to_be_shown_is_shown_at_once_and_numbered() {
     let numbers = std::iter::from_fn(|| queue.try_recv().ok()).map(|(_, pick)| pick);
     assert_eq!(numbers.collect::<Vec<_>>(), [1, 2, 3, 4, 5, 0, 6]);
 }
+
+#[test]
+fn a_terminal_fed_no_more_is_kept_for_its_last_screen() {
+    use crate::terminal::tests::{WAIT, encode, terminal, worker};
+    let (client, _queue) = client();
+    let mut screen = terminal(10, 2);
+    screen.vt_write(b"last");
+    let (drawn, wakes) = worker(encode(&mut screen));
+    wakes.recv_timeout(WAIT).unwrap();
+    // One has drawn its pane, and one has yet to.
+    let (blank, _wakes) = worker(Vec::new());
+    let pane = |id: &str| Pane {
+        id: id.into(),
+        ..Pane::default()
+    };
+    let tab = Window {
+        id: "w".into(),
+        panes: vec![pane("drawn"), pane("blank")],
+        ..Window::default()
+    };
+    {
+        let mut state = client.shared.lock();
+        state.view.sessions = vec![Session {
+            id: "s".into(),
+            windows: vec![tab],
+            ..Session::default()
+        }];
+        state.view.selected_session = Some("s".into());
+        state.terminals.insert("drawn".into(), drawn);
+        state.terminals.insert("blank".into(), blank);
+        // Their streams fail, or the connection does.
+        state.rest("drawn");
+        state.rest("blank");
+    }
+    // What was drawn is still shown, and can be asked for what is selected on it.
+    // Nothing is typed into it: only a terminal that is fed takes input.
+    let shown = |id: &str| {
+        client
+            .snapshot()
+            .pane(id)
+            .is_some_and(|p| p.frame.is_some())
+    };
+    assert!(shown("drawn") && client.terminal("drawn").is_ok());
+    assert!(client.shared.terminal("drawn").is_none());
+    assert!(!shown("blank") && client.terminal("blank").is_err());
+}

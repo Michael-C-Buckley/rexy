@@ -250,6 +250,8 @@ impl Standing<'_> {
             .position(|tab| Some(&tab.id) == view.selected_window.as_ref());
         let pane = pane.or(self.focused);
         let pane = pane.and_then(|id| tab?.panes.iter().find(|pane| pane.id == id));
+        // What the pane shows, once its terminal has drawn.
+        let frame = pane.and_then(|pane| pane.frame.as_ref());
         let session = || view.selected_session.clone();
         let show = |index: usize| {
             let window = tabs.get(index)?.id.clone();
@@ -278,21 +280,28 @@ impl Standing<'_> {
             "client.mode.exit" | "client.mode.exit_all" if !self.keys.modes.is_empty() => {
                 Deed::Exit(name.ends_with("all"))
             }
-            // The rest is done by a server, or by a terminal kept up by one.
-            _ if !view.connected => return None,
+            // Then what a pane's own terminal does with what it shows, which may
+            // be the last screen of a connection that was lost.
             "pane.copy" => {
-                let frame = pane?.frame.as_ref();
                 frame.filter(|frame| !frame.selected.is_empty())?;
                 Deed::Tell(pane?.id.clone(), Request::Copy)
             }
-            "pane.select_all" => Deed::Tell(pane?.id.clone(), Request::SelectAll),
-            "client.find.open" => Deed::Find(pane?.id.clone()),
+            "pane.select_all" => Deed::Tell(frame.and(pane)?.id.clone(), Request::SelectAll),
+            "client.find.open" => Deed::Find(frame.and(pane)?.id.clone()),
             // The match before the one shown, or the one after it, of a search
             // under way.
             "client.find.next" | "client.find.previous" => {
-                pane?.frame.as_ref()?.found?;
+                frame?.found?;
                 Deed::Tell(pane?.id.clone(), Request::Step { older: on })
             }
+            // And what moves through a pane's history: unless its program has the
+            // whole screen, which keeps none.
+            _ if scroll(name).is_some() => {
+                frame.filter(|frame| !frame.alternate_screen)?;
+                Deed::Tell(pane?.id.clone(), Request::Scroll(scroll(name)?))
+            }
+            // The rest is done by a server.
+            _ if !view.connected => return None,
             "session.new" => Deed::Ask(Action::CreateSession(None)),
             "session.select" => {
                 let listed = |id: &String| view.sessions.iter().any(|session| &session.id == id);
@@ -363,13 +372,7 @@ impl Standing<'_> {
             }
             "pane.paste" => Deed::Paste(pane?.id.clone()),
             "pane.send_key" => Deed::Ask(input::press(&pane?.id, args["key"].as_str()?)?),
-            // What is left moves through a pane's history: unless its program has
-            // the whole screen, which keeps none.
-            _ => {
-                let frame = pane?.frame.as_ref();
-                let pane = pane.filter(|_| frame.is_some_and(|frame| !frame.alternate_screen))?;
-                Deed::Tell(pane.id.clone(), Request::Scroll(scroll(name)?))
-            }
+            _ => return None,
         })
     }
 }

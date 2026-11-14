@@ -176,8 +176,10 @@ impl App {
                 state.last_size = Some(size);
             }
         }
-        // Shift overrides a program's mouse capture.
+        // Shift overrides a program's mouse capture. A last screen has no program
+        // to capture it.
         let tracking = frame.is_some_and(|f| f.mouse_tracking) && !ui.input(|i| i.modifiers.shift);
+        let tracking = tracking && live;
         // A middle click pastes the desktop's last selection, made in any program,
         // unless a program that tracks the mouse has the click.
         let paste = |event: &egui::Event| match event {
@@ -313,7 +315,9 @@ impl App {
             let edge = rect.right_top() + egui::vec2(-4.0, 1.0 + PANE_HEADER / 2.0);
             close |= confirm(ui, edge, what, CLOSE).clicked();
         }
-        for action in actions {
+        // A last screen is there to be read. Nothing done to it is sent anywhere,
+        // and nothing need be said of that: the banner above it says why.
+        for action in actions.into_iter().filter(|_| live) {
             self.send(action);
         }
         if let Some(to) = scroll {

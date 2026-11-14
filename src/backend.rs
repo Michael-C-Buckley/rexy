@@ -64,11 +64,28 @@ impl Wake {
 #[derive(Default)]
 struct State {
     view: View,
+    /// The terminals being fed what their panes show, which take what is typed.
     terminals: HashMap<String, TerminalHandle>,
+    /// Those fed no more, since a stream or the connection failed. Each is kept
+    /// for its last screen, to be read, looked through and copied from, until
+    /// its pane is fed again or goes from sight. Nothing is typed into one.
+    last: HashMap<String, TerminalHandle>,
     /// How many times the user has asked for something to be shown, or to be left.
     /// Each asking goes to the worker with its number, so that what the server
     /// shows moves what is on show only once it has answered the last of them.
     picks: u64,
+}
+
+impl State {
+    /// Stop counting a pane's terminal among those fed. One that has drawn is
+    /// kept for its last screen.
+    fn rest(&mut self, pane: &str) {
+        if let Some(terminal) = self.terminals.remove(pane)
+            && terminal.latest().is_some()
+        {
+            self.last.insert(pane.into(), terminal);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -185,6 +202,9 @@ impl Client {
                     None if pane.frame.is_some() => String::new(),
                     None => "Restoring terminal…".into(),
                 };
+            } else if let Some(terminal) = state.last.get(&pane.id) {
+                // Its last screen, with what has been selected on it since.
+                pane.frame = terminal.latest();
             }
         }
         view
@@ -250,11 +270,15 @@ impl Client {
         }
     }
 
-    /// The terminal of a pane on show, for what is done to it here and never
-    /// sent to the server, such as moving through its history.
+    /// The terminal of a pane on show, or the one kept for its last screen, for
+    /// what is done to it here and never sent to the server: moving through its
+    /// history, selecting, and finding text.
     pub fn terminal(&self, pane: &str) -> Result<TerminalHandle, String> {
-        let terminal = self.shared.terminal(pane);
-        terminal.ok_or_else(|| "Terminal is not ready".into())
+        let state = self.shared.lock();
+        let terminal = state.terminals.get(pane).or_else(|| state.last.get(pane));
+        terminal
+            .cloned()
+            .ok_or_else(|| "Terminal is not ready".into())
     }
 }
 
@@ -324,15 +348,13 @@ async fn run(
         };
         failures += 1;
         shared.change(|s| {
-            // Keep the last immutable screen for context, but never send old input again.
+            // Each last screen is kept for context, and no old input is sent again.
+            let fed: Vec<String> = s.terminals.keys().cloned().collect();
+            fed.iter().for_each(|pane| s.rest(pane));
             for pane in s.view.panes_mut() {
-                if let Some(terminal) = s.terminals.get(&pane.id) {
-                    pane.frame = terminal.latest();
-                }
                 pane.status = "Disconnected".into();
                 pane.owner = false;
             }
-            s.terminals.clear();
             s.view.connected = false;
             s.view.status = match (result, delay) {
                 (Ok(()), _) => "Reconnecting…".into(),
@@ -1016,6 +1038,7 @@ impl<'a> Connection<'a> {
                 .map(|pane| (pane.id.clone(), pane.owner))
                 .collect();
             state.terminals.retain(|id, _| visible.contains_key(id));
+            state.last.retain(|id, _| visible.contains_key(id));
             (state.view.selected_session.clone(), visible)
         };
         self.streams.retain(|id, task| {
@@ -1456,9 +1479,8 @@ async fn stream_pane(
         let wait = retry(&error, failures, true);
         failures += 1;
         shared.change(|s| {
-            let previous = s.terminals.remove(&pane).and_then(|t| t.latest());
+            s.rest(&pane);
             if let Some(pane) = s.view.pane_mut(&pane) {
-                pane.frame = previous;
                 pane.status = match wait {
                     Some(_) => format!("Reconnecting terminal: {error:#}"),
                     None => format!("{error:#}"),
@@ -1505,6 +1527,7 @@ async fn stream(
     let terminal = TerminalHandle::new(nonce, Arc::new(repaint))?;
     shared.change(|s| {
         s.terminals.insert(pane.into(), terminal.clone());
+        s.last.remove(pane);
     });
     loop {
         tokio::select! {

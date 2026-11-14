@@ -78,7 +78,7 @@ The entry is named for the window's app ID, which is how a Wayland desktop finds
 - **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab.
 - **Ctrl + / - / 0**: terminal font size. With Alt as well, these go to the terminal's programs. **Ctrl C** still interrupts them.
 - These keys are only where they start. They are Rex's: the server's `init.lua` rebinds them with `rex.bind`, frees them for the terminal with `rex.unbind`, and adds sequences such as `ctrl+b>c`, modes, and actions of its own, which the palette lists; `rex config reload` applies it at once. Each server's keymap holds while its session is on show. The window's actions go by Rex's names (`pane.split.right`, `client.tab.next`, `client.find.open` and so on; `rex -C <client> actions` lists them), and `rex -C <client> do pane.zoom` performs one from outside, while the window can be seen. A key held down repeats only where that helps: moving between tabs and panes, scrolling, and font size.
-- Nothing is shown while all is well. A lost connection says so above the last screen, which goes dim, and offers to reconnect. A failed action says so briefly at the top of the terminals; click it to send it away.
+- Nothing is shown while all is well. A lost connection says so above the last screen, which goes dim, and offers to reconnect. That screen is still there to be read: it scrolls through its history, and what is on it can be selected, found and copied. Nothing typed or clicked there is sent anywhere. A failed action says so briefly at the top of the terminals; click it to send it away.
 - The terminal keeps the colours Rex gives it. The tabs along the top and the headers of split panes take a dark terminal's background, so they read as one surface with it.
 
 ## What is here
