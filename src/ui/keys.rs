@@ -55,10 +55,9 @@ impl App {
             self.send(Action::CreateWindow(session.clone()));
         }
         if (pressed(chord, Key::C) || pressed(Modifiers::NONE, Key::Copy))
-            && let Some(pane) = self.focused.as_ref().and_then(|id| self.panes.get(id))
-            && let Some(selection) = &pane.selection
+            && let Some(pane) = &self.focused
         {
-            ctx.copy_text(selection.text());
+            self.copy(ctx, pane);
         }
         if pressed(chord, Key::V) || pressed(Modifiers::NONE, Key::Paste) {
             paste();
@@ -156,17 +155,12 @@ impl App {
     /// Send this frame's keyboard events to the focused pane.
     pub(super) fn terminal_keys(&mut self, ctx: &egui::Context, pane: &str) {
         // Escape leaves a selection instead of reaching the program.
-        if let Some(state) = self.panes.get_mut(pane)
-            && state.selection.is_some()
-            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
-        {
-            state.selection = None;
+        if self.selected(pane) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.deselect(pane);
         }
         let actions = ctx.input(|i| self.keyboard.translate(pane, &i.events));
-        if actions.iter().any(input::clears_selection)
-            && let Some(state) = self.panes.get_mut(pane)
-        {
-            state.selection = None;
+        if actions.iter().any(input::clears_selection) {
+            self.deselect(pane);
         }
         for action in actions {
             self.send(action);

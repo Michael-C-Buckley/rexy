@@ -330,12 +330,30 @@ impl App {
         }
     }
 
-    /// Move a pane's view through its history. No server is told.
-    pub(super) fn scroll(&mut self, pane: &str, to: Scroll) {
-        // A selection holds the pane to the frame it was made on.
+    /// Whether anything is selected in a pane.
+    pub(super) fn selected(&self, pane: &str) -> bool {
+        let state = self.panes.get(pane);
+        state.is_some_and(|state| state.selection.is_some())
+    }
+
+    /// Let go of what is selected in a pane.
+    pub(super) fn deselect(&mut self, pane: &str) {
         if let Some(state) = self.panes.get_mut(pane) {
             state.selection = None;
         }
+    }
+
+    /// Copy what is selected in a pane to the clipboard.
+    pub(super) fn copy(&self, ctx: &egui::Context, pane: &str) {
+        if let Some(selection) = self.panes.get(pane).and_then(|s| s.selection.as_ref()) {
+            ctx.copy_text(selection.text());
+        }
+    }
+
+    /// Move a pane's view through its history. No server is told.
+    pub(super) fn scroll(&mut self, pane: &str, to: Scroll) {
+        // A selection holds the pane to the frame it was made on.
+        self.deselect(pane);
         let terminal = self.servers[self.current].client.terminal(pane);
         let moved = terminal.and_then(|terminal| {
             let moved = match to {
