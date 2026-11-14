@@ -30,7 +30,7 @@ SOFTWARE.
 
 ## Fonts
 
-`assets/fonts/` holds [Inter](https://github.com/rsms/inter) 4.1 and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304, unmodified variable fonts under the SIL Open Font License 1.1. Each licence is beside its font.
+`assets/fonts/` holds [Inter](https://github.com/rsms/inter) 4.1 and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304, unmodified variable fonts under the SIL Open Font License 1.1. Each licence is beside its font. The files are as published; at start-up rex-lite renames the `calt` feature in its in-memory copy of JetBrains Mono, which turns the font's ligatures off.
 
 ## Program icons
 

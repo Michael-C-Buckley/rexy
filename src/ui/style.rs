@@ -61,17 +61,40 @@ pub fn ground(terminal: Color32) -> Color32 {
     }
 }
 
+/// A copy of a font that joins no characters into ligatures. egui shapes text with
+/// whatever a font turns on by default and has no switch for any of it, so the
+/// feature that holds JetBrains Mono's ligatures is given a name no shaper asks for.
+fn without_ligatures(font: &[u8]) -> Vec<u8> {
+    let word = |at: usize| usize::from(u16::from_be_bytes([font[at], font[at + 1]]));
+    let tag = |at: usize| &font[at..at + 4];
+    // A font lists its tables, and its table of substitutions lists their features.
+    let tables = (0..word(4)).map(|index| 12 + 16 * index);
+    let gsub = tables.filter(|&at| tag(at) == b"GSUB");
+    let lists = gsub.map(|at| (word(at + 8) << 16) + word(at + 10));
+    let lists = lists.map(|gsub| gsub + word(gsub + 6));
+    let features = lists.flat_map(|list| (0..word(list)).map(move |index| list + 2 + 6 * index));
+    let ligatures: Vec<usize> = features.filter(|&at| tag(at) == b"calt").collect();
+    let mut font = font.to_vec();
+    for at in ligatures {
+        font[at..at + 4].copy_from_slice(b"calu");
+    }
+    font
+}
+
 pub fn apply(ctx: &egui::Context) {
     // Each variable font serves as a regular and a bold face. egui's own fonts
-    // stay behind them for symbols and emoji.
+    // stay behind them for symbols, and behind those eframe finds a font of this
+    // machine's for what none of them can draw.
     let mut fonts = egui::FontDefinitions::default();
-    let inter: &[u8] = include_bytes!("../../assets/fonts/Inter.ttf");
-    let mono: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono.ttf");
+    let inter = FontData::from_static(include_bytes!("../../assets/fonts/Inter.ttf"));
+    // A terminal draws each character in a cell of its own.
+    let mono = without_ligatures(include_bytes!("../../assets/fonts/JetBrainsMono.ttf"));
+    let mono = FontData::from_owned(mono);
     let faces = [
         (FontFamily::Proportional, "bold", inter),
         (FontFamily::Monospace, "mono-bold", mono),
     ];
-    for (regular, bold, bytes) in faces {
+    for (regular, bold, face) in faces {
         let fallbacks = fonts.families[&regular].clone();
         for (family, weight) in [(regular, 400.0), (FontFamily::Name(bold.into()), 700.0)] {
             let name = format!("{family} {weight}");
@@ -79,7 +102,7 @@ pub fn apply(ctx: &egui::Context) {
                 coords: VariationCoords::new([(b"wght", weight)]),
                 ..Default::default()
             };
-            let data = FontData::from_static(bytes).tweak(tweak);
+            let data = face.clone().tweak(tweak);
             fonts.font_data.insert(name.clone(), Arc::new(data));
             let stack = [name].into_iter().chain(fallbacks.clone()).collect();
             fonts.families.insert(family, stack);

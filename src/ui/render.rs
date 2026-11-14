@@ -1,7 +1,7 @@
 //! Per-pane view state and painting. Shaped text is cached by row identity.
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use libghostty_vt::style::Underline;
 
 use super::style;
@@ -13,6 +13,9 @@ use crate::{
 pub fn rgb(value: u32) -> Color32 {
     Color32::from_rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
+
+/// How far, in points, a glyph may reach past its cells before it is clipped.
+const SPILL: f32 = 1.0;
 
 /// Where a pane's cells are on screen.
 #[derive(Clone, Copy)]
@@ -88,14 +91,16 @@ pub struct PaneView {
     pub mouse_button: Option<egui::PointerButton>,
     pub mouse_cell: Option<(u16, u16)>,
     cached_rows: Vec<CachedRow>,
-    cached_cell: Option<Vec2>,
+    /// A galley of egui's own. The cached rows are good while egui still holds it.
+    cached_while: Option<Arc<egui::Galley>>,
 }
 
 struct CachedRow {
     source: Arc<Row>,
     glyphs: Vec<GlyphRun>,
     backgrounds: Vec<(usize, usize, Color32)>,
-    decorations: Vec<(usize, usize, f32, Color32)>,
+    /// Columns, the height in the cell as a fraction, and the kind of line.
+    decorations: Vec<(usize, usize, f32, Color32, Underline)>,
 }
 
 struct GlyphRun {
@@ -106,9 +111,15 @@ struct GlyphRun {
 
 impl PaneView {
     pub fn paint(&mut self, painter: &egui::Painter, grid: Grid, frame: &Frame, focused: bool) {
-        if self.cached_cell != Some(grid.cell) {
+        // A galley is shaped for one font size and display scale, and points into
+        // egui's font atlas. egui drops every galley it holds when the fonts or the
+        // atlas are made anew, and gives a new one for a new size or scale. So the
+        // cached rows last for as long as it hands back the same one.
+        let font = FontId::monospace(grid.font_size);
+        let kept = painter.layout_no_wrap("M".into(), font, Color32::PLACEHOLDER);
+        if !(self.cached_while.as_ref()).is_some_and(|cached| Arc::ptr_eq(cached, &kept)) {
             self.cached_rows.clear();
-            self.cached_cell = Some(grid.cell);
+            self.cached_while = Some(kept);
         }
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(grid.rect));
         let (fg, bg) = (rgb(frame.fg), rgb(frame.bg));
@@ -143,24 +154,57 @@ impl PaneView {
                 }
             }
             for glyph in &cached.glyphs {
-                let clip = grid.span(y, glyph.column, glyph.column + glyph.width);
+                let cells = grid.span(y, glyph.column, glyph.column + glyph.width);
                 let pos = Pos2::new(
-                    clip.left(),
-                    clip.top() + (grid.cell.y - glyph.galley.size().y) * 0.5,
+                    cells.left(),
+                    cells.top() + (grid.cell.y - glyph.galley.size().y) * 0.5,
                 );
-                let clipped = painter.with_clip_rect(painter.clip_rect().intersect(clip));
-                clipped.galley(pos, Arc::clone(&glyph.galley), fg);
+                // Each clip of its own is a draw call of its own, so only a glyph
+                // from a font too wide for its cells gets one. Slanted text is as
+                // wide as its cells, and may lean into the one that follows.
+                let limit = cells.width() + SPILL;
+                let galley = Arc::clone(&glyph.galley);
+                if galley.size().x > limit && galley.mesh_bounds.right() > limit {
+                    let clip = painter.clip_rect().intersect(cells);
+                    painter.with_clip_rect(clip).galley(pos, galley, fg);
+                } else {
+                    painter.galley(pos, galley, fg);
+                }
             }
-            for &(start, end, height, color) in &cached.decorations {
+            for &(start, end, height, color, kind) in &cached.decorations {
                 let span = grid.span(y, start, end);
                 let level = span.top() + height * grid.cell.y;
-                painter.line_segment(
-                    [
-                        Pos2::new(span.left(), level),
-                        Pos2::new(span.right(), level),
-                    ],
-                    Stroke::new(1.0, color),
-                );
+                let cell = grid.cell.x;
+                let line = [
+                    Pos2::new(span.left(), level),
+                    Pos2::new(span.right(), level),
+                ];
+                let stroke = Stroke::new(1.0, color);
+                // Each pattern repeats with the cell, so runs side by side join up.
+                match kind {
+                    Underline::Curly => {
+                        let wave = |step: usize| {
+                            let along = step as f32 / 8.0;
+                            let rise = (along * std::f32::consts::TAU).sin() * grid.cell.y * 0.07;
+                            Pos2::new(span.left() + along * cell, level - rise)
+                        };
+                        let points = (0..=(end - start) * 8).map(wave).collect();
+                        painter.add(Shape::line(points, stroke));
+                    }
+                    Underline::Dotted => {
+                        let first = [line[0] + egui::vec2(cell / 4.0, 0.0), line[1]];
+                        painter.extend(Shape::dotted_line(&first, color, cell / 2.0, 0.75));
+                    }
+                    Underline::Dashed => {
+                        let (dash, gap) = ([cell / 2.0], [cell / 2.0]);
+                        let dashes =
+                            Shape::dashed_line_with_offset(&line, stroke, &dash, &gap, cell / 4.0);
+                        painter.extend(dashes);
+                    }
+                    _ => {
+                        painter.line_segment(line, stroke);
+                    }
+                }
             }
         }
         if selection.is_some() {
@@ -264,17 +308,22 @@ impl CachedRow {
                 });
             }
             let underline = cell.underline_color.map_or(color, rgb);
-            if cell.style.underline != Underline::None {
-                result.decorations.push((start, x, 0.90, underline));
-                if cell.style.underline == Underline::Double {
-                    result.decorations.push((start, x, 0.78, underline));
+            let kind = cell.style.underline;
+            if kind != Underline::None {
+                result.decorations.push((start, x, 0.90, underline, kind));
+                if kind == Underline::Double {
+                    result.decorations.push((start, x, 0.78, underline, kind));
                 }
             }
             if cell.style.strikethrough {
-                result.decorations.push((start, x, 0.51, color));
+                result
+                    .decorations
+                    .push((start, x, 0.51, color, Underline::Single));
             }
             if cell.style.overline {
-                result.decorations.push((start, x, 0.05, color));
+                result
+                    .decorations
+                    .push((start, x, 0.05, color, Underline::Single));
             }
         }
         result
@@ -300,3 +349,7 @@ pub fn word_at(frame: &Frame, index: usize) -> (usize, usize) {
     }
     (y * cols + start, y * cols + end)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/ui_render.rs"]
+mod tests;
