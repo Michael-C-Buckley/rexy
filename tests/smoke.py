@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='rex-lite-smoke-', dir=repo / 'work') as
             # The window keeps what it remembers here, away from the user's own.
             env = dict(os.environ, REX_LITE_TEST_SERVER=endpoint, XDG_STATE_HOME=str(work / 'local'))
             subprocess.run(['./scripts/dev', 'test', '--locked', '--test', 'live', '--',
-                '--ignored', '--nocapture'], cwd=repo, env=env, check=True)
+                '--ignored', '--nocapture', '--test-threads=1'], cwd=repo, env=env, check=True)
             display_read, display_write = os.pipe()
             try:
                 start(['Xvfb', '-displayfd', str(display_write), '-screen', '0',

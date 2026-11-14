@@ -4,8 +4,8 @@ use eframe::egui::{self, Align, Layout, Sense, UiBuilder, Vec2};
 
 use super::{
     App,
+    commands::title,
     heard::dot,
-    keys::SPLITS,
     style::{Icon, Item, TOOLBAR, icon_button, item},
 };
 use crate::model::{Action, View};
@@ -13,16 +13,13 @@ use crate::model::{Action, View};
 impl App {
     /// The buttons that split the focused pane, laid out from the right.
     pub(super) fn splits(&mut self, ui: &mut egui::Ui, view: &View) {
-        ui.add_enabled_ui(view.connected && self.focused.is_some(), |ui| {
-            for (icon, label, key, direction) in SPLITS.into_iter().rev() {
-                let tip = format!("{label} (Ctrl+Shift+{})", key.name());
-                if icon_button(ui, icon, &tip).clicked()
-                    && let Some(pane) = self.focused.clone()
-                {
-                    self.send(Action::Split { pane, direction });
-                }
-            }
-        });
+        let splits = [
+            (Icon::SplitDown, "pane.split.down"),
+            (Icon::SplitRight, "pane.split.right"),
+        ];
+        for (icon, name) in splits {
+            self.button(ui, view, icon, title(name), name);
+        }
     }
 
     /// A button that lists the panes of the tab on show that are out of sight:
@@ -69,20 +66,13 @@ impl App {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui, views: &[View]) {
         let view = &views[self.current];
         let mut bar = bar(ui, TOOLBAR, 6.0);
-        if icon_button(&mut bar, Icon::Sidebar, "Tabs in a sidebar (Ctrl+Shift+B)").clicked() {
-            self.sidebar = true;
-        }
+        let sidebar = "client.sidebar.toggle";
+        self.button(&mut bar, view, Icon::Sidebar, "Tabs in a sidebar", sidebar);
         self.switcher(&mut bar, views);
         bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
             self.splits(ui, view);
             self.hidden(ui, view);
-            ui.add_enabled_ui(view.connected && view.selected_session.is_some(), |ui| {
-                if icon_button(ui, Icon::Plus, "New tab (Ctrl+Shift+T)").clicked()
-                    && let Some(session) = &view.selected_session
-                {
-                    self.send(Action::CreateWindow(session.clone()));
-                }
-            });
+            self.button(ui, view, Icon::Plus, "New tab", "client.tab.new");
             ui.add_space(4.0);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(4.0);

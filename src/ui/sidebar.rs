@@ -34,10 +34,8 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 // What the toolbar holds when the tabs run along the top.
                 let mut top = bar(ui, TOOLBAR, 6.0);
-                let tip = "Tabs along the top (Ctrl+Shift+B)";
-                if icon_button(&mut top, Icon::Sidebar, tip).clicked() {
-                    self.sidebar = false;
-                }
+                let (tip, toggle) = ("Tabs along the top", "client.sidebar.toggle");
+                self.button(&mut top, &views[self.current], Icon::Sidebar, tip, toggle);
                 top.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     self.splits(ui, &views[self.current]);
                     self.hidden(ui, &views[self.current]);

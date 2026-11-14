@@ -1,6 +1,6 @@
 //! Rex WebSocket transport and bounded, pipelined control requests.
 // Protocol interoperability informed by rexrs and rex-rune (MIT); see THIRD_PARTY.md.
-use crate::program::Program;
+use crate::{model::Asked, program::Program};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, Stream, StreamExt, stream};
@@ -570,6 +570,12 @@ pub enum Event {
         block: String,
         news: News,
     },
+    /// The configuration that keymaps come of has been read again, and has this hash.
+    Keymap {
+        hash: String,
+    },
+    /// This client is asked to do one of its own actions.
+    Asked(Asked),
 }
 
 #[derive(Debug, PartialEq)]
@@ -645,6 +651,16 @@ fn event(message: &Value) -> Option<Event> {
             block: text(&fields["block_id"])?,
             news: news(fields["name"].as_str()?, &fields["payload"])?,
         },
+        "keymap_changed" => Event::Keymap {
+            hash: text(&fields["hash"])?,
+        },
+        "client_perform_requested" => Event::Asked(Asked {
+            call: Some(text(&fields["call_id"])?),
+            name: text(&fields["action"])?,
+            args: fields["args"].clone(),
+            session: text(&fields["session_id"]),
+            pane: text(&fields["block_id"]),
+        }),
         _ => return None,
     })
 }

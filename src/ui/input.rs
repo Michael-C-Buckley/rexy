@@ -1,6 +1,6 @@
 //! Translate egui events once, preserving physical key identity without typing twice.
 //! Every key reaches the terminal as itself: the window is told not to turn Ctrl+C,
-//! X and V into clipboard events.
+//! X and V into clipboard events. A key is also spelled here as Rex's keymaps spell it.
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{Event, ImeEvent, Key, Modifiers};
@@ -15,6 +15,9 @@ pub struct Keyboard {
     composing: bool,
     /// The Super keys that are down, left and right.
     supers: [bool; 2],
+    /// A key about to be translated that ends a sequence, and the keys before it
+    /// as Rex spells them: a function on the server answers to the whole of it.
+    pub prefix: Option<(Key, Vec<String>)>,
 }
 
 struct Held {
@@ -134,7 +137,14 @@ impl Keyboard {
                         code,
                         modifiers: bits,
                     };
-                    actions.push(key_action(&held, bits, true, *repeat));
+                    let pressed = key_action(&held, bits, true, *repeat);
+                    actions.push(match self.prefix.take_if(|(key, _)| *key == identity) {
+                        Some((_, prefix)) => Action::After {
+                            prefix,
+                            key: Box::new(pressed),
+                        },
+                        None => pressed,
+                    });
                     self.held.insert(identity, held);
                 }
                 Event::Text(text) if !used_text.contains(&index) && !text.is_empty() => {
@@ -185,6 +195,75 @@ pub fn clears_selection(action: &Action) -> bool {
         } => !model::is_modifier(code),
         _ => false,
     }
+}
+
+/// The modifiers as Rex spells them, in the order it writes them.
+const MODIFIERS: [(u8, &str); 4] = [
+    (model::CTRL, "ctrl"),
+    (model::ALT, "alt"),
+    (model::SHIFT, "shift"),
+    (model::SUPER, "cmd"),
+];
+
+/// The two ways Rex spells a key pressed with these modifiers: by what it types,
+/// as `ctrl+shift+d`, and by its place on the keyboard, as `ctrl+shift+[KeyD]`.
+/// None for a modifier, which alone is no chord, and for a key Rex has no name for.
+pub fn spellings(key: Key, physical: Option<Key>, modifiers: u8) -> Option<Vec<String>> {
+    let place = physical.unwrap_or(key);
+    let code = key_code(place).filter(|code| !model::is_modifier(code))?;
+    // Rex writes a key without Shift applied. Of a symbol typed with Shift, all
+    // that is known is the key's place, which is taken for a US keyboard's.
+    let symbol = is_printable(key) && !between(key, Key::A, Key::Z);
+    let plain = if modifiers & model::SHIFT != 0 && symbol {
+        place
+    } else {
+        key
+    };
+    let name = match logical_text(plain) {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => plain.name().to_lowercase(),
+    };
+    // `page_up` is PageUp in a place's name.
+    let capital = |word: &str| word[..1].to_uppercase() + &word[1..];
+    let place: String = code.split('_').map(capital).collect();
+    let held = MODIFIERS.iter().filter(|(bit, _)| modifiers & bit != 0);
+    let held: String = held.map(|(_, name)| format!("{name}+")).collect();
+    Some(vec![format!("{held}{name}"), format!("{held}[{place}]")])
+}
+
+/// The press of a key that Rex spells, such as `ctrl+b`, in a pane.
+pub fn press(pane: &str, chord: &str) -> Option<Action> {
+    let (held, name) = chord.rsplit_once('+').unwrap_or(("", chord));
+    let bit = |held: &str| Some(MODIFIERS.iter().find(|(_, name)| *name == held)?.0);
+    let modifiers = held.split('+').filter(|held| !held.is_empty()).map(bit);
+    let spelled =
+        |key: &&Key| spellings(**key, None, 0).is_some_and(|s| s.iter().any(|s| s == name));
+    let key = *Key::ALL.iter().find(spelled)?;
+    Some(Action::Key {
+        pane: pane.into(),
+        key: logical_text(key).unwrap_or_default(),
+        code: key_code(key)?,
+        modifiers: modifiers.sum::<Option<u8>>()?,
+        pressed: true,
+        repeat: false,
+    })
+}
+
+/// Take key presses out of a frame's events, by their places among them, and
+/// with each the text it typed, which follows it before any other key event.
+pub fn remove(events: &mut Vec<Event>, taken: &[usize]) {
+    let (mut index, mut typed) = (0, false);
+    events.retain(|event| {
+        index += 1;
+        match event {
+            Event::Key { .. } => {
+                typed = taken.contains(&(index - 1));
+                !typed
+            }
+            Event::Text(_) => !std::mem::take(&mut typed),
+            _ => true,
+        }
+    });
 }
 
 /// All but Super, which `Keyboard::bits` adds.
@@ -249,6 +328,9 @@ fn key_code(key: Key) -> Option<String> {
         Key::End => "end",
         Key::PageUp => "page_up",
         Key::PageDown => "page_down",
+        Key::Copy => "copy",
+        Key::Cut => "cut",
+        Key::Paste => "paste",
         Key::Colon | Key::Semicolon => "semicolon",
         Key::Comma => "comma",
         Key::Backslash | Key::Pipe => "backslash",

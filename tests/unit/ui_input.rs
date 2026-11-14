@@ -237,3 +237,111 @@ fn news_of_nothing_composed_is_kept_only_when_something_was() {
     assert_eq!(settled(vec![preedit(""), commit()]).len(), 2);
     assert_eq!(settled(vec![preedit("")]), []);
 }
+
+#[test]
+fn a_key_is_spelled_as_rex_spells_it() {
+    let chord = model::CTRL | model::SHIFT;
+    let spelled = |key, physical, modifiers| spellings(key, Some(physical), modifiers).unwrap();
+    // By what it types and by its place, modifiers in Rex's order.
+    let split = spelled(Key::D, Key::D, model::SHIFT | model::CTRL | model::ALT);
+    assert_eq!(split, ["ctrl+alt+shift+d", "ctrl+alt+shift+[KeyD]"]);
+    // A layout's own letter, wherever its key is.
+    assert_eq!(spelled(Key::E, Key::D, model::CTRL)[0], "ctrl+e");
+    // Shift is left written, and the symbol it types is not: a plus is the
+    // equals key's, and an exclamation mark the 1's.
+    assert_eq!(spelled(Key::Plus, Key::Equals, chord)[0], "ctrl+shift+=");
+    assert_eq!(
+        spelled(Key::Exclamationmark, Key::Num1, model::SHIFT)[0],
+        "shift+1"
+    );
+    // A plus typed without Shift, as on a number pad, is itself.
+    assert_eq!(spelled(Key::Plus, Key::Plus, model::CTRL)[0], "ctrl++");
+    let named = [
+        (Key::PageUp, "shift+pageup", "shift+[PageUp]"),
+        (Key::ArrowLeft, "shift+left", "shift+[ArrowLeft]"),
+        (Key::Tab, "shift+tab", "shift+[Tab]"),
+        (Key::Enter, "shift+enter", "shift+[Enter]"),
+        (Key::Space, "shift+space", "shift+[Space]"),
+        (Key::F5, "shift+f5", "shift+[F5]"),
+        (Key::Copy, "shift+copy", "shift+[Copy]"),
+    ];
+    for (key, name, place) in named {
+        assert_eq!(spelled(key, key, model::SHIFT), [name, place]);
+    }
+    assert_eq!(spellings(Key::Escape, None, 0).unwrap()[0], "escape");
+    assert_eq!(spelled(Key::K, Key::K, model::SUPER)[0], "cmd+k");
+    // A modifier alone is no chord.
+    assert_eq!(
+        spellings(Key::ShiftLeft, Some(Key::ShiftLeft), model::SHIFT),
+        None
+    );
+}
+
+#[test]
+fn a_key_rex_spells_is_pressed_as_itself() {
+    let pressed = |chord| match press("p", chord) {
+        Some(Action::Key {
+            key,
+            code,
+            modifiers,
+            pressed: true,
+            ..
+        }) => Some((key, code, modifiers)),
+        _ => None,
+    };
+    let key = |key: &str, code: &str, modifiers| Some((key.to_owned(), code.to_owned(), modifiers));
+    assert_eq!(pressed("ctrl+b"), key("b", "key_b", model::CTRL));
+    assert_eq!(
+        pressed("alt+shift+left"),
+        key("", "arrow_left", model::ALT | model::SHIFT)
+    );
+    assert_eq!(pressed("[KeyB]"), key("b", "key_b", 0));
+    assert_eq!(pressed("enter"), key("\n", "enter", 0));
+    assert_eq!((pressed("hyper+b"), pressed("ctrl+nothing")), (None, None));
+}
+
+#[test]
+fn a_key_taken_takes_what_it_typed() {
+    let none = Modifiers::NONE;
+    let text = |text: &str| Event::Text(text.into());
+    let mut events = vec![
+        key(Key::A, true, none),
+        text("a"),
+        key(Key::B, true, none),
+        text("b"),
+        key(Key::B, false, none),
+        text("c"),
+    ];
+    remove(&mut events, &[2]);
+    let left = [
+        key(Key::A, true, none),
+        text("a"),
+        key(Key::B, false, none),
+        text("c"),
+    ];
+    assert_eq!(events, left);
+}
+
+#[test]
+fn the_key_that_ends_a_sequence_goes_with_the_keys_before_it() {
+    let prefix = Some((Key::S, vec!["ctrl+x".into()]));
+    let mut keyboard = Keyboard {
+        prefix,
+        ..Default::default()
+    };
+    // Only that key: one pressed ahead of it goes as it is.
+    let events = [
+        key(Key::ArrowUp, true, Modifiers::NONE),
+        key(Key::S, true, Modifiers::CTRL),
+    ];
+    let out = keyboard.translate("p", &events);
+    assert!(matches!(&out[0], Action::Key { .. }));
+    let Action::After { prefix, key } = &out[1] else {
+        panic!("expected a key after others, got {:?}", out[1]);
+    };
+    assert_eq!(
+        (prefix.as_slice(), key_of(key).1),
+        (&["ctrl+x".to_owned()][..], model::CTRL)
+    );
+    assert_eq!(keyboard.prefix, None);
+}

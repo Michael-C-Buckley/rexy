@@ -39,6 +39,24 @@ fn keeps_up_with_sessions_and_their_views_by_what_the_news_carries() {
     let hosts = sent(None, "hosts_changed", json!({"hash": "4f53"}));
     let hash = "4f53".to_owned();
     assert_eq!(event(&hosts), Some(Event::Hosts { hash }));
+    let keymap = sent(
+        None,
+        "keymap_changed",
+        json!({"generation": 2, "hash": "a52e"}),
+    );
+    let hash = "a52e".to_owned();
+    assert_eq!(event(&keymap), Some(Event::Keymap { hash }));
+    // Another client's asking names what to answer it by, and may name a pane.
+    let asking = json!({"call_id": "7", "action": "pane.zoom", "block_id": "b", "requester": {}});
+    let asked = Asked {
+        call: Some("7".into()),
+        name: "pane.zoom".into(),
+        args: Value::Null,
+        session: None,
+        pane: Some("b".into()),
+    };
+    let asking = sent(None, "client_perform_requested", asking);
+    assert_eq!(event(&asking), Some(Event::Asked(asked)));
     // What a view holds is told by its revision, and is not taken twice.
     let label = json!({"window_id": "w", "label": "Named"});
     let owner = json!({"block_id": "b", "owner": "client:1", "reason": "take"});

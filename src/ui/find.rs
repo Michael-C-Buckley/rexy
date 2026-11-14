@@ -33,16 +33,6 @@ impl App {
         });
     }
 
-    /// Go to the match before the one shown, while the field is open.
-    pub(super) fn find_next(&mut self, pane: &str) {
-        self.ask(pane, Request::FindNext);
-    }
-
-    /// Go to the match after the one shown, while the field is open.
-    pub(super) fn find_previous(&mut self, pane: &str) {
-        self.ask(pane, Request::FindPrevious);
-    }
-
     /// Stop looking. The match last shown stays selected.
     pub(super) fn find_close(&mut self) {
         if let Some(find) = self.find.take() {

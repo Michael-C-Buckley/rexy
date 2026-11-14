@@ -35,6 +35,8 @@ use tokio::{
 
 /// How long to wait before each try at something that keeps failing.
 const RETRY: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(15)];
+/// How long another client's asking waits for the window to take it.
+const UNTAKEN: Duration = Duration::from_secs(3);
 const FULL: [f32; 4] = [0., 0., 1., 1.];
 const TERMINAL: &str = "com.superlogical.terminal";
 const TITLE: &str = "com.superlogical.terminal.title";
@@ -166,6 +168,7 @@ impl Client {
         state.view.error = None;
         state.view.made = None;
         state.view.copied = None;
+        state.view.asked.clear();
         state.view.rang.clear();
         for pane in view.panes_mut() {
             if let Some(terminal) = state.terminals.get(&pane.id) {
@@ -428,6 +431,10 @@ enum Reply {
     Left,
     /// The host list.
     Hosts,
+    /// What this client's keys do.
+    Keymap,
+    /// One of the server's own actions, which may ask this client for more.
+    Performed,
     /// A terminal's title, its processes and what its programs report, in a list.
     /// `known` says an earlier connection knew the terminal.
     Learned {
@@ -493,6 +500,8 @@ struct Connection<'a> {
     asking: HashMap<String, Option<Vec<News>>>,
     /// The hash of the host list held.
     hosts: String,
+    /// The hash of the configuration that the keymap held came of.
+    keys: String,
     /// A request to join or to leave a session is on its way.
     joining: bool,
     /// The number of the last asking to be shown something that the server has
@@ -623,6 +632,7 @@ impl<'a> Connection<'a> {
             views,
             asking: HashMap::new(),
             hosts: String::new(),
+            keys: String::new(),
             joining: false,
             settled: 0,
             unsettled: 0,
@@ -642,6 +652,7 @@ impl<'a> Connection<'a> {
             connection.want(&session, 0).await;
         }
         connection.ask(Reply::Hosts, "hosts.list", json!({})).await;
+        connection.ask_keymap().await;
         Ok(connection)
     }
 
@@ -653,6 +664,13 @@ impl<'a> Connection<'a> {
             let answer = async move { Some((reply, response.await.ok()?)) };
             self.replies.push(Box::pin(answer));
         }
+    }
+
+    /// Ask what this client's keys do: its own, which the window's table of
+    /// commands names, as changed by the account's configuration.
+    async fn ask_keymap(&mut self) {
+        let request = crate::ui::commands::request();
+        self.ask(Reply::Keymap, "client.keymap", request).await;
     }
 
     /// Ask it several things, to be answered together: by a list, with nothing in
@@ -732,6 +750,30 @@ impl<'a> Connection<'a> {
                 }
                 return;
             }
+            Event::Keymap { hash } => {
+                if hash != self.keys {
+                    self.ask_keymap().await;
+                }
+                return;
+            }
+            Event::Asked(asked) => {
+                // A window that is out of sight takes nothing. What it has not
+                // taken after a while is refused for it, and so never done late.
+                let (shared, rpc, call) =
+                    (self.shared.clone(), self.rpc.clone(), asked.call.clone());
+                self.shared.change(|s| s.view.asked.push(asked));
+                tokio::spawn(async move {
+                    tokio::time::sleep(UNTAKEN).await;
+                    let waits = |held: &mut model::Asked| held.call == call;
+                    let untaken = shared.lock().view.asked.extract_if(.., waits).count() > 0;
+                    if let Some(call) = call.filter(|_| untaken) {
+                        let _ = rpc
+                            .enqueue("client.reply", reply(&call, Some("refused")))
+                            .await;
+                    }
+                });
+                return;
+            }
             Event::Block { block, news } => {
                 return match news {
                     News::Bell => self.rang(block),
@@ -784,6 +826,33 @@ impl<'a> Connection<'a> {
                 self.hosts = listed["hash"].as_str().unwrap_or_default().into();
                 return self.shared.change(|s| s.view.hosts = hosts);
             }
+            (Reply::Keymap, Ok(keymap)) => {
+                self.keys = keymap["config"]["hash"].as_str().unwrap_or_default().into();
+                return self
+                    .shared
+                    .change(|s| s.view.keymap = Some(Arc::new(keymap)));
+            }
+            // This client's own keys go on as they are.
+            (Reply::Keymap, Err(error)) => {
+                return self
+                    .shared
+                    .fail(format!("The server's keys were not read: {error}"));
+            }
+            (Reply::Performed, Ok(done)) => {
+                // Its configuration may ask this client for actions of its own, in turn.
+                let asked = items(&done["client_actions"]).filter_map(|asked| {
+                    Some(model::Asked {
+                        call: None,
+                        name: asked["action"].as_str()?.into(),
+                        args: asked["args"].clone(),
+                        session: None,
+                        pane: None,
+                    })
+                });
+                let asked: Vec<_> = asked.collect();
+                return self.shared.change(|s| s.view.asked.extend(asked));
+            }
+            (Reply::Performed, Err(error)) => return self.shared.fail(error),
             (Reply::Learned { block, known }, answer) => {
                 // Unless the terminal has gone meanwhile.
                 let Some(held) = self.asking.get_mut(&block).and_then(Option::take) else {
@@ -1163,6 +1232,34 @@ impl<'a> Connection<'a> {
                 let payload = json!({"block_id": pane});
                 (session, "session.focus_block", payload, None)
             }
+            Action::Perform {
+                name,
+                args,
+                origin,
+                pane,
+            } => {
+                // A terminal's action is done to a pane, in the pane's session.
+                // One of the configuration's is given what there is.
+                let session = match &pane {
+                    Some(pane) => Some(self.session(pane)?),
+                    None => self.shared.lock().view.selected_session.clone(),
+                };
+                let mut payload = json!({"action": name, "origin": origin});
+                let (session, pane) = (json!(session), json!(pane));
+                for (key, value) in [("args", args), ("session_id", session), ("block_id", pane)] {
+                    if !value.is_null() {
+                        payload[key] = value;
+                    }
+                }
+                self.ask(Reply::Performed, "client.action", payload).await;
+                return Ok(());
+            }
+            Action::Reply { call, error } => {
+                // Whoever asked has stopped waiting if this comes too late, and
+                // there is nobody to tell.
+                let _ = self.rpc.enqueue("client.reply", reply(&call, error)).await;
+                return Ok(());
+            }
             input => return self.input(input).await,
         };
         // A session yet to be made has no name to go by.
@@ -1180,6 +1277,10 @@ impl<'a> Connection<'a> {
     async fn input(&mut self, action: Action) -> Result<()> {
         let event =
             |kind: &str, payload: Value| json!({"event": {"type": kind, "payload": payload}});
+        let (action, prefix) = match action {
+            Action::After { prefix, key } => (*key, Some(prefix)),
+            action => (action, None),
+        };
         // Input that engages the terminal takes ownership and returns to live
         // output. A size engages nothing, and is taken by a terminal not yet seen.
         let (pane, method, mut payload, engage) = match action {
@@ -1266,6 +1367,9 @@ impl<'a> Connection<'a> {
         let session = block.session.clone();
         payload["session_id"] = json!(session);
         payload["block_id"] = json!(pane);
+        if let Some(prefix) = prefix {
+            payload["prefix"] = json!(prefix);
+        }
         if let Some(engage) = engage {
             let ready = self
                 .shared
@@ -1285,6 +1389,19 @@ impl<'a> Connection<'a> {
         self.ask(Reply::Input, method, payload).await;
         Ok(())
     }
+}
+
+/// The answer to another client's asking: that what it asked was done, or the
+/// code of an error and the words for it.
+fn reply(call: &str, error: Option<&str>) -> Value {
+    let Some(code) = error else {
+        return json!({"call_id": call, "result": null});
+    };
+    let message = match code {
+        "refused" => "Rex Lite cannot do that just now",
+        _ => "Rex Lite has no such action",
+    };
+    json!({"call_id": call, "error": {"code": code, "message": message}})
 }
 
 /// The whole of a long text that a program has copied, asked for a part at a time.

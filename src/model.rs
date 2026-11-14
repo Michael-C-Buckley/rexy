@@ -1,5 +1,6 @@
 //! Small UI-facing value model. Terminal frames are immutable, shared snapshots.
 use crate::{program::Program, terminal::Frame};
+use serde_json::Value;
 use std::{cmp::Reverse, collections::HashSet, sync::Arc};
 
 #[derive(Clone, Default)]
@@ -16,6 +17,10 @@ pub struct View {
     pub copied: Option<(String, String)>,
     /// The panes whose bells have rung since the last snapshot.
     pub rang: HashSet<String>,
+    /// What the server says this client's keys do: its answer, once it has one.
+    pub keymap: Option<Arc<Value>>,
+    /// What this client has been asked to do, reported by one snapshot only.
+    pub asked: Vec<Asked>,
     /// The other servers this one knows of.
     pub hosts: Vec<Host>,
     /// Every session on the server, each with its tabs.
@@ -110,6 +115,19 @@ impl View {
 pub struct Host {
     pub label: String,
     pub endpoints: Vec<String>,
+}
+
+/// Something this client is asked to do, of its own actions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asked {
+    /// What another client's asking is answered by. None if an action of the
+    /// server's that this client began asks, which waits for no answer.
+    pub call: Option<String>,
+    pub name: String,
+    pub args: Value,
+    /// The session and the pane it is to be done to, where the asking says.
+    pub session: Option<String>,
+    pub pane: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -441,6 +459,26 @@ pub enum Action {
         edit: Edit,
     },
     Reconnect,
+    /// The key that ends a sequence which a function on the server is bound to,
+    /// with the keys before it as Rex spells them.
+    After {
+        prefix: Vec<String>,
+        key: Box<Action>,
+    },
+    /// Do one of the server's own actions, from its configuration or of a
+    /// terminal: to a pane, if one has the keyboard. `origin` is `key` or `palette`.
+    Perform {
+        name: String,
+        args: Value,
+        origin: &'static str,
+        pane: Option<String>,
+    },
+    /// Answer another client's asking: that it was done, or by the code of an
+    /// error that it was not.
+    Reply {
+        call: String,
+        error: Option<&'static str>,
+    },
 }
 
 #[derive(Clone, Debug)]

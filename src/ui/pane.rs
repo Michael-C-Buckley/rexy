@@ -5,8 +5,8 @@ use eframe::egui::{self, Align, Align2, FontId, Layout, Rect, Sense, Stroke, UiB
 use super::{
     App,
     close::{Ask, CLOSE, asking, closer, doomed},
+    commands::title,
     heard::dot,
-    keys::SPLITS,
     pointer::{Pointer, Wheel},
     render::{Grid, rgb},
     style::{
@@ -81,18 +81,18 @@ impl App {
             // fills the tab shows always, where it would be among them.
             if !over || ask == Ask::Again {
                 buttons.add_space(SMALL_BUTTON);
-            } else if small_button(&mut buttons, Icon::Close, "Close Pane (Ctrl+Shift+W)").clicked()
-            {
-                close = true;
+            } else {
+                let tip = self.keys.map.tip(title("pane.close"), "pane.close");
+                close = small_button(&mut buttons, Icon::Close, &tip).clicked();
             }
             let (zoom, tip) = if window.zoomed {
-                (Icon::Restore, "Restore Panes (Ctrl+Shift+Enter)")
+                (Icon::Restore, "Restore Panes")
             } else {
-                (Icon::Zoom, "Zoom Pane (Ctrl+Shift+Enter)")
+                (Icon::Zoom, title("pane.zoom"))
             };
-            if (over || window.zoomed) && small_button(&mut buttons, zoom, tip).clicked() {
-                let pane = pane.id.clone();
-                actions.push(Action::Zoom { pane });
+            let tip = self.keys.map.tip(tip, "pane.zoom");
+            if (over || window.zoomed) && small_button(&mut buttons, zoom, &tip).clicked() {
+                self.todo.push(("pane.zoom", Some(pane.id.clone())));
             }
             header.max.x -= 2.0 * SMALL_BUTTON + 4.0;
             // What it has to say sits ahead of them, as on its tab.
@@ -252,7 +252,7 @@ impl App {
                 let back = ui
                     .interact(pill, id, Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("To the bottom (Shift+End)");
+                    .on_hover_text(self.keys.map.tip("To the bottom", "client.scroll.bottom"));
                 if back.clicked() {
                     scroll = Some(Scroll::Bottom);
                 }
@@ -302,20 +302,20 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
-                let pane = || pane.id.clone();
-                let split = |(_, label, _, direction)| {
-                    let pane = pane();
-                    (label, true, Action::Split { pane, direction })
+                let zoom = match window.zoomed {
+                    true => "Restore Panes",
+                    false => title("pane.zoom"),
                 };
-                let zoom = if window.zoomed {
-                    "Restore Panes"
-                } else {
-                    "Zoom Pane"
-                };
-                let zoom = (zoom, window.split(), Action::Zoom { pane: pane() });
-                for (label, enabled, action) in SPLITS.into_iter().map(split).chain([zoom]) {
-                    if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                        actions.push(action);
+                let entries = [
+                    (title("pane.split.right"), true, "pane.split.right"),
+                    (title("pane.split.down"), true, "pane.split.down"),
+                    (zoom, window.split(), "pane.zoom"),
+                ];
+                for (label, enabled, name) in entries {
+                    let keys = self.keys.map.shortcut(name);
+                    let entry = egui::Button::new(label).shortcut_text(keys);
+                    if ui.add_enabled(enabled, entry).clicked() {
+                        self.todo.push((name, Some(pane.id.clone())));
                         ui.close();
                     }
                 }
@@ -337,8 +337,7 @@ impl App {
             self.scroll(&pane.id, to);
         }
         if close {
-            let pane = pane.id.clone();
-            self.close(what, spared, true, self.current, Action::ClosePane { pane });
+            self.todo.push(("pane.close", Some(pane.id.clone())));
         }
     }
 
@@ -362,17 +361,6 @@ impl App {
         if self.selected(pane) {
             self.ask(pane, Request::Deselect);
         }
-    }
-
-    /// Copy what is selected in a pane to the clipboard. Its worker hands the
-    /// text back, and the pane passes it on when next drawn.
-    pub(super) fn copy(&self, pane: &str) {
-        self.ask(pane, Request::Copy);
-    }
-
-    /// Select all that a pane holds, its history too.
-    pub(super) fn select_all(&mut self, pane: &str) {
-        self.ask(pane, Request::SelectAll);
     }
 
     /// Tell the pane with the keyboard when this window stops being the one in

@@ -62,9 +62,8 @@ fn enter(client: &Client, pane: &str) {
     }
 }
 
-#[test]
-#[ignore = "requires REX_LITE_TEST_SERVER pointing to a disposable Rex server"]
-fn live_input_resize_splits_tabs_sessions_and_reconnect() {
+/// The server to test against, which must be one made for it.
+fn endpoint() -> String {
     let endpoint = std::env::var("REX_LITE_TEST_SERVER").expect("explicit test endpoint required");
     assert!(
         endpoint.starts_with("unix://")
@@ -72,6 +71,20 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
             && endpoint.contains("/work/"),
         "refusing to mutate a non-test Rex server"
     );
+    endpoint
+}
+
+/// Run the `rex` command against that server and no other.
+fn rex(endpoint: &str, args: &[&str]) -> std::process::Output {
+    let mut rex = std::process::Command::new("rex");
+    let rex = rex.args(["-S", endpoint, "--autostart=false"]).args(args);
+    rex.output().unwrap()
+}
+
+#[test]
+#[ignore = "requires REX_LITE_TEST_SERVER pointing to a disposable Rex server"]
+fn live_input_resize_splits_tabs_sessions_and_reconnect() {
+    let endpoint = endpoint();
     let (herald, notes) = Herald::new();
     let client = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), herald);
     // A connection comes with every session's tabs, and with no session shown
@@ -223,11 +236,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // The server is told some things from outside: this window types only into
     // what it shows, and makes no floating layers.
     let rex = |args: &[&str]| {
-        let rex = std::process::Command::new("rex")
-            .args(["-S", &endpoint, "--autostart=false"])
-            .args(args)
-            .output()
-            .unwrap();
+        let rex = rex(&endpoint, args);
         let error = String::from_utf8_lossy(&rex.stderr);
         assert!(rex.status.success(), "{error}");
         String::from_utf8(rex.stdout).unwrap()
@@ -531,4 +540,232 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // The probe shows the first session as a window would, and sees its terminal.
     let probed = rex_lite::backend::probe(endpoint, Duration::from_secs(12)).unwrap();
     assert!(probed.contains("1 sessions") && !probed.contains(" 0 decoded"));
+}
+
+/// The keys follow the server's keymap, the server's own actions can be done, and
+/// what other clients ask of this one reaches it and is answered.
+#[test]
+#[ignore = "requires REX_LITE_TEST_SERVER pointing to a disposable Rex server"]
+fn live_keymap_actions_and_requests() {
+    let endpoint = endpoint();
+    let call = |method: &str, payload: Value| -> Result<Value, String> {
+        let rex = rex(&endpoint, &["api", "call", method, &payload.to_string()]);
+        match rex.status.success() {
+            true => Ok(serde_json::from_slice(&rex.stdout).unwrap()),
+            false => Err(String::from_utf8_lossy(&rex.stderr).into_owned()),
+        }
+    };
+    let client = Client::spawn(vec![endpoint.clone()], Arc::new(|| {}), Herald::new().0);
+    let keymap = |label: &str, ready: &dyn Fn(&Value) -> bool| {
+        let view = wait(&client, label, |v| v.keymap.as_deref().is_some_and(ready));
+        view.keymap.unwrap()
+    };
+    let list = |value: &Value| value.as_array().cloned().unwrap_or_default();
+    let bound = |map: &Value, keys: &Value, action: &str| {
+        let is = |b: &Value| &b["keys"] == keys && b["action"] == action;
+        list(&map["bindings"]).iter().any(is)
+    };
+    // With nothing in the configuration, this client's own keys come back as
+    // they were sent: keys are matched by how they are spelled.
+    let first = keymap("the server's keymap", &|_| true);
+    let asked = rex_lite::ui::commands::request();
+    let own = list(&asked["defaults"][0]["bindings"]);
+    assert!(own.len() > 30 && list(&first["diagnostics"]).is_empty());
+    for binding in &own {
+        let action = binding["action"].as_str().unwrap();
+        assert!(bound(&first, &binding["keys"], action), "{binding}");
+    }
+    // Written another way, each comes back in this spelling: the server reads
+    // them all, but for the keys that copy and paste, which it keeps as they came.
+    let mut other = asked.clone();
+    for binding in other["defaults"][0]["bindings"].as_array_mut().unwrap() {
+        let key = binding["keys"][0].as_str().unwrap();
+        let (held, name) = key.split_at(key[..key.len() - 1].rfind('+').map_or(0, |at| at + 1));
+        let mut held: Vec<String> = held.split_terminator('+').map(str::to_uppercase).collect();
+        held.reverse();
+        held.push(name.to_uppercase());
+        binding["keys"] = json!([held.join("+")]);
+    }
+    let read = call("client.keymap", other).unwrap();
+    for binding in &own {
+        let action = binding["action"].as_str().unwrap();
+        let read = bound(&read, &binding["keys"], action);
+        let kept = ["[Copy]", "[Paste]"]
+            .map(Value::from)
+            .contains(&binding["keys"][0]);
+        assert!(read != kept, "{binding}");
+    }
+
+    // What another client asks of this one reaches it, and the answer reaches
+    // the other: that it was done, or that it was not and why.
+    send(&client, client.snapshot().unshown().unwrap());
+    let shown = wait(&client, "a terminal", |v| {
+        v.panes().any(|p| p.frame.is_some())
+    });
+    let session = shown.selected_session.clone().unwrap();
+    let pane = shown.current_window().unwrap().panes[0].id.clone();
+    let clients = call("client.list", json!({})).unwrap();
+    let me = list(&clients["clients"]).into_iter();
+    let me = me
+        .filter(|c| c["info"]["name"] == "Rex Lite")
+        .map(|c| c["client_id"].clone());
+    let me: Vec<Value> = me.collect();
+    assert_eq!(me.len(), 1);
+    let perform = |action: &str, error: Option<&'static str>| {
+        let request =
+            json!({"client_id": me[0], "action": action, "origin": "cli", "block_id": pane});
+        std::thread::scope(|scope| {
+            let asking = scope.spawn(|| call("client.perform", request));
+            let mut asked = wait(&client, "another client's asking", |v| !v.asked.is_empty()).asked;
+            let asked = asked.remove(0);
+            assert_eq!(
+                (asked.name.as_str(), asked.pane.as_ref()),
+                (action, Some(&pane))
+            );
+            let call = asked.call.unwrap();
+            send(&client, Action::Reply { call, error });
+            asking.join().unwrap()
+        })
+    };
+    assert_eq!(perform("pane.zoom", None).unwrap()["performed_by"], me[0]);
+    let refused = perform("pane.zoom", Some("refused")).unwrap_err();
+    assert!(refused.contains("refused"), "{refused}");
+    // A window that takes nothing, as one out of sight does not, refuses in time.
+    let untaken = json!({"client_id": me[0], "action": "pane.zoom"});
+    let untaken = call("client.perform", untaken).unwrap_err();
+    assert!(untaken.contains("refused"), "{untaken}");
+    // What is not among this client's actions, the server refuses for it.
+    let unknown = json!({"client_id": me[0], "action": "client.settings"});
+    let unknown = call("client.perform", unknown).unwrap_err();
+    assert!(unknown.contains("not_supported"), "{unknown}");
+    assert!(client.snapshot().asked.is_empty());
+
+    // The account's configuration changes the keys, and the server says when: a
+    // key rebound, a key freed, a sequence a function answers, an action and a mode.
+    let path = first["config"]["path"].as_str().unwrap();
+    // Only that of a server made for testing, as `tests/smoke.py` makes one.
+    let disposable = ["/work/rex-lite-live-", "/work/rex-lite-smoke-"];
+    assert!(
+        disposable.iter().any(|made| path.contains(made)),
+        "refusing to write {path}"
+    );
+    let config = r#"
+        rex.bind("ctrl+shift+d", "pane.zoom")
+        rex.unbind("ctrl+tab")
+        rex.bind("ctrl+x>ctrl+s", function(ctx, ev)
+          rex.session.set_label{ label = "after " .. ev.prefix[1] }
+          return true
+        end)
+        rex.action{
+          name = "focus_mode", title = "Focus Mode", repeats = true,
+          run = function(ctx, args) rex.client.queue("pane.zoom") end,
+        }
+        rex.mode("only", { exclusive = true })
+        rex.bind("only/z", "client.mode.exit")
+    "#;
+    std::fs::write(path, config).unwrap();
+    let reload = rex(&endpoint, &["config", "reload"]);
+    assert!(
+        reload.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reload.stderr)
+    );
+    let zoom = json!(["ctrl+shift+d"]);
+    let changed = keymap("a keymap read again", &|map| bound(map, &zoom, "pane.zoom"));
+    let bindings = list(&changed["bindings"]);
+    let at = |action: &str| {
+        bindings
+            .iter()
+            .position(|b| b["keys"] == zoom && b["action"] == action)
+    };
+    // The key's own binding is still there, to be tried after the new one.
+    assert!(at("pane.zoom") < at("pane.split.right") && at("pane.zoom").is_some());
+    assert!(!bindings.iter().any(|b| b["keys"] == json!(["ctrl+tab"])));
+    assert!(bound(
+        &changed,
+        &json!(["ctrl+shift+tab"]),
+        "client.tab.previous"
+    ));
+    assert!(bound(
+        &changed,
+        &json!(["ctrl+x", "ctrl+s"]),
+        "client.key.forward"
+    ));
+    let mode = &changed["modes"][0];
+    assert_eq!(
+        (&mode["name"], &mode["exclusive"]),
+        (&json!("only"), &json!(true))
+    );
+    let in_mode = |b: &Value| b["mode"] == "only" && b["keys"] == json!(["z"]);
+    assert!(bindings.iter().any(in_mode));
+    let action = list(&changed["actions"]).into_iter();
+    let action: Vec<_> = action.filter(|a| a["name"] == "focus_mode").collect();
+    assert_eq!(
+        (&action[0]["title"], &action[0]["repeats"]),
+        (&json!("Focus Mode"), &json!(true))
+    );
+    assert!(
+        list(&changed["diagnostics"]).is_empty(),
+        "{:#}",
+        changed["diagnostics"]
+    );
+
+    // The last key of a sequence goes to the function bound to it with the keys
+    // before it, and without them to the terminal.
+    let key = |modifiers| Action::Key {
+        pane: pane.clone(),
+        key: "s".into(),
+        code: "key_s".into(),
+        modifiers,
+        pressed: true,
+        repeat: false,
+    };
+    let (prefix, last) = (vec!["ctrl+x".into()], Box::new(key(model::CTRL)));
+    send(&client, Action::After { prefix, key: last });
+    wait(&client, "a sequence answered by a function", |v| {
+        v.session().is_some_and(|s| s.name == "after ctrl+x")
+    });
+    send(&client, key(0));
+    wait(&client, "a key typed", |v| screen(v, &pane).contains('s'));
+    enter(&client, &pane);
+
+    // An action of the configuration's is done by the server, and what it asks
+    // of this client in turn comes back to be done here.
+    let perform = |name: &str| Action::Perform {
+        name: name.into(),
+        args: Value::Null,
+        origin: "key",
+        pane: Some(pane.clone()),
+    };
+    send(&client, perform("focus_mode"));
+    let queued = wait(&client, "an action asked in turn", |v| !v.asked.is_empty()).asked;
+    assert_eq!(
+        (queued[0].name.as_str(), &queued[0].call),
+        ("pane.zoom", &None)
+    );
+    // So is a terminal's own: this one clears what the terminal shows.
+    let typed = |v: &View| screen(v, &pane).contains("rex-lite-typed");
+    let text = "echo rex-lite-typed".into();
+    send(
+        &client,
+        Action::Text {
+            pane: pane.clone(),
+            text,
+        },
+    );
+    wait(&client, "something typed", typed);
+    enter(&client, &pane);
+    wait(&client, "a second line of it", |v| {
+        screen(v, &pane).matches("rex-lite-typed").count() == 2
+    });
+    send(&client, perform("com.superlogical.terminal.clear"));
+    wait(&client, "a terminal cleared", |v| !typed(v));
+    // One there is not is said to have failed.
+    send(&client, perform("no_such_action"));
+    let failed = wait(&client, "an action that failed", |v| v.error.is_some());
+    assert!(failed.error.unwrap().contains("not_found"));
+    assert_eq!(session, client.snapshot().selected_session.unwrap());
+    // The configuration is left as it was found.
+    std::fs::write(path, "").unwrap();
+    assert!(rex(&endpoint, &["config", "reload"]).status.success());
 }

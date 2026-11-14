@@ -15,10 +15,10 @@ use crate::model::{self, Action, Edit, Session, Window};
 
 /// A session or, with `window`, one of its tabs.
 #[derive(Clone, PartialEq)]
-struct Target {
-    server: usize,
-    session: String,
-    window: Option<String>,
+pub(super) struct Target {
+    pub(super) server: usize,
+    pub(super) session: String,
+    pub(super) window: Option<String>,
 }
 
 impl Target {
@@ -32,7 +32,7 @@ impl Target {
     }
 
     /// The action that changes it.
-    fn edit(self, edit: Edit) -> Action {
+    pub(super) fn edit(self, edit: Edit) -> Action {
         Action::Edit {
             session: self.session,
             window: self.window,
@@ -55,7 +55,7 @@ pub struct Rename {
 }
 
 /// What was asked of a session or a tab through its menu.
-enum Choice {
+pub(super) enum Choice {
     Rename,
     /// Or the reverse, of a tab that is muted.
     Mute,
@@ -65,7 +65,7 @@ enum Choice {
 impl App {
     /// The name a session's or a tab's row goes by, which stays its own whatever
     /// rows come and go around it.
-    fn row(&self, target: &Target) -> egui::Id {
+    pub(super) fn row(&self, target: &Target) -> egui::Id {
         let host = &self.servers[target.server].host.label;
         egui::Id::unique(("row", host, &target.session, &target.window))
     }
@@ -267,7 +267,7 @@ impl App {
     }
 
     /// Do what a session's or a tab's menu was asked. `name` is the one it goes by.
-    fn choose(&mut self, target: Target, name: &str, choice: Choice) {
+    pub(super) fn choose(&mut self, target: Target, name: &str, choice: Choice) {
         match choice {
             Choice::Rename => {
                 self.rename = Some(Rename {

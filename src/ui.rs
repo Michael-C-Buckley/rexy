@@ -2,10 +2,13 @@
 //! along the top, and the terminal. Terminal content never becomes an egui widget tree.
 mod borders;
 mod close;
+pub mod commands;
 mod find;
 mod heard;
 mod input;
+mod keymap;
 mod keys;
+mod palette;
 mod pane;
 mod pointer;
 mod raise;
@@ -14,7 +17,6 @@ mod render;
 mod rows;
 mod sidebar;
 mod style;
-mod switcher;
 mod toolbar;
 
 use std::{
@@ -36,6 +38,7 @@ use close::Closing;
 use find::Find;
 use heard::Heard;
 use input::Keyboard;
+use keymap::Keys;
 use raise::Raise;
 pub use remembered::{LEAST_WINDOW, Remembered, state_home};
 use render::{PaneView, rgb};
@@ -97,6 +100,11 @@ pub struct App {
     focused: Option<String>,
     panes: HashMap<String, PaneView>,
     keyboard: Keyboard,
+    /// Where the keyboard stands with the keymap of the server on show.
+    keys: Keys,
+    /// What the buttons and menus have asked for since the window last drew, each
+    /// by its name in the table of commands and the pane it was asked of, if one.
+    todo: Vec<(&'static str, Option<String>)>,
     font_size: f32,
     toast: Toast,
     rename: Option<Rename>,
@@ -111,9 +119,10 @@ pub struct App {
     /// passes it on to the desktop.
     herald: Herald,
     desktop: Desktop,
-    /// What is typed in the list of sessions, and which of its rows Enter would take.
+    /// What is typed in the palette, and which of its rows Enter would take, once
+    /// it has shown any.
     filter: String,
-    cursor: usize,
+    cursor: Option<usize>,
     closing: Closing,
     /// The tab on show that its list was last scrolled to, and in which list. It
     /// is scrolled to once, and the list is the user's to scroll after that.
@@ -144,6 +153,8 @@ impl App {
             focused: None,
             panes: HashMap::new(),
             keyboard: Keyboard::default(),
+            keys: Keys::default(),
+            todo: Vec::new(),
             font_size: kept.font_size,
             toast: Toast::default(),
             rename: None,
@@ -154,7 +165,7 @@ impl App {
             herald,
             desktop,
             filter: String::new(),
-            cursor: 0,
+            cursor: None,
             closing: Closing::default(),
             followed: None,
         }
@@ -327,6 +338,11 @@ impl eframe::App for App {
         }
         self.hear(&ctx, &mut views);
         let made = views[self.current].made.take();
+        let asked = |(server, view): (usize, &mut View)| {
+            let asked = std::mem::take(&mut view.asked).into_iter();
+            asked.map(move |request| (server, request))
+        };
+        let asked = views.iter_mut().enumerate().flat_map(asked).collect();
         let copied = views[self.current].copied.take();
         let view = &views[self.current];
         let window = view.current_window();
@@ -391,6 +407,7 @@ impl eframe::App for App {
         if self.sidebar {
             self.edge(root_ui);
         }
+        self.answer(&ctx, &views, asked);
         self.toast.show(&ctx, shown.inner);
         // One more drawing when the wait to be asked again to close is over, and
         // none until then.
