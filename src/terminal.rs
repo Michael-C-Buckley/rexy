@@ -9,7 +9,7 @@ use ghostty_vt::{
     screen::CellWide,
     snapshot,
     style::{RgbColor, Style, StyleColor},
-    terminal::{Mode, ScrollViewport},
+    terminal::{Mode, Point, PointCoordinate, ScrollViewport},
 };
 use serde_json::Value;
 use std::{
@@ -28,6 +28,7 @@ const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_APC_BYTES: usize = 1024 * 1024;
 const SCROLLBACK_BYTES: usize = 32 * 1024 * 1024;
+const MAX_LINK_BYTES: usize = 2048;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 const RENDER_HOLD_LIMIT: Duration = Duration::from_secs(1);
 /// The snapshot envelope, and the header of each record after it, are ten bytes.
@@ -62,6 +63,9 @@ pub struct Cell {
 pub struct Row {
     pub cells: Vec<Cell>,
     pub wrapped: bool,
+    /// The links its programs have marked: columns from one up to another, and
+    /// where they lead.
+    pub links: Vec<(usize, usize, Arc<str>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -639,7 +643,9 @@ impl Renderer {
                 continue;
             }
             let wrapped = row.raw_row()?.is_wrapped()?;
+            let y = row.viewport_y()?;
             let mut cells = Vec::with_capacity(usize::from(cols));
+            let mut links: Vec<(usize, usize, Arc<str>)> = Vec::new();
             let mut iterator = self.cells.update(row)?;
             while let Some(cell) = iterator.next() {
                 let mut text = String::new();
@@ -660,7 +666,25 @@ impl Renderer {
                     StyleColor::Palette(index) => Some(rgb(colors.palette[usize::from(index.0)])),
                     StyleColor::Rgb(color) => Some(rgb(color)),
                 };
-                let wide = cell.raw_cell()?.wide()?;
+                let raw = cell.raw_cell()?;
+                let x = cells.len();
+                if raw.has_hyperlink()?
+                    && let (Ok(x16), Ok(y)) = (u16::try_from(x), u32::try_from(y))
+                {
+                    let at = Point::Viewport(PointCoordinate { x: x16, y });
+                    let mut target = [0; MAX_LINK_BYTES];
+                    // One too long to hold is no link.
+                    let length = terminal.grid_ref(at)?.hyperlink_uri(&mut target);
+                    let length = length.ok().filter(|length| *length > 0);
+                    let target = length.map(|length| &target[..length]);
+                    if let Some(Ok(target)) = target.map(str::from_utf8) {
+                        match links.last_mut() {
+                            Some((_, end, last)) if *end == x && **last == *target => *end += 1,
+                            _ => links.push((x, x + 1, target.into())),
+                        }
+                    }
+                }
+                let wide = raw.wide()?;
                 cells.push(Cell {
                     text,
                     spacer_tail: wide == CellWide::SpacerTail,
@@ -671,7 +695,11 @@ impl Renderer {
                     style,
                 });
             }
-            lines.push(Arc::new(Row { cells, wrapped }));
+            lines.push(Arc::new(Row {
+                cells,
+                wrapped,
+                links,
+            }));
         }
         let frame = Arc::new(Frame {
             cols,

@@ -11,6 +11,8 @@ pub struct View {
     pub error: Option<String>,
     /// A pane this client has just made by a split, reported likewise.
     pub made: Option<String>,
+    /// A pane on show, and text a program in it has just copied, reported likewise.
+    pub copied: Option<(String, String)>,
     /// The other servers this one knows of.
     pub hosts: Vec<Host>,
     /// Every session on the server, each with its tabs.

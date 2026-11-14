@@ -29,6 +29,10 @@ const FULL: [f32; 4] = [0., 0., 1., 1.];
 const TITLE: &str = "com.superlogical.terminal.title";
 const PROCESS: &str = "com.superlogical.terminal.process";
 const STATUS: &str = "com.superlogical.terminal.program_status";
+const COPIED: &str = "com.superlogical.terminal.clipboard_read";
+/// The most a program may copy, and the most of it to ask for at a time.
+const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
+const COPY_PART_BYTES: usize = 960 * 1024;
 static NULL: Value = Value::Null;
 
 /// Coalesces repaint requests until the UI takes its next snapshot.
@@ -130,6 +134,7 @@ impl Client {
         let mut view = state.view.clone();
         state.view.error = None;
         state.view.made = None;
+        state.view.copied = None;
         for pane in view.panes_mut() {
             if let Some(terminal) = state.terminals.get(&pane.id) {
                 pane.frame = terminal.latest();
@@ -314,6 +319,11 @@ async fn run_connected(
                 Event::Program { block, program } => connection.note(&block, |b| b.process = program),
                 Event::Status { block } => {
                     connection.stale.insert(block);
+                }
+                Event::Copied { block, text, id } => {
+                    if let Err(error) = connection.copied(block, text, id).await {
+                        shared.fail(format!("Nothing was copied: {error:#}"));
+                    }
                 }
             },
             _ = refresh.tick(), if dirty || !connection.stale.is_empty() => {
@@ -551,6 +561,39 @@ impl Connection<'_> {
             self.shared
                 .change(|s| fill(&mut s.view.sessions, &self.blocks));
         }
+    }
+
+    /// Hand the UI the text a program has copied, if its pane is on show. Text too
+    /// long for the server to have sent with the news is asked for, a part at a time.
+    async fn copied(&self, pane: String, text: Option<String>, id: u64) -> Result<()> {
+        let Some(block) = self.blocks.get(&pane) else {
+            return Ok(());
+        };
+        if !self.streams.contains_key(&pane) {
+            return Ok(());
+        }
+        let text = match text {
+            Some(text) => text,
+            None => {
+                let mut text = String::new();
+                loop {
+                    let args =
+                        json!({"id": id, "offset": text.len(), "max_bytes": COPY_PART_BYTES});
+                    let request =
+                        json!({"session_id": block.session, "block_id": pane, "args": args});
+                    let part = self.rpc.call(COPIED, request).await?;
+                    let more = part["data"].as_str().unwrap_or_default();
+                    text.push_str(more);
+                    ensure!(text.len() <= MAX_COPY_BYTES, "it is too long");
+                    if part["eof"] == true {
+                        break text;
+                    }
+                    ensure!(!more.is_empty(), "the server sent only part of it");
+                }
+            }
+        };
+        self.shared.change(|s| s.view.copied = Some((pane, text)));
+        Ok(())
     }
 
     /// Stream exactly the panes of the visible tab.

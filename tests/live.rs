@@ -198,6 +198,19 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     program("an agent, by its report", "claude-code");
     run("printf '\\033]7501;state=clear\\007'");
     program("the shell once more", "shell");
+    // What a program copies reaches the client, short or long.
+    let copy = |text: &str| format!("printf '\\033]52;c;%s\\007' \"$({text} | base64 -w0)\"");
+    run(&copy("printf copied-text"));
+    wait(&client, "a program's copy", |v| {
+        v.copied
+            .as_ref()
+            .is_some_and(|c| c.0 == pane && c.1 == "copied-text")
+    });
+    run(&copy("head -c 1500000 /dev/zero | tr '\\0' x"));
+    wait(&client, "a long copy", |v| {
+        let long = |text: &str| text.len() == 1_500_000 && text.bytes().all(|b| b == b'x');
+        v.copied.as_ref().is_some_and(|c| c.0 == pane && long(&c.1))
+    });
     // A pane closed leaves the tab to the others.
     send(&client, Action::ClosePane { pane: other });
     wait(&client, "a pane closed", |v| {

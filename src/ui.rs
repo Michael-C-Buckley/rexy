@@ -18,6 +18,7 @@ use eframe::egui::{
 
 use crate::{
     backend::Client,
+    link,
     model::{Action, Activity, Direction, Edit, Host, Pane, Session, View, Window},
     terminal::Frame,
 };
@@ -893,8 +894,33 @@ impl App {
             };
             ui.memory_mut(|m| m.set_focus_lock_filter(id, keys));
         }
+        // With Ctrl held, a link under the pointer is there to be followed, even in
+        // a program that takes the mouse for itself.
+        let link = frame.as_ref().and_then(|frame| {
+            let pointer = response
+                .hover_pos()
+                .filter(|_| ui.input(|i| i.modifiers.ctrl))?;
+            let (x, y) = grid.cell_at(pointer, frame);
+            link::at(frame, x.into(), y.into())
+        });
         if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+            let cursor = match link {
+                Some(_) => egui::CursorIcon::PointingHand,
+                None => egui::CursorIcon::Text,
+            };
+            ui.ctx().set_cursor_icon(cursor);
+        }
+        // Where it leads is said in full: its text may claim anything.
+        let response = match &link {
+            Some(link) => response.on_hover_text_at_pointer(&link.target),
+            None => response,
+        };
+        if response.clicked()
+            && let Some(link) = &link
+            && let Err(error) = link::open(&link.target)
+        {
+            self.toast
+                .say(format!("The link could not be opened: {error}"));
         }
         let size = grid.size(ui.ctx().pixels_per_point());
         // Only owned panes are resized, so report the size again when ownership returns.
@@ -926,7 +952,7 @@ impl App {
                 grid,
                 frame,
                 pane: &pane.id,
-                tracking,
+                tracking: tracking && link.is_none(),
             };
             pointer.forward(state, &mut actions);
             if !tracking {
@@ -953,6 +979,12 @@ impl App {
                 }
             }
             state.paint(ui.painter(), grid, frame, active);
+            for &(row, start, end) in link.iter().flat_map(|link| &link.spans) {
+                let span = grid.span(row, start, end).intersect(grid.rect);
+                let line = Stroke::new(1.0, rgb(frame.fg));
+                ui.painter()
+                    .hline(span.x_range(), span.bottom() - 1.0, line);
+            }
             if active && response.has_focus() {
                 compose(ui, grid, frame, &self.keyboard.preedit);
             }
@@ -1051,6 +1083,7 @@ impl eframe::App for App {
             self.toast.say(error);
         }
         let made = views[self.current].made.take();
+        let copied = views[self.current].copied.take();
         let view = &views[self.current];
         let window = view.current_window();
         let panes = window.map_or(&[][..], |w| &w.panes);
@@ -1066,6 +1099,15 @@ impl eframe::App for App {
         }
         // Whether this frame's keys were pressed for something other than a terminal.
         let busy = self.busy(&ctx);
+        // A program copies to the clipboard only from the pane the user is at, in
+        // the window they are at.
+        if let Some((pane, text)) = copied
+            && Some(&pane) == self.focused.as_ref()
+            && !busy
+            && ctx.input(|i| i.focused)
+        {
+            ctx.copy_text(text);
+        }
         self.shortcuts(&ctx, view);
         if self.sidebar {
             self.sidebar(root_ui, &views);

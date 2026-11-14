@@ -259,6 +259,13 @@ pub enum Event {
     },
     /// What the programs in a terminal say they are doing.
     Status { block: String },
+    /// A program in a terminal has copied text: all of it, or if it is long the
+    /// `id` to ask for it by.
+    Copied {
+        block: String,
+        text: Option<String>,
+        id: u64,
+    },
 }
 
 /// The icon of a process, if any of its names has one. The most telling come first:
@@ -301,6 +308,11 @@ fn event(message: &Value) -> Option<Event> {
         ("block_event", Some("program_status_changed" | "program_status_removed")) => {
             Some(Event::Status { block: id()? })
         }
+        ("block_event", Some("clipboard_written")) => Some(Event::Copied {
+            block: id()?,
+            text: block["payload"]["text"].as_str().map(str::to_owned),
+            id: block["payload"]["id"].as_u64().unwrap_or_default(),
+        }),
         _ => None,
     }
 }

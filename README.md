@@ -54,6 +54,8 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 - **Ctrl Shift Enter** zooms the focused pane, so that it fills the tab, and pressed again restores the others. **Ctrl Shift W** closes it at once, with the program in it; a tab closes with its last pane. Pointing at a pane of a split tab shows both as buttons in its header, and the pane menu has them too.
 - **Ctrl Tab** and **Ctrl Shift Tab** show the next and the previous tab of the session, round and round. So do **Ctrl PageDown** and **Ctrl PageUp**.
 - Drag to select; double-click a word. **Ctrl Shift C** copies, **Ctrl Shift V** pastes. **Shift** overrides a program's mouse capture for selection and scrollback.
+- Hold **Ctrl** over a link to underline it and be told where it leads, and click to open it with `xdg-open`. A link is an `http`, `https`, `ftp` or `mailto` address, written out in the text or marked by a program (OSC 8). A `file` link is never opened: the terminal may be showing another machine.
+- A program can copy to the clipboard (OSC 52) from the pane you are at, while the window is the one you are at. None can read the clipboard.
 - **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab. **Ctrl Shift B**: sidebar, or tabs along the top.
 - **Ctrl + / - / 0**: terminal font size. **Esc** clears selection.
 - The pane menu also offers copy/paste. **Ctrl C** still interrupts terminal programs.
@@ -62,7 +64,7 @@ Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scri
 
 ## What is here
 
-Several servers at once, over Unix sockets and SSH. Sessions and tabs can be created, renamed, reordered and closed, and panes split, zoomed and closed. Server-defined tabs and splits, live terminal titles, foreground programs and program status, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing, and a host address without a scheme, such as a Tailscale name, is not understood yet.
+Several servers at once, over Unix sockets and SSH. Sessions and tabs can be created, renamed, reordered and closed, and panes split, zoomed and closed. Server-defined tabs and splits, live terminal titles, foreground programs and program status, links, copies made by programs, terminal snapshot restoration, live output, keyboard and mouse input, IME events, copy/paste, local scrollback, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing, and a host address without a scheme, such as a Tailscale name, is not understood yet.
 
 This first version does not include terminal search, adding or editing hosts from the window, installing Rex on another machine, image rendering, drag-to-resize splits, full Rex keymap/action compatibility, or persistent appearance preferences. Keyboard layouts and IMEs need broader hands-on testing. It targets Linux; other platforms are not claimed.
 

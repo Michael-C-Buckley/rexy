@@ -38,6 +38,15 @@ fn keeps_up_with_structure_titles_and_programs_and_nothing_else() {
     let status = Some(Event::Status { block: "b".into() });
     assert_eq!(event(&block("program_status_changed", json!({}))), status);
     assert_eq!(event(&block("program_status_removed", json!({}))), status);
+    // Text a program copies comes with the news of it, unless it is long.
+    let copied = |text: Option<&str>, id| {
+        let (block, text) = ("b".into(), text.map(str::to_owned));
+        Some(Event::Copied { block, text, id })
+    };
+    let short = block("clipboard_written", json!({"text": "hello", "id": 3}));
+    assert_eq!(event(&short), copied(Some("hello"), 3));
+    let long = block("clipboard_written", json!({"id": 4, "bytes": 200_000}));
+    assert_eq!(event(&long), copied(None, 4));
     assert_eq!(event(&block("size_changed", json!({}))), None);
     assert_eq!(event(&json!({"payload": {"type": "client_joined"}})), None);
 }

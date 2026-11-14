@@ -191,3 +191,27 @@ fn worker_wakes_for_output_and_sleeps_when_idle() {
         Err(flume::RecvTimeoutError::Disconnected)
     ));
 }
+
+#[test]
+fn links_are_those_marked_and_those_written_out() {
+    let mut terminal = terminal(20, 4);
+    terminal.vt_write(b"a \x1b]8;;https://rex.example/docs\x1b\\docs\x1b]8;;\x1b\\ b\r\n");
+    // An address that wraps, in brackets, at the end of a sentence.
+    terminal.vt_write(b"see (https://example.com/a_(b)).\r\n");
+    terminal.vt_write(b"\x1b]8;;file:///etc/passwd\x1b\\x\x1b]8;;\x1b\\ ftp.example.com");
+    let frame = render(&terminal);
+    let link = |x, y| crate::link::at(&frame, x, y).map(|link| (link.target, link.spans));
+    // A marked link leads where it says, not where its text reads.
+    let marked = Some(("https://rex.example/docs".to_owned(), vec![(0, 2, 6)]));
+    assert_eq!(link(2, 0), marked);
+    assert_eq!(link(5, 0), marked);
+    assert_eq!((link(1, 0), link(6, 0)), (None, None));
+    let written = "https://example.com/a_(b)".to_owned();
+    let written = Some((written, vec![(1, 5, 20), (2, 0, 10)]));
+    assert_eq!(link(5, 1), written);
+    assert_eq!(link(9, 2), written);
+    // Neither the bracket before it nor what closes the sentence after it.
+    assert_eq!((link(4, 1), link(10, 2), link(11, 2)), (None, None, None));
+    // A file is never followed, and a name without its kind is no address.
+    assert_eq!((link(0, 3), link(5, 3)), (None, None));
+}
