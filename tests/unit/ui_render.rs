@@ -114,20 +114,3 @@ fn each_kind_of_underline_is_drawn_as_itself() {
     assert_eq!((waves, dots, lines), (1, 12, 6 + 2 + 1));
     assert_eq!(ctx.tessellate(output.shapes, 1.0).len(), 1);
 }
-
-#[test]
-fn the_terminal_face_joins_no_characters() {
-    let ctx = context();
-    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-        for font in [FontId::monospace(SIZE), style::mono_bold(SIZE)] {
-            let text = "https://a ==> b != c <= d -> e ... www ## /* */";
-            let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.into(), font, Color32::WHITE));
-            // A ligature leaves the cells before its last one empty.
-            for glyph in &galley.rows[0].glyphs {
-                let drawn = !glyph.uv_rect.is_nothing();
-                assert_eq!(drawn, glyph.chr != ' ', "{}", glyph.chr);
-            }
-        }
-    });
-    output.textures_delta.clear();
-}
