@@ -144,17 +144,6 @@ fn an_endpoint_stands_for_the_addresses_to_try_in_order() {
     ] {
         assert!(targets(bad).is_err(), "{bad:?} is no endpoint");
     }
-    // Each address is written as an endpoint that stands for it alone, for a
-    // terminal's stream to go straight to.
-    let all = [
-        "unix:///run/a%20b.sock",
-        "unix:here.sock",
-        "studio",
-        "[::1]:7297",
-    ];
-    for target in all.into_iter().flat_map(of) {
-        assert_eq!(of(&target.to_string()), [target]);
-    }
 }
 
 #[test]
@@ -200,13 +189,8 @@ impl Link {
         let (sender, events) = mpsc::unbounded_channel();
         let closing = Arc::new(Notify::new());
         // Time passes only when a test says so.
-        let (clock, ticks) = mpsc::unbounded_channel();
-        let ticks = Box::pin(stream::unfold(ticks, |mut ticks| async {
-            match ticks.recv().await {
-                Some(()) => Some(((), ticks)),
-                None => std::future::pending().await,
-            }
-        }));
+        let (clock, mut ticks) = mpsc::unbounded_channel();
+        let ticks = stream::poll_fn(move |cx| ticks.poll_recv(cx));
         let closed = closing.clone();
         let run = control_loop(socket, receiver, sender, max_message, closed, ticks);
         Self {
@@ -447,18 +431,13 @@ async fn a_client_that_leaves_says_goodbye() {
     assert!(!link.task.is_finished());
     let _ = link.server.flush().await;
     assert!(link.task.await.unwrap().is_ok());
-    // So does one whose every way of asking has been dropped, and a server that
-    // only hangs up has heard as well.
-    let Link {
-        rpc,
-        mut server,
-        task,
-        ..
-    } = Link::open(65536).await;
-    drop(rpc);
-    assert!(matches!(server.next().await, Some(Ok(Message::Close(_)))));
-    drop(server);
-    assert!(task.await.unwrap().is_ok());
+    // A server that only hangs up has heard as well.
+    let mut link = Link::open(65536).await;
+    link.closing.notify_one();
+    let said = link.server.next().await;
+    assert!(matches!(said, Some(Ok(Message::Close(_)))));
+    drop(link.server);
+    assert!(link.task.await.unwrap().is_ok());
 }
 
 /// A server of one connection at a socket of its own. It hears the hello, gives
@@ -503,9 +482,8 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     let mut control = Control::connect(&endpoint, Some("last")).await.unwrap();
     assert_eq!(control.client_id, "client:1");
     assert_eq!(control.reconnect_token.as_deref(), Some("next"));
-    // The address that answered is one a terminal's stream can be sent straight to.
-    let found = targets(&control.endpoint).unwrap();
-    assert_eq!(found, [Target::Unix(path.clone())]);
+    // The address that answered is where a terminal's stream is sent.
+    assert_eq!(control.target, Target::Unix(path.clone()));
     // Leaving, it says so, and has been heard by the time it has left.
     control.close().await;
     assert!(control.task.is_finished());

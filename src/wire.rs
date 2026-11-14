@@ -36,7 +36,7 @@ const PING_EVERY: Duration = Duration::from_secs(10);
 /// itself gives a key's Lua handler 5 s and an action from its configuration 30 s.
 const REQUEST_TICKS: u64 = 5;
 /// How long a goodbye may take to leave. Quitting never waits longer on a dead link.
-const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
+pub const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
@@ -177,17 +177,6 @@ pub enum Target {
     Net(Url),
 }
 
-impl fmt::Display for Target {
-    /// Written as an endpoint that stands for this target and no other.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unix(path) if path.is_absolute() => write!(f, "{}", path.display()),
-            Self::Unix(path) => write!(f, "unix:{}", path.display()),
-            Self::Net(url) => write!(f, "{url}"),
-        }
-    }
-}
-
 /// The addresses an endpoint stands for, in the order to try them. A socket or a
 /// URL is one address. A bare host name is tried as Rex tries it: HTTPS on port 443,
 /// HTTPS on 7297, then HTTP on 7297. A bare host and port is tried with TLS, then without.
@@ -248,7 +237,8 @@ fn host_port(url: &Url) -> Result<(&str, u16)> {
     Ok((host.trim_start_matches('[').trim_end_matches(']'), port))
 }
 
-async fn open(target: &Target, path: &str, protocol: &str) -> Result<Socket> {
+/// Open a WebSocket to one address.
+pub async fn socket(target: &Target, path: &str, protocol: &str) -> Result<Socket> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (io, mut url): (Box<dyn Io>, Url) = match target {
@@ -295,22 +285,17 @@ async fn reach(endpoint: &str, path: &str, protocol: &str) -> Result<(Socket, Ta
     let several = targets.len() > 1;
     let mut failure = anyhow!("This endpoint has no address");
     for target in targets {
-        match open(&target, path, protocol).await {
+        match socket(&target, path, protocol).await {
             Ok(socket) => return Ok((socket, target)),
             Err(error) => failure = error,
         }
     }
     // The last address's failure alone would not say that others were tried.
-    Err(match several {
-        true => failure.context(format!("No Rex server answered at {endpoint}")),
-        false => failure,
+    Err(if several {
+        failure.context(format!("No Rex server answered at {endpoint}"))
+    } else {
+        failure
     })
-}
-
-/// Open a WebSocket to an endpoint. A terminal's stream is opened many times, so give
-/// this the one address its control connection found, `Control::endpoint`.
-pub async fn socket(endpoint: &str, path: &str, protocol: &str) -> Result<Socket> {
-    Ok(reach(endpoint, path, protocol).await?.0)
 }
 
 /// The next message of any kind. A close and a lost link are errors that say which,
@@ -417,18 +402,15 @@ pub struct Control {
     pub rpc: Rpc,
     pub client_id: String,
     pub reconnect_token: Option<String>,
-    /// The one address that answered, of those the endpoint stood for, as an endpoint.
-    /// Terminal streams go straight to it.
-    pub endpoint: String,
+    /// The one address that answered, of those the endpoint stood for. Terminal
+    /// streams go straight to it.
+    pub target: Target,
     /// Unbounded, so that reading replies never waits on whoever reads these. The
     /// server ends a connection that falls far behind.
     pub events: mpsc::UnboundedReceiver<Event>,
     /// Ends with the connection, and with an `Ended` in its error if it is known why.
     pub task: tokio::task::JoinHandle<Result<()>>,
     closing: Arc<Notify>,
-    /// Keeps `events` open after the connection ends, so that its end is learned
-    /// from `task`, which knows the reason, and never from here, which does not.
-    _events: mpsc::UnboundedSender<Event>,
 }
 
 impl Drop for Control {
@@ -491,14 +473,11 @@ impl Control {
         let mut clock =
             tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
         clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let ticks = Box::pin(stream::unfold(clock, |mut clock| async {
-            clock.tick().await;
-            Some(((), clock))
-        }));
+        let ticks = stream::poll_fn(move |cx| clock.poll_tick(cx).map(|_| Some(())));
         let task = tokio::spawn(control_loop(
             socket,
             receiver,
-            sender.clone(),
+            sender,
             max_message,
             closing.clone(),
             ticks,
@@ -507,16 +486,16 @@ impl Control {
             rpc: Rpc { requests },
             client_id,
             reconnect_token,
-            endpoint: target.to_string(),
+            target,
             events,
             task,
             closing,
-            _events: sender,
         })
     }
 
     /// Say goodbye, so that the server lets this client go at once and does not keep
-    /// its place for a minute. Waits a moment for the word to leave, and never long.
+    /// its place for a minute. Waits a moment for the word to leave, and never long:
+    /// the link may be dead.
     pub async fn close(&mut self) {
         self.closing.notify_one();
         // A task that has ended may have been asked for its result already.
@@ -654,8 +633,7 @@ async fn goodbye(socket: &mut Socket) -> Result<()> {
         code: CloseCode::Normal,
         reason: "".into(),
     };
-    let leave = async {
-        socket.close(Some(frame)).await?;
+    if socket.close(Some(frame)).await.is_ok() {
         // Written is not yet sent: a tunnel that ends with this client may still be
         // holding it. The server's own close, or the link's end, says that it came.
         while let Some(Ok(message)) = socket.next().await {
@@ -663,10 +641,7 @@ async fn goodbye(socket: &mut Socket) -> Result<()> {
                 break;
             }
         }
-        Ok::<_, tungstenite::Error>(())
-    };
-    // The link may be dead, and the one leaving is not to be kept.
-    let _ = tokio::time::timeout(CLOSE_TIMEOUT, leave).await;
+    }
     Ok(())
 }
 
@@ -691,8 +666,10 @@ async fn control_loop(
             biased;
             _ = closing.notified() => return goodbye(&mut socket).await,
             request = outgoing.recv(), if pending.len() < MAX_IN_FLIGHT => {
+                // `Control` holds a way to ask for as long as it lasts, and stops
+                // this task as it goes.
                 let Some(Request { method, payload, reply }) = request else {
-                    return goodbye(&mut socket).await;
+                    return Ok(());
                 };
                 serial += 1;
                 let id = serial.to_string();
@@ -725,7 +702,7 @@ async fn control_loop(
                     let _ = events.send(event);
                 }
             }
-            _ = ticks.next() => {
+            Some(()) = ticks.next() => {
                 tick += 1;
                 // A request the server does not answer fails alone, and the link is
                 // judged by its pings. An answer that comes after all is to a number

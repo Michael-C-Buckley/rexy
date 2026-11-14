@@ -163,7 +163,13 @@ fn client() -> (Client, mpsc::Receiver<Action>) {
         }),
         herald: Herald::new().0,
     };
-    (Client { actions, shared }, queue)
+    let done = flume::bounded(0).1;
+    let client = Client {
+        actions,
+        shared,
+        done,
+    };
+    (client, queue)
 }
 
 #[test]

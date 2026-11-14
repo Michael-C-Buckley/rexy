@@ -502,14 +502,18 @@ impl App {
                 self.send(Action::Zoom { pane: pane.clone() });
             }
             // A key held down asks once: its repeats would answer for the user.
-            let held = |event: &egui::Event| {
-                let (key, repeat) = match event {
-                    egui::Event::Key { key, repeat, .. } => (*key, *repeat),
-                    _ => return false,
-                };
-                key == Key::W && repeat
+            // They are looked for first, since `pressed` takes the key's events away.
+            let repeat = |event: &egui::Event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: Key::W,
+                        repeat: true,
+                        ..
+                    }
+                )
             };
-            let held = ctx.input(|i| i.events.iter().any(held));
+            let held = ctx.input(|i| i.events.iter().any(repeat));
             if pressed(chord, Key::W) && !held {
                 let spared = view.pane(&pane).is_some_and(|pane| pane.idle);
                 let action = Action::ClosePane { pane: pane.clone() };
@@ -934,11 +938,7 @@ impl App {
         if self.renaming(ui, &target, id, size).is_some() {
             return;
         }
-        let spared = session
-            .windows
-            .iter()
-            .flat_map(Window::every)
-            .all(|pane| pane.idle);
+        let spared = session.windows.iter().all(Window::idle);
         let ask = self.closing.ask(id, spared);
         let row = Item {
             id: Some(id),
@@ -950,15 +950,14 @@ impl App {
             ..Default::default()
         };
         let (response, button) = item(ui, size, row);
-        let rename = self.picked(&response, &target, shown);
-        self.wait(ui, &response, ask);
+        self.picked(&response, &target, shown);
+        self.wait(ui, response.rect, &response, ask);
         if response.drag_started_by(PointerButton::Primary) {
             DragAndDrop::set_payload(ui.ctx(), target.clone());
         }
         let labels = ["Move Up", "Move Down", "Close Session"];
         let at = |index: usize| sessions.get(index).map(|s| s.id.clone());
-        let choice = menu(&response, labels, None, index, at, ask);
-        match (button, choice.or(rename.then_some(Choice::Rename))) {
+        match (button, menu(&response, labels, None, index, at, ask)) {
             (Some(0), _) => self.open(server, Action::CreateWindow(session.id.clone())),
             // This ends every program in the session.
             (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
@@ -970,20 +969,19 @@ impl App {
     }
 
     /// Take a click on a session's or a tab's row, if there was one, and show the
-    /// row unless it is on show. True if the click was the second of two, which
-    /// asks for a new name: nothing tells a first click from a lone one, so the
-    /// first has shown the row by then.
-    fn picked(&mut self, response: &egui::Response, target: &Target, shown: bool) -> bool {
+    /// row unless it is on show. The second click of two asks for a new name, and
+    /// nothing tells a first click from a lone one, so the first has shown the
+    /// row by then.
+    fn picked(&mut self, response: &egui::Response, target: &Target, shown: bool) {
         if response.clicked() && !shown {
             self.open(target.server, target.select());
         }
-        response.double_clicked()
     }
 
-    /// Go on waiting to be asked again to close a row, while the pointer is on
-    /// it or in its menu.
-    fn wait(&mut self, ui: &egui::Ui, row: &egui::Response, ask: Ask) {
-        if ask == Ask::Again && (ui.rect_contains_pointer(row.rect) || row.context_menu_opened()) {
+    /// Go on waiting to be asked again to close something, while the pointer is
+    /// on it, which is `within`, or in the menu `of` it.
+    fn wait(&mut self, ui: &egui::Ui, within: Rect, of: &egui::Response, ask: Ask) {
+        if ask == Ask::Again && (ui.rect_contains_pointer(within) || of.context_menu_opened()) {
             self.closing.keep();
         }
     }
@@ -1012,7 +1010,7 @@ impl App {
         let muted = self.muted.has(&window.id);
         let (said, message) = window.says();
         let selected = shown == Some(&window.id);
-        let spared = window.every().all(|pane| pane.idle);
+        let spared = window.idle();
         let ask = self.closing.ask(id, spared);
         // What it says in full, for a row with no room for it, and with the line
         // its program adds.
@@ -1043,8 +1041,8 @@ impl App {
             self.followed = Some(list);
             response.scroll_to_me(None);
         }
-        let rename = self.picked(&response, &target, selected);
-        self.wait(ui, &response, ask);
+        self.picked(&response, &target, selected);
+        self.wait(ui, response.rect, &response, ask);
         if response.drag_started_by(PointerButton::Primary) {
             DragAndDrop::set_payload(ui.ctx(), target.clone());
         }
@@ -1054,8 +1052,7 @@ impl App {
             ["Move Up", "Move Down", "Close Tab"]
         };
         let at = |index: usize| session.windows.get(index).map(|w| w.id.clone());
-        let choice = menu(&response, labels, Some(muted), index, at, ask);
-        match (button, choice.or(rename.then_some(Choice::Rename))) {
+        match (button, menu(&response, labels, Some(muted), index, at, ask)) {
             (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
                 self.close(id, spared, true, server, target.edit(Edit::Close));
             }
@@ -1233,12 +1230,7 @@ impl App {
         let mut actions = Vec::new();
         let (what, spared) = (doomed(&pane.id), pane.idle);
         let ask = self.closing.ask(what, spared);
-        // Asked to close, it waits to be asked again while the pointer is on it,
-        // or in a menu.
         let over = ui.rect_contains_pointer(rect);
-        if ask == Ask::Again && (over || egui::Popup::is_any_open(ui.ctx())) {
-            self.closing.keep();
-        }
         // It was asked to close just now, with the pointer.
         let mut close = false;
         // Its header was clicked.
@@ -1484,16 +1476,10 @@ impl App {
                         ui.close();
                     }
                 }
-                ui.separator();
-                if ui.add(closer("Close Pane", ask)).clicked() {
-                    close = true;
-                    // Waiting to be chosen again, it stays under the pointer.
-                    if ask != Ask::First {
-                        ui.close();
-                    }
-                }
+                close |= closer(ui, "Close Pane", ask);
             });
         }
+        self.wait(ui, rect, &response, ask);
         // Asked to close, it asks back from where its close button is, or would
         // be: it may have been asked with a key, and may have no header.
         if ask == Ask::Again {
@@ -1716,10 +1702,11 @@ fn dot(activity: Activity) -> Option<(Icon, Color32)> {
     Some((Icon::Dot, color))
 }
 
-/// What a session's or a tab's menu was asked, if anything. A tab says whether it
-/// is `muted`. The row is the one at `index` among its like, whose IDs `id` gives;
-/// `labels` name moving it back, moving it on, and closing it, and `ask` says
-/// what choosing to close it will do.
+/// What a session's or a tab's menu was asked, if anything. A double click asks for
+/// a new name, as the menu's first entry does. A tab says whether it is `muted`.
+/// The row is the one at `index` among its like, whose IDs `id` gives; `labels`
+/// name moving it back, moving it on, and closing it, and `ask` says what
+/// choosing to close it will do.
 fn menu(
     response: &egui::Response,
     labels: [&str; 3],
@@ -1728,7 +1715,7 @@ fn menu(
     id: impl Fn(usize) -> Option<String>,
     ask: Ask,
 ) -> Option<Choice> {
-    let mut picked = None;
+    let mut picked = response.double_clicked().then_some(Choice::Rename);
     asking(response).show(|ui| {
         let mute = |muted| if muted { "Unmute Tab" } else { "Mute Tab" };
         let entries = [
@@ -1745,24 +1732,15 @@ fn menu(
                 // Before the one after the next, or last of all.
                 Choice::Edit(Edit::MoveBefore(id(index + 2))),
             )),
-            Some((labels[2], true, Choice::Edit(Edit::Close))),
         ];
         for (label, enabled, choice) in entries.into_iter().flatten() {
-            let close = matches!(choice, Choice::Edit(Edit::Close));
-            if close {
-                ui.separator();
-            }
-            let entry = match close {
-                true => closer(label, ask),
-                false => egui::Button::new(label),
-            };
-            if ui.add_enabled(enabled, entry).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
                 picked = Some(choice);
-                // The entry that waits to be chosen again stays under the pointer.
-                if !(close && ask == Ask::First) {
-                    ui.close();
-                }
+                ui.close();
             }
+        }
+        if closer(ui, labels[2], ask) {
+            picked = Some(Choice::Edit(Edit::Close));
         }
     });
     picked
@@ -1775,14 +1753,21 @@ fn asking(response: &egui::Response) -> egui::Popup<'_> {
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
 }
 
-/// The entry of a menu that closes something, which shows when it has been
-/// chosen once and waits to be chosen again.
-fn closer(label: &str, ask: Ask) -> egui::Button<'_> {
+/// The entry of a menu that closes something, set apart at its foot. True when
+/// chosen. Chosen once, it stays under the pointer and shows that it waits to be
+/// chosen again.
+fn closer(ui: &mut egui::Ui, label: &str, ask: Ask) -> bool {
+    ui.separator();
     let entry = egui::Button::new(label);
-    match ask {
+    let entry = match ask {
         Ask::Again => entry.fill(DANGER),
         _ => entry,
+    };
+    let chosen = ui.add(entry).clicked();
+    if chosen && ask != Ask::First {
+        ui.close();
     }
+    chosen
 }
 
 /// A row of controls, such as the toolbar or a server's heading.

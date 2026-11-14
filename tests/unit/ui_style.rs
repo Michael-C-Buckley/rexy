@@ -76,15 +76,3 @@ fn a_close_button_asks_again_from_under_the_pointer() {
     assert_eq!(draw(&ctx, &["one"], Some("Close?"), press)[0].1, None);
     assert_eq!(draw(&ctx, &["one"], Some("Close?"), release)[0].1, Some(0));
 }
-
-#[test]
-fn a_name_too_long_for_its_room_ends_in_an_ellipsis() {
-    let ctx = window();
-    let output = ctx.run_ui(Default::default(), |ui| {
-        let font = FontId::proportional(SMALL);
-        let long = fitted(ui, "a name that goes on and on", font.clone(), TEXT, 60.0);
-        assert!(long.elided && long.size().x <= 60.0);
-        assert!(!fitted(ui, "short", font, TEXT, 60.0).elided);
-    });
-    output.drop_without_applying_deltas();
-}

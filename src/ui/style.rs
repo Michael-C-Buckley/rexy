@@ -337,10 +337,6 @@ pub fn confirm(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: &str) -> egui::Res
     let word = ui
         .painter()
         .layout_no_wrap(word.to_owned(), bold(SMALL), TEXT);
-    pill(ui, edge, id, word)
-}
-
-fn pill(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: Arc<egui::Galley>) -> egui::Response {
     let size = egui::vec2(word.size().x + 2.0 * PILL, SMALL_BUTTON);
     let rect = Rect::from_min_size(edge - egui::vec2(size.x, size.y / 2.0), size);
     let response = ui.interact(rect, id, Sense::click());
@@ -416,17 +412,17 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let marks = word
         .as_ref()
         .map_or(14.0 * marks, |word| word.size().x + 8.0);
+    // The button that asks is where the last one was, and goes by its name: the
+    // pointer is on it already.
     let last = item.buttons.len().checked_sub(1);
-    let confirm = item.confirm.zip(last).map(|(word, last)| {
-        let word = ui
-            .painter()
-            .layout_no_wrap(word.to_owned(), bold(SMALL), TEXT);
-        (word, last)
+    let asks = item.confirm.zip(last).map(|(word, last)| {
+        let edge = egui::pos2(rect.right() - 4.0, rect.center().y);
+        confirm(ui, edge, response.id.with(("button", last)), word)
     });
     let room = (12.0 + marks).max(4.0 + BUTTON * item.buttons.len() as f32);
-    let room = confirm.as_ref().map_or(room, |(word, _)| {
-        room.max(word.size().x + 2.0 * PILL + 10.0)
-    });
+    let room = asks
+        .as_ref()
+        .map_or(room, |asks| room.max(asks.rect.width() + 10.0));
     let mut text = rect.shrink2(egui::vec2(12.0, 0.0));
     text.max.x = rect.right() - room;
     let lead = if item.icon.is_some() { ICON } else { 0.0 };
@@ -452,12 +448,8 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     ui.painter()
         .galley(place.min + egui::vec2(lead, 0.0), label, color);
     let mut pressed = None;
-    if let Some((word, last)) = confirm {
-        // Where the button was, and by its name: the pointer is on it already.
-        let edge = egui::pos2(rect.right() - 4.0, rect.center().y);
-        if pill(ui, edge, response.id.with(("button", last)), word).clicked() {
-            pressed = Some(last);
-        }
+    if let Some(asks) = asks {
+        pressed = last.filter(|_| asks.clicked());
     } else if over && !dragging && !item.buttons.is_empty() {
         let mut right = rect.right() - 4.0;
         for (index, (icon, tip)) in item.buttons.iter().enumerate().rev() {

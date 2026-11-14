@@ -29,7 +29,7 @@ use std::{
 
 const CHUNK_BYTES: usize = 64 * 1024;
 const QUEUE_CHUNKS: usize = 16;
-const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
+const MAX_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_APC_BYTES: usize = 1024 * 1024;
 const SCROLLBACK_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LINK_BYTES: usize = 2048;
@@ -267,9 +267,6 @@ struct Input {
     receiver: flume::Receiver<Command>,
     bytes: Vec<u8>,
     offset: usize,
-    /// How much more a snapshot may hold. Nothing but the snapshot is read
-    /// through `Read`, and Ghostty bounds its records but not their sum.
-    snapshot_left: usize,
 }
 
 impl Input {
@@ -307,8 +304,6 @@ impl Read for Input {
             }
         }
         let len = target.len().min(self.bytes.len() - self.offset);
-        let left = self.snapshot_left.checked_sub(len);
-        self.snapshot_left = left.ok_or(io::ErrorKind::FileTooLarge)?;
         target[..len].copy_from_slice(&self.bytes[self.offset..self.offset + len]);
         self.offset += len;
         Ok(len)
@@ -385,8 +380,10 @@ impl ApcParser {
 }
 
 /// Restore a terminal from a snapshot. Ghostty checks the envelope and every
-/// record as it streams in, and reads no further than the snapshot's end.
-fn restore(mut input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt::Error> {
+/// record as it streams in, and reads no further than the snapshot's end. It
+/// bounds each record but not their sum, which is cut short here.
+fn restore(input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt::Error> {
+    let mut input = input.take(MAX_SNAPSHOT_BYTES);
     let mut decoder = snapshot::Decoder::new(&mut input)?;
     decoder.set_max_continuation_bytes(MAX_APC_BYTES)?;
     // Images are not shown, so those a snapshot carries are not kept either.
@@ -434,7 +431,6 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
         receiver,
         bytes: Vec::new(),
         offset: 0,
-        snapshot_left: MAX_SNAPSHOT_BYTES,
     };
     // The snapshot streams through bounded chunks on this worker, but the first
     // frame waits for the whole of it to validate.
@@ -756,4 +752,4 @@ impl Renderer {
 
 #[cfg(test)]
 #[path = "../tests/unit/terminal.rs"]
-mod tests;
+pub(crate) mod tests;

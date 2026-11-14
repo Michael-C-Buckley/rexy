@@ -136,6 +136,11 @@ impl Window {
         top.map_or((Activity::Idle, ""), |pane| (pane.activity, &pane.message))
     }
 
+    /// Nothing runs in it but shells at their prompts, so closing it loses nothing.
+    pub fn idle(&self) -> bool {
+        self.every().all(|pane| pane.idle)
+    }
+
     /// The pane that speaks for the tab: the one typing goes to.
     pub fn front(&self) -> Option<&Pane> {
         let focused = |pane: &&Pane| Some(&pane.id) == self.focus.as_ref();

@@ -56,8 +56,6 @@ struct State {
     terminals: HashMap<String, TerminalHandle>,
     /// The UI is showing another server, so no session is picked unasked.
     away: bool,
-    /// Closes when the network worker has ended. Kept for `Client` to wait on as it goes.
-    done: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 #[derive(Clone)]
@@ -94,6 +92,8 @@ impl Shared {
 pub struct Client {
     actions: mpsc::Sender<Action>,
     shared: Shared,
+    /// Closes when the network worker has ended.
+    done: flume::Receiver<()>,
 }
 
 impl Drop for Client {
@@ -102,11 +102,9 @@ impl Drop for Client {
         // connected to that this client has gone. The process may be about to end,
         // so wait a moment for that to be said. With no connection there is nothing to say.
         drop(std::mem::replace(&mut self.actions, mpsc::channel(1).0));
-        let mut state = self.shared.lock();
-        let done = state.done.take().filter(|_| state.view.connected);
-        drop(state);
-        if let Some(done) = done {
-            let _ = done.recv_timeout(Duration::from_millis(400));
+        if self.shared.lock().view.connected {
+            let wait = wire::CLOSE_TIMEOUT + Duration::from_millis(150);
+            let _ = self.done.recv_timeout(wait);
         }
     }
 }
@@ -116,10 +114,9 @@ impl Client {
     /// connected. Unless `away`, its first session is shown without being asked for.
     /// What its panes have to say to someone not looking goes to `herald`.
     pub fn spawn(endpoints: Vec<String>, away: bool, wake: Notify, herald: Herald) -> Self {
-        let (ended, done) = std::sync::mpsc::channel();
+        let (ended, done) = flume::bounded(0);
         let state = State {
             away,
-            done: Some(done),
             ..Default::default()
         };
         let shared = Shared {
@@ -150,7 +147,11 @@ impl Client {
         if let Err(error) = started {
             shared.status(format!("Cannot start network worker: {error}"), false);
         }
-        Self { actions, shared }
+        Self {
+            actions,
+            shared,
+            done,
+        }
     }
 
     pub fn snapshot(&self) -> View {
@@ -294,7 +295,7 @@ async fn run(endpoints: Vec<String>, mut actions: mpsc::Receiver<Action>, shared
 async fn connect(
     endpoints: &[String],
     token: Option<&str>,
-) -> Result<(Option<ssh::Tunnel>, String, Control)> {
+) -> Result<(Option<ssh::Tunnel>, Control)> {
     let mut failure = anyhow!("This host has no address");
     for endpoint in endpoints {
         let attempt = async {
@@ -306,9 +307,7 @@ async fn connect(
                 (None, endpoint.clone())
             };
             let control = Control::connect(&endpoint, token).await?;
-            // A bare host name stands for several addresses. Streams go to the one found.
-            let endpoint = control.endpoint.clone();
-            anyhow::Ok((tunnel, endpoint, control))
+            anyhow::Ok((tunnel, control))
         };
         match attempt.await {
             Ok(connected) => return Ok(connected),
@@ -324,10 +323,11 @@ async fn run_connected(
     actions: &mut mpsc::Receiver<Action>,
     shared: &Shared,
 ) -> Result<()> {
-    let (_tunnel, endpoint, mut control) = connect(endpoints, token.as_deref()).await?;
+    let (_tunnel, mut control) = connect(endpoints, token.as_deref()).await?;
     *token = control.reconnect_token.take();
+    let target = control.target.clone();
     let mut connection = Connection {
-        endpoint: &endpoint,
+        target: &target,
         shared,
         rpc: control.rpc.clone(),
         client_id: control.client_id.clone(),
@@ -349,12 +349,13 @@ async fn run_connected(
             result = &mut control.task => {
                 return result.context("Rex control worker stopped")?;
             }
-            event = control.events.recv() => match event.context(ENDED)? {
+            // When there are no more, the task above says why.
+            Some(event) = control.events.recv() => match event {
                 Event::Structure => dirty = true,
                 Event::Title { block, title } => connection.note(&block, |b| b.title = title),
                 Event::Program { block, program, pid } => connection.note(&block, |b| {
                     b.process = program;
-                    b.idle = pid.is_some() && pid == b.shell;
+                    b.foreground = pid;
                 }),
                 Event::Status { block } => {
                     connection.stale.insert(block);
@@ -404,7 +405,9 @@ async fn run_connected(
 
 /// The state of one control connection. Dropping it stops every terminal stream.
 struct Connection<'a> {
-    endpoint: &'a str,
+    /// The address that answered, of the several a host name can stand for.
+    /// Terminal streams go straight to it.
+    target: &'a wire::Target,
     shared: &'a Shared,
     rpc: Rpc,
     client_id: String,
@@ -423,10 +426,10 @@ struct Block {
     title: String,
     /// The icon of the program in its foreground, if it has one.
     process: Option<Program>,
-    /// The shell it started with, if it started with one, and whether that is what
-    /// is in its foreground.
+    /// The process of the shell it started with, if it started with one, and of
+    /// what is in its foreground. Where they are one, the shell is at its prompt.
     shell: Option<u64>,
-    idle: bool,
+    foreground: Option<u64>,
     /// That of a program reporting its status, which tells more, while one is.
     app: Option<Program>,
     activity: Activity,
@@ -565,13 +568,12 @@ impl Connection<'_> {
             let process = process.await.context(ENDED)?.unwrap_or_default();
             let status = status.await.context(ENDED)?.unwrap_or_default();
             let (activity, message, app) = reported(&status["records"]);
-            let shell = wire::shell(&process["child"]);
             let block = Block {
                 session: session.clone(),
                 title: title["title"].as_str().unwrap_or_default().into(),
                 process: wire::program(&process["foreground"]),
-                shell,
-                idle: shell.is_some() && shell == process["foreground"]["pid"].as_u64(),
+                shell: wire::shell(&process["child"]),
+                foreground: process["foreground"]["pid"].as_u64(),
                 app,
                 activity,
                 message,
@@ -711,7 +713,7 @@ impl Connection<'_> {
         for pane in visible {
             self.streams.entry(pane).or_insert_with_key(|pane| {
                 tokio::spawn(stream_pane(
-                    self.endpoint.to_owned(),
+                    self.target.clone(),
                     self.rpc.clone(),
                     self.shared.clone(),
                     session.clone(),
@@ -953,9 +955,15 @@ impl Connection<'_> {
 
 /// Keep one pane's terminal fed for as long as it is visible, restoring a fresh
 /// snapshot whenever its stream fails.
-async fn stream_pane(endpoint: String, rpc: Rpc, shared: Shared, session: String, pane: String) {
+async fn stream_pane(
+    target: wire::Target,
+    rpc: Rpc,
+    shared: Shared,
+    session: String,
+    pane: String,
+) {
     loop {
-        let Err(error) = stream(&endpoint, &rpc, &shared, &session, &pane).await;
+        let Err(error) = stream(&target, &rpc, &shared, &session, &pane).await;
         shared.change(|s| {
             let previous = s.terminals.remove(&pane).and_then(|t| t.latest());
             if let Some(pane) = s.view.pane_mut(&pane) {
@@ -968,7 +976,7 @@ async fn stream_pane(endpoint: String, rpc: Rpc, shared: Shared, session: String
 }
 
 async fn stream(
-    endpoint: &str,
+    target: &wire::Target,
     rpc: &Rpc,
     shared: &Shared,
     session: &str,
@@ -984,7 +992,7 @@ async fn stream(
     let ticket = response["ticket"]
         .as_str()
         .context("Missing terminal ticket")?;
-    let mut socket = wire::socket(endpoint, "/api/data", wire::DATA_PROTOCOL).await?;
+    let mut socket = wire::socket(target, "/api/data", wire::DATA_PROTOCOL).await?;
     let nonce = wire::handshake(&mut socket, ticket).await?;
     let wake = shared.wake.clone();
     let terminal = TerminalHandle::new(nonce, Arc::new(move || wake.notify()))?;
@@ -1109,7 +1117,7 @@ fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
             pane.program = block.app.or(block.process).unwrap_or_default();
             pane.activity = block.activity;
             pane.message.clone_from(&block.message);
-            pane.idle = block.idle;
+            pane.idle = block.shell.is_some() && block.shell == block.foreground;
         }
     }
 }

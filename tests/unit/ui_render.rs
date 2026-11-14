@@ -1,27 +1,17 @@
-use std::{fmt::Write as _, time::Duration};
+use std::fmt::Write as _;
 
 use libghostty_vt::Terminal;
 
 use super::*;
-use crate::terminal::TerminalHandle;
+use crate::terminal::tests::render;
 
 const SIZE: f32 = 14.0;
 
 /// What a pane shows once a program has written these bytes.
 fn frame(cols: u16, rows: u16, bytes: &[u8]) -> Arc<Frame> {
-    let mut server = Terminal::new(cols, rows).unwrap();
-    server.vt_write(bytes);
-    let mut snapshot = Vec::new();
-    server.encode_snapshot(&mut snapshot).unwrap();
-    let (wake, woken) = flume::unbounded();
-    let wake = move || {
-        let _ = wake.send(());
-    };
-    let handle = TerminalHandle::new(1, Arc::new(wake)).unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread().build();
-    runtime.unwrap().block_on(handle.feed(snapshot)).unwrap();
-    woken.recv_timeout(Duration::from_secs(3)).unwrap();
-    handle.latest().unwrap()
+    let mut terminal = Terminal::new(cols, rows).unwrap();
+    terminal.vt_write(bytes);
+    render(&terminal)
 }
 
 fn context() -> egui::Context {

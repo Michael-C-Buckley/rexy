@@ -4,7 +4,8 @@ fn terminal(cols: u16, rows: u16) -> Terminal<'static, 'static> {
     Terminal::new(cols, rows).unwrap()
 }
 
-fn render(terminal: &Terminal<'static, '_>) -> Arc<Frame> {
+/// What a terminal shows as it stands.
+pub(crate) fn render(terminal: &Terminal<'static, '_>) -> Arc<Frame> {
     Renderer::new().unwrap().frame(terminal).unwrap().unwrap()
 }
 
@@ -72,24 +73,14 @@ fn fragmented_snapshot_preserves_state_and_leaves_live_tail_unread() {
 }
 
 #[test]
-fn snapshot_rejects_crc_damage_and_more_bytes_than_its_cap() {
+fn snapshot_rejects_crc_damage_and_one_cut_short() {
     let snapshot = encode(&mut terminal(20, 2));
     let mut damaged = snapshot.clone();
     damaged[16] ^= 1;
     assert!(restore(damaged.as_slice()).is_err());
-    let capped = |snapshot_left| {
-        let (sender, receiver) = flume::bounded(1);
-        sender.send(Command::Bytes(snapshot.clone())).unwrap();
-        drop(sender);
-        restore(Input {
-            receiver,
-            bytes: Vec::new(),
-            offset: 0,
-            snapshot_left,
-        })
-    };
-    assert!(capped(snapshot.len()).is_ok());
-    assert!(capped(snapshot.len() - 1).is_err());
+    // As one past its cap is.
+    assert!(restore(&snapshot[..snapshot.len() - 1]).is_err());
+    assert!(restore(snapshot.as_slice()).is_ok());
 }
 
 #[test]
@@ -409,12 +400,10 @@ fn the_view_moves_by_pages_and_by_shell_prompts() {
     // Prompts on rows 0, 3, 6 and 9 of ten, the last two of them on screen.
     let mut server = terminal(20, 2);
     for prompt in 1..=4 {
-        let prompt = format!("\x1b]133;P;k=i\x07p{prompt}");
-        server.vt_write(prompt.as_bytes());
-        if prompt.ends_with("p4") {
-            break;
+        server.vt_write(format!("\x1b]133;P;k=i\x07p{prompt}").as_bytes());
+        if prompt < 4 {
+            server.vt_write(b"\r\n\x1b]133;B\x07cmd\r\n\x1b]133;C\x07out\r\n");
         }
-        server.vt_write(b"\r\n\x1b]133;B\x07cmd\r\n\x1b]133;C\x07out\r\n");
     }
     let (handle, wakes) = worker(encode(&mut server));
     wakes.recv_timeout(WAIT).unwrap();
