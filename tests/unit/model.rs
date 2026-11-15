@@ -72,34 +72,36 @@ fn session(id: &str, active: Option<&str>, tabs: &[&str]) -> Session {
 }
 
 #[test]
-fn the_tab_on_show_is_the_servers_once_it_has_answered() {
+fn the_tab_on_show_stays_while_it_is_there_whatever_the_server_shows() {
     let mut view = View {
         sessions: vec![session("s", Some("b"), &["a", "b", "c"])],
         selected_session: Some("s".into()),
         ..Default::default()
     };
-    let shown = |view: &mut View, asked: Option<&str>, answered| {
+    let shown = |view: &mut View, asked: Option<&str>| {
         view.selected_window = asked.map(str::to_owned);
-        view.settle(answered);
+        view.settle();
         view.selected_window.clone()
     };
-    // With nothing asked for, the tab the server shows.
-    assert_eq!(shown(&mut view, None, false).as_deref(), Some("b"));
-    // A tab just asked for stays while the server has yet to answer, whatever an
-    // older word from it says, and gives way to the server's when it has.
-    assert_eq!(shown(&mut view, Some("c"), false).as_deref(), Some("c"));
-    assert_eq!(shown(&mut view, Some("c"), true).as_deref(), Some("b"));
-    // One that has closed does not stay, answered or not.
-    assert_eq!(shown(&mut view, Some("gone"), false).as_deref(), Some("b"));
-    // Nor does the server's, where the view held is yet to have it: then the first.
+    // With none shown yet, the tab the server shows.
+    assert_eq!(shown(&mut view, None).as_deref(), Some("b"));
+    // One that is shown stays, whatever the server comes to show: another
+    // client's choice of tab is not this window's.
+    assert_eq!(shown(&mut view, Some("c")).as_deref(), Some("c"));
+    view.sessions[0].active = Some("a".into());
+    view.settle();
+    assert_eq!(view.selected_window.as_deref(), Some("c"));
+    // One that has closed gives way to the server's.
+    assert_eq!(shown(&mut view, Some("gone")).as_deref(), Some("a"));
+    // And where the view held is yet to have the server's, to the first.
     view.sessions[0].active = Some("gone".into());
-    assert_eq!(shown(&mut view, None, true).as_deref(), Some("a"));
+    assert_eq!(shown(&mut view, None).as_deref(), Some("a"));
     view.sessions[0].windows.clear();
-    assert_eq!(shown(&mut view, Some("a"), false), None);
+    assert_eq!(shown(&mut view, Some("a")), None);
     // A session that has ended is on show no longer, with its tab.
     view.sessions.clear();
     view.selected_window = Some("a".into());
-    view.settle(true);
+    view.settle();
     assert_eq!((view.selected_session, view.selected_window), (None, None));
 }
 

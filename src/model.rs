@@ -91,18 +91,17 @@ impl View {
     }
 
     /// Keep what is on show to what there is. A session that is gone is on show no
-    /// longer. Of the session on show the tab is the one the server shows, for every
-    /// client alike, or failing that its first. Until the server has answered what
-    /// was last asked of it here, which `answered` says, the tab that was asked
-    /// for stays instead, if it is still there.
-    pub fn settle(&mut self, answered: bool) {
+    /// longer. Of the session on show, the tab is the one this window last showed,
+    /// for as long as it is there: what another client has the server show does
+    /// not move it. With none, it is the server's tab, or failing that the first.
+    pub fn settle(&mut self) {
         let Some(session) = self.session() else {
             (self.selected_session, self.selected_window) = (None, None);
             return;
         };
         let there = |id: &&String| session.windows.iter().any(|tab| &tab.id == *id);
-        let asked = self.selected_window.as_ref().filter(|_| !answered);
-        let shown = asked.filter(there).or(session.active.as_ref().filter(there));
+        let kept = self.selected_window.as_ref().filter(there);
+        let shown = kept.or(session.active.as_ref().filter(there));
         let first = || session.windows.first().map(|tab| &tab.id);
         self.selected_window = shown.or_else(first).cloned();
     }

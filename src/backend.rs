@@ -76,10 +76,9 @@ struct State {
     /// from, until its pane is fed again or goes from sight. Nothing is typed
     /// into one, whether or not it had drawn.
     last: HashMap<String, Option<TerminalHandle>>,
-    /// How many times the user has asked for something to be shown, or to be left.
-    /// Each asking goes to the worker with its number, so that what the server
-    /// shows moves what is on show only once it has answered the last of them.
-    picks: u64,
+    /// The user has asked for a session or a tab to be made, and for nothing
+    /// else to be shown since. What is made is shown once it is there.
+    awaited: bool,
 }
 
 impl State {
@@ -124,7 +123,7 @@ impl Shared {
 }
 
 pub struct Client {
-    actions: mpsc::Sender<(Action, u64)>,
+    actions: mpsc::Sender<Action>,
     shared: Shared,
     /// Closes when the network worker has ended.
     done: flume::Receiver<()>,
@@ -226,14 +225,12 @@ impl Client {
             }
             _ => None,
         };
-        // Asking for something to be shown has a number. Nothing else has.
-        let pick = shown.is_some() || matches!(action, Action::CreateSession(_));
-        let picks = state.picks + u64::from(pick);
-        self.actions
-            .try_send((action, if pick { picks } else { 0 }))
-            .map_err(|e| format!("Input not sent: {e}"))?;
-        state.picks = picks;
-        // Show it at once; the server's answer follows.
+        let making = matches!(action, Action::CreateSession(_) | Action::CreateWindow(_));
+        self.actions.try_send(action).map_err(|e| format!("Input not sent: {e}"))?;
+        if shown.is_some() || making {
+            state.awaited = making;
+        }
+        // Show it at once. The server is told, and need not answer for that.
         let view = &mut state.view;
         if let Some((id, window)) = shown
             && view.sessions.iter().any(|session| session.id == id)
@@ -242,7 +239,7 @@ impl Client {
                 view.selected_window = window;
             }
             view.selected_session = Some(id);
-            view.settle(false);
+            view.settle();
             drop(state);
             self.shared.wake.notify();
         }
@@ -259,12 +256,12 @@ impl Client {
     /// Stop showing this server's session. Its programs keep running there.
     pub fn leave(&self) {
         let mut state = self.shared.lock();
-        state.picks += 1;
+        state.awaited = false;
         state.view.selected_session = None;
         state.view.selected_window = None;
-        // Even with nothing on show: what it was last asked may be on its way to being.
+        // Even with nothing on show: it may be in a session still, to be left.
         if state.view.connected {
-            let _ = self.actions.try_send((Action::Leave, state.picks));
+            let _ = self.actions.try_send(Action::Leave);
         }
     }
 
@@ -316,7 +313,7 @@ async fn run(
     endpoints: Vec<String>,
     keymap: Option<Value>,
     theme: Option<Value>,
-    mut actions: mpsc::Receiver<(Action, u64)>,
+    mut actions: mpsc::Receiver<Action>,
     shared: Shared,
 ) {
     let login = endpoints.iter().any(|endpoint| endpoint.starts_with("ssh://"));
@@ -393,7 +390,7 @@ async fn connect(endpoints: &[String], link: &mut Link) -> Result<(Option<ssh::T
 async fn run_connected(
     endpoints: &[String],
     link: &mut Link,
-    actions: &mut mpsc::Receiver<(Action, u64)>,
+    actions: &mut mpsc::Receiver<Action>,
     shared: &Shared,
 ) -> Result<()> {
     let opened = async move {
@@ -426,12 +423,10 @@ async fn run_connected(
         if !connected && connection.views.values().all(|held| !held.asking) {
             connected = true;
             while actions.try_recv().is_ok() {} // Requests to try again have been answered.
-            connection.settled = {
-                let mut state = shared.lock();
-                state.view.status.clear();
-                state.view.connected = true;
-                state.picks
-            };
+            shared.change(|s| {
+                s.view.status.clear();
+                s.view.connected = true;
+            });
             connection.show().await;
             waiting.drain(..).for_each(|asked| connection.pass(asked));
         }
@@ -452,7 +447,7 @@ async fn run_connected(
                 connection.answered(reply, answer).await;
             }
             action = actions.recv(), if connected => {
-                let Some((action, pick)) = action else {
+                let Some(action) = action else {
                     // The client is going. The server need not keep its place.
                     control.close().await;
                     return Ok(());
@@ -460,7 +455,7 @@ async fn run_connected(
                 if matches!(action, Action::Reconnect) {
                     return Ok(());
                 }
-                if let Err(error) = connection.perform(action, pick).await {
+                if let Err(error) = connection.perform(action).await {
                     shared.fail(format!("{error:#}"));
                 }
             }
@@ -473,9 +468,9 @@ enum Reply {
     /// Input, which is said to have failed if it has.
     Input,
     /// A change to a session, or the making of one, whose answer says what revision
-    /// the session is left at. With it are the session, the number of the asking if
-    /// the user asked by it for something to be shown, and a pane it brings out.
-    Change(String, u64, Option<String>),
+    /// the session is left at. With it are the session, a pane it brings out, and
+    /// whether it makes a session or a tab, which is then to be shown.
+    Change(String, Option<String>, bool),
     /// A session's view.
     View(String),
     /// A session whose view did not come, when it is time to ask for it again.
@@ -562,13 +557,9 @@ struct Connection<'a> {
     keys: String,
     /// The session that a request to join or to leave is on its way for.
     joining: Option<String>,
-    /// The number of the last asking to be shown something that the server has
-    /// answered, and how many before it are yet to be.
-    settled: u64,
-    unsettled: usize,
-    /// A session the user asked to be made, and the number of that asking: shown
-    /// once it is listed, if nothing has been asked since.
-    making: Option<(String, u64)>,
+    /// A session this client has made, or a tab of a session: shown once it is
+    /// listed, if the user has asked for nothing else to be shown since.
+    making: Option<(String, Option<String>)>,
     /// A pane this client has made or brought out, reported once it is on show.
     made: Option<String>,
     /// The tabs kept fed, the last shown first, each by its session and itself.
@@ -706,8 +697,6 @@ impl<'a> Connection<'a> {
             hosts: String::new(),
             keys: String::new(),
             joining: None,
-            settled: 0,
-            unsettled: 0,
             making: None,
             made: None,
             warm: Vec::new(),
@@ -945,24 +934,22 @@ impl<'a> Connection<'a> {
                     held.into_iter().for_each(|news| terminal.note(news));
                 });
             }
-            (Reply::Change(session, pick, made), answer) => {
-                self.settled = self.settled.max(pick);
-                self.unsettled -= usize::from(pick > 0);
-                match answer {
-                    Ok(changed) => {
-                        // A session it made is shown once listed, and a pane once on show.
-                        let text = |value: &Value| value.as_str().map(str::to_owned);
-                        let session_made = text(&changed["session_id"]).map(|id| (id, pick));
-                        self.making = session_made.or(self.making.take());
-                        self.made = made.or(text(&changed["block_ids"][0])).or(self.made.take());
-                        let revision = changed["revision"].as_u64().unwrap_or(0);
-                        self.want(&session, revision).await;
+            (Reply::Change(session, made, new), answer) => match answer {
+                Ok(changed) => {
+                    // A session it made is shown once listed, a tab once its
+                    // session has it, and a pane once on show.
+                    let text = |value: &Value| value.as_str().map(str::to_owned);
+                    if new {
+                        let tab = (session.clone(), text(&changed["window_id"]));
+                        let made = text(&changed["session_id"]).map(|id| (id, None));
+                        self.making = Some(made.unwrap_or(tab));
                     }
-                    // What was put on show in hope of it goes back, in `show`, to
-                    // what the server has.
-                    Err(error) => self.shared.fail(error.to_string()),
+                    self.made = made.or(text(&changed["block_ids"][0])).or(self.made.take());
+                    let revision = changed["revision"].as_u64().unwrap_or(0);
+                    self.want(&session, revision).await;
                 }
-            }
+                Err(error) => self.shared.fail(error.to_string()),
+            },
             (Reply::View(session), answer) => {
                 // A session that has ended has none, as the news says or will say.
                 if let Some(held) = self.views.get_mut(&session) {
@@ -1024,19 +1011,19 @@ impl<'a> Connection<'a> {
     async fn show(&mut self) {
         {
             let mut state = self.shared.lock();
-            let State { view, picks, .. } = &mut *state;
-            let listed = |id: &String| view.sessions.iter().any(|session| &session.id == id);
-            if let Some((session, pick)) = self.making.take_if(|(session, _)| listed(session))
-                && pick == *picks
+            let State { view, awaited, .. } = &mut *state;
+            let listed = |(session, tab): &mut (String, Option<String>)| {
+                let has = |held: &Session| {
+                    tab.as_ref().is_none_or(|tab| held.windows.iter().any(|w| &w.id == tab))
+                };
+                view.sessions.iter().any(|held| held.id == *session && has(held))
+            };
+            if let Some((session, tab)) = self.making.take_if(listed)
+                && *awaited
             {
-                (view.selected_session, view.selected_window) = (Some(session), None);
+                (view.selected_session, view.selected_window) = (Some(session), tab);
             }
-            // The server's tab is the one to show once it has answered the last
-            // thing asked of it here, and the view held is of no older a time.
-            let current = |id: &String| self.views.get(id).is_some_and(Held::current);
-            let current = view.selected_session.as_ref().is_some_and(current);
-            let settled = *picks == self.settled && self.unsettled == 0;
-            view.settle(settled && current);
+            view.settle();
             let seen =
                 |id: &String| view.tabs().any(|(_, tab)| tab.panes.iter().any(|p| &p.id == id));
             if let Some(made) = self.made.take_if(|made| seen(made)) {
@@ -1282,14 +1269,12 @@ impl<'a> Connection<'a> {
     }
 
     /// Do what the UI asked, which is to ask it of the server and go on: typing
-    /// never waits on a round trip. `pick` is the asking's number, if by it the user
-    /// asked for something to be shown.
-    async fn perform(&mut self, action: Action, pick: u64) -> Result<()> {
+    /// never waits on a round trip.
+    async fn perform(&mut self, action: Action) -> Result<()> {
         // A change to a pane names the pane, and its session is found from that.
         let (session, method, mut payload, made) = match action {
             // What is on show is as asked already, and `show` joins or leaves.
             Action::SelectSession(_) | Action::Leave => {
-                self.settled = self.settled.max(pick);
                 self.show().await;
                 return Ok(());
             }
@@ -1408,8 +1393,8 @@ impl<'a> Connection<'a> {
         if !session.is_empty() {
             payload["session_id"] = json!(session);
         }
-        self.unsettled += usize::from(pick > 0);
-        let reply = Reply::Change(session, pick, made);
+        let new = matches!(method, "session.create" | "session.new_window");
+        let reply = Reply::Change(session, made, new);
         self.ask(reply, method, payload).await;
         self.show().await;
         Ok(())

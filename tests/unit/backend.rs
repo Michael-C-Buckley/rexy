@@ -386,7 +386,7 @@ fn notifications_coalesce_until_snapshot_acknowledges() {
     assert_eq!(count.load(Ordering::Relaxed), 2);
 }
 
-fn client() -> (Client, mpsc::Receiver<(Action, u64)>) {
+fn client() -> (Client, mpsc::Receiver<Action>) {
     let (actions, queue) = mpsc::channel(256);
     let shared = Shared {
         state: Arc::default(),
@@ -405,10 +405,10 @@ fn input_is_accepted_only_while_connected() {
     client.try_send(Action::Reconnect).unwrap();
     client.shared.status("Connected", true);
     client.try_send(Action::CreateSession(None)).unwrap();
-    assert!(matches!(queue.try_recv(), Ok((Action::Reconnect, 0))));
+    assert!(matches!(queue.try_recv(), Ok(Action::Reconnect)));
     // Asking for something to be shown is numbered, to tell its answer by.
     let made = queue.try_recv();
-    assert!(matches!(made, Ok((Action::CreateSession(None), 1))));
+    assert!(matches!(made, Ok(Action::CreateSession(None))));
     assert!(queue.try_recv().is_err());
 }
 
@@ -440,7 +440,7 @@ fn input_racing_a_disconnect_never_outlives_it() {
 }
 
 #[test]
-fn what_is_asked_to_be_shown_is_shown_at_once_and_numbered() {
+fn what_is_asked_to_be_shown_is_shown_at_once_and_what_is_made_awaited() {
     let (client, mut queue) = client();
     let tab = |id: &str| Window { id: id.into(), ..Window::default() };
     let session = |id: &str, active: &str| Session {
@@ -475,13 +475,22 @@ fn what_is_asked_to_be_shown_is_shown_at_once_and_numbered() {
     // What is not there is asked for all the same, and nothing is shown for it.
     client.try_send(show("gone", "a")).unwrap();
     assert_eq!(shown(), both("t", "b"));
-    // Input asks for nothing to be shown, and has no number.
+    // What is to be made is awaited until something else is asked to be shown,
+    // or the server is left. Input asks for nothing to be shown.
+    let awaited = || client.shared.lock().awaited;
+    assert!(!awaited());
+    client.try_send(Action::CreateSession(None)).unwrap();
     let pane = "p".to_owned();
     client.try_send(Action::FocusPane { pane }).unwrap();
+    assert!(awaited());
+    client.try_send(show("s", "a")).unwrap();
+    assert!(!awaited());
+    client.try_send(Action::CreateWindow("s".into())).unwrap();
     client.leave();
+    assert!(!awaited());
     assert_eq!(shown(), (None, None));
-    let numbers = std::iter::from_fn(|| queue.try_recv().ok()).map(|(_, pick)| pick);
-    assert_eq!(numbers.collect::<Vec<_>>(), [1, 2, 3, 4, 5, 0, 6]);
+    // All of it is asked of the server, in the order it came.
+    assert_eq!(std::iter::from_fn(|| queue.try_recv().ok()).count(), 10);
 }
 
 #[test]
@@ -822,7 +831,7 @@ async fn a_server_that_closes_while_a_client_begins_is_said_to_have_and_why() {
 }
 
 #[tokio::test]
-async fn a_tab_picked_is_shown_at_once_and_the_servers_tab_once_it_has_answered() {
+async fn a_tab_picked_stays_on_show_and_one_made_here_is_shown_when_it_comes() {
     use served::{answer, next, say, until, view, viewed};
     let server = served::Server::at("tabs");
     let (client, _notes) = server.client();
@@ -849,11 +858,28 @@ async fn a_tab_picked_is_shown_at_once_and_the_servers_tab_once_it_has_answered(
     let (id, _) = next(&mut socket, "session.view", seen).await;
     answer(&mut socket, &id, view(2, "w2", &tabs)).await;
     until(&client, "the tab picked", shown("w2")).await;
-    // Another client has the server show the first again, and so does this one.
+    // Another client has the server show the first again, and makes a tab
+    // besides. Neither moves this window from the tab it shows.
     say(&mut socket, viewed("s1", 3)).await;
     let (id, _) = next(&mut socket, "session.view", seen).await;
-    answer(&mut socket, &id, view(3, "w1", &tabs)).await;
-    until(&client, "the server's tab again", shown("w1")).await;
+    let more = [("w1", None), ("w2", None), ("w3", None)];
+    answer(&mut socket, &id, view(3, "w1", &more)).await;
+    let listed = |view: &View| view.sessions[0].windows.len() == 3;
+    assert!(shown("w2")(&until(&client, "the tab made elsewhere", listed).await));
+    // A tab made here is shown once the session has it.
+    client.try_send(Action::CreateWindow("s1".into())).unwrap();
+    let (id, _) = next(&mut socket, "session.new_window", seen).await;
+    answer(&mut socket, &id, json!({"window_id": "w4", "revision": 4})).await;
+    let (id, _) = next(&mut socket, "session.view", seen).await;
+    assert!(shown("w2")(&client.snapshot()));
+    let more = [("w1", None), ("w2", None), ("w3", None), ("w4", None)];
+    answer(&mut socket, &id, view(4, "w4", &more)).await;
+    until(&client, "the tab made here", shown("w4")).await;
+    // When the tab on show closes, the server's is shown.
+    say(&mut socket, viewed("s1", 5)).await;
+    let (id, _) = next(&mut socket, "session.view", seen).await;
+    answer(&mut socket, &id, view(5, "w1", &tabs)).await;
+    until(&client, "the server's tab", shown("w1")).await;
 }
 
 #[tokio::test]
