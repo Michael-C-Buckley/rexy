@@ -111,30 +111,119 @@ fn restored_history_is_compressed_and_opens_when_scrolled_to() {
     assert_eq!(row(&render(&restored), 0), "line 0");
 }
 
+/// A terminal that knows the size of its cells, without which no picture has
+/// a place: twenty columns of three rows, each cell 10 pixels by 20.
+fn pictured() -> Terminal<'static, 'static> {
+    let mut terminal = terminal(20, 3);
+    terminal.resize(20, 3, 10, 20).unwrap();
+    configure(&mut terminal).unwrap();
+    terminal
+}
+
 #[test]
-fn image_records_in_snapshot_do_not_break_text_restore() {
-    let mut original = terminal(20, 3);
-    original.set_kitty_image_storage_limit(1024 * 1024).unwrap();
-    // Raw RGB needs no PNG decoder or extra dependency.
-    original.vt_write(b"\x1b_Ga=T,f=24,s=1,v=1,i=42;CQkJ\x1b\\\r\n");
+fn a_picture_is_placed_where_its_program_put_it_and_comes_back_with_a_snapshot() {
+    let mut original = pictured();
+    // Raw RGB needs no PNG decoder: two pixels by two, all of them white.
+    original.vt_write(b"\x1b_Ga=T,f=24,s=2,v=2,i=42;////////////////\x1b\\\r\n");
     original.vt_write(b"text after image");
-    let image = |terminal: &Terminal| {
-        let images = terminal.kitty_graphics().unwrap().unwrap();
-        images.image(42).is_some()
+    let check = |terminal: &Terminal<'static, '_>| {
+        let frame = render(terminal);
+        assert!(frame.text().contains("text after image"));
+        let [placed] = &*frame.pictures else {
+            panic!("one picture is on show");
+        };
+        assert_eq!(placed.picture.size, [2, 2]);
+        assert_eq!(placed.picture.rgba, [255; 16]);
+        // A fifth of a cell wide and a tenth of one tall, at the first cell,
+        // over the text, and all of it.
+        assert_eq!(placed.at, [0.0, 0.0, 0.2, 0.1]);
+        assert_eq!(placed.part, [0.0, 0.0, 1.0, 1.0]);
+        assert!(!placed.under);
     };
-    assert!(image(&original));
+    check(&original);
     let bytes = encode(&mut original);
-    // The image is left behind, and none can be sent after.
     let mut restored = restore(bytes.as_slice()).unwrap();
-    assert!(!image(&restored));
     configure(&mut restored).unwrap();
-    assert_eq!(restored.kitty_image_storage_limit().unwrap(), Some(0));
+    check(&restored);
+}
+
+#[test]
+fn a_picture_that_comes_or_goes_alone_is_drawn_and_keeps_its_pixels_meanwhile() {
+    let mut terminal = pictured();
+    let mut renderer = Renderer::new().unwrap();
+    assert!(
+        renderer
+            .frame(&terminal)
+            .unwrap()
+            .unwrap()
+            .pictures
+            .is_empty()
+    );
+    // It leaves the cursor where it was (C=1), so no row is written to.
+    terminal.vt_write(b"\x1b_Ga=T,f=24,s=1,v=1,i=7,C=1,z=-1;CQkJ\x1b\\");
+    let first = renderer.frame(&terminal).unwrap().unwrap();
+    assert_eq!(first.pictures.len(), 1);
+    assert!(first.pictures[0].under);
+    assert_eq!(first.pictures[0].picture.rgba, [9, 9, 9, 255]);
+    assert!(renderer.frame(&terminal).unwrap().is_none());
+    // Text written beside it reads no pixels anew.
+    terminal.vt_write(b"\x1b[2;1Htext");
+    let second = renderer.frame(&terminal).unwrap().unwrap();
+    assert!(Arc::ptr_eq(
+        &first.pictures[0].picture,
+        &second.pictures[0].picture
+    ));
+    terminal.vt_write(b"\x1b_Ga=d\x1b\\");
+    assert!(
+        renderer
+            .frame(&terminal)
+            .unwrap()
+            .unwrap()
+            .pictures
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_picture_is_never_read_from_a_file_its_program_names() {
+    let mut terminal = pictured();
     assert_eq!(
-        restored.is_kitty_image_from_file_allowed().unwrap(),
+        terminal.is_kitty_image_from_file_allowed().unwrap(),
         Some(false)
     );
-    let frame = render(&restored);
-    assert!(frame.text().contains("text after image"));
+    assert_eq!(
+        terminal.is_kitty_image_from_shared_mem_allowed().unwrap(),
+        Some(false)
+    );
+    // A file that holds one white pixel, named as the protocol has it: in base64.
+    let file = std::env::temp_dir().join(format!("rex-lite-picture-{}", std::process::id()));
+    std::fs::write(&file, [255; 3]).unwrap();
+    let name = file.to_str().unwrap().as_bytes();
+    let mut named = String::new();
+    for chunk in name.chunks(3) {
+        let bits = chunk
+            .iter()
+            .fold(0u32, |bits, byte| bits << 8 | u32::from(*byte))
+            << (8 * (3 - chunk.len()));
+        for index in 0..4 {
+            let six = (bits >> (18 - 6 * index)) & 63;
+            let letter =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[six as usize];
+            named.push(if index <= chunk.len() {
+                letter as char
+            } else {
+                '='
+            });
+        }
+    }
+    for medium in ["f", "t"] {
+        let escape = format!("\x1b_Ga=T,f=24,s=1,v=1,t={medium};{named}\x1b\\");
+        terminal.vt_write(escape.as_bytes());
+        assert!(render(&terminal).pictures.is_empty());
+    }
+    // Nor was it removed, as a temporary file would have been.
+    assert!(file.exists());
+    std::fs::remove_file(file).unwrap();
 }
 
 #[test]

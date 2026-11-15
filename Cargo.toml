@@ -14,7 +14,8 @@ eframe = { version = "0.37.0", default-features = false, features = ["clipboard"
 flume = "0.12"
 futures-util = { version = "0.3", features = ["sink"] }
 # Ghostty's terminal. No release can restore a snapshot yet, so a commit is named.
-libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "483ea3d5247b214060da58ef6037a95f30ae89fb" }
+# Its png feature decodes the pictures programs send as PNG, with a crate already here.
+libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "483ea3d5247b214060da58ef6037a95f30ae89fb", features = ["png"] }
 libc = "0.2"
 # Already here through url. Rex writes a socket's path percent-encoded.
 percent-encoding = "2"

@@ -7,7 +7,7 @@ use libghostty_vt::style::Underline;
 use super::{boxes, style};
 use crate::{
     model::Size,
-    terminal::{CursorShape, Frame, Row},
+    terminal::{CursorShape, Frame, Picture, Placed, Row},
 };
 
 pub fn rgb(value: u32) -> Color32 {
@@ -80,6 +80,8 @@ pub struct PaneView {
     cached_rows: HashMap<usize, CachedRow>,
     /// A galley of egui's own. The cached rows are good while egui still holds it.
     cached_while: Option<Arc<egui::Galley>>,
+    /// The pictures on show as the GPU holds them, by Ghostty's name for each.
+    pictures: HashMap<u64, egui::TextureHandle>,
 }
 
 struct CachedRow {
@@ -133,6 +135,19 @@ impl PaneView {
         // A row keeps its shaped text wherever on screen it moves to, and loses it
         // when it is shown no more.
         let mut shaped = std::mem::take(&mut self.cached_rows);
+        // A picture goes to the GPU when it is first shown and is let go when
+        // it is shown no more. Those under the text are under the cells' own
+        // backgrounds here too.
+        let shown = |id: &u64| frame.pictures.iter().any(|placed| placed.picture.id == *id);
+        self.pictures.retain(|id, _| shown(id));
+        let (under, over) = frame.pictures.split_at(
+            frame
+                .pictures
+                .iter()
+                .take_while(|placed| placed.under)
+                .count(),
+        );
+        self.picture(&painter, grid, under);
         for (y, row) in frame.lines.iter().take(visible).enumerate() {
             let source = Arc::as_ptr(row).addr();
             let cached = shaped
@@ -208,6 +223,7 @@ impl PaneView {
         if !fills.is_empty() {
             painter.add(fills);
         }
+        self.picture(&painter, grid, over);
         if let Some((x, y)) = frame.cursor {
             let rect = grid.span(y.into(), x.into(), usize::from(x) + 1);
             let color = rgb(frame.cursor_color);
@@ -267,6 +283,48 @@ impl PaneView {
             }
         }
     }
+}
+
+impl PaneView {
+    /// Draw pictures where a frame has them, each over the one before.
+    fn picture(&mut self, painter: &egui::Painter, grid: Grid, placed: &[Placed]) {
+        for placed in placed {
+            let picture = &placed.picture;
+            let texture = self.pictures.entry(picture.id).or_insert_with(|| {
+                let name = format!("picture {}", picture.id);
+                let image = pixels(picture, painter.ctx().input(|i| i.max_texture_side));
+                painter
+                    .ctx()
+                    .load_texture(name, image, egui::TextureOptions::LINEAR)
+            });
+            let [left, top, wide, tall] = placed.at;
+            let corner = grid.rect.min + grid.cell * egui::vec2(left, top);
+            let rect = Rect::from_min_size(corner, grid.cell * egui::vec2(wide, tall));
+            let [left, top, right, bottom] = placed.part;
+            let part = Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom));
+            painter.image(texture.id(), rect, part, Color32::WHITE);
+        }
+    }
+}
+
+/// A picture as egui takes one. One with a side longer than `most`, which is
+/// the longest the GPU holds, gives up pixels evenly until it has not.
+fn pixels(picture: &Picture, most: usize) -> egui::ColorImage {
+    let [wide, tall] = picture.size;
+    let step = wide.max(tall).div_ceil(most.max(1));
+    if step <= 1 {
+        return egui::ColorImage::from_rgba_unmultiplied(picture.size, &picture.rgba);
+    }
+    let kept = |side: usize| (0..side).step_by(step);
+    let pixel = |x: usize, y: usize| {
+        let at = (y * wide + x) * 4;
+        let [r, g, b, a] = picture.rgba[at..at + 4] else {
+            unreachable!("four bytes were taken");
+        };
+        Color32::from_rgba_unmultiplied(r, g, b, a)
+    };
+    let colors = kept(tall).flat_map(|y| kept(wide).map(move |x| pixel(x, y)));
+    egui::ColorImage::new([kept(wide).len(), kept(tall).len()], colors.collect())
 }
 
 impl CachedRow {

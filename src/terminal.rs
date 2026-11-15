@@ -11,9 +11,13 @@ use anyhow::{Context, Result, anyhow, ensure};
 use libghostty_vt::{
     RenderState, Terminal,
     color::{Palette, Rgb},
+    kitty::graphics::{self, ImageFormat},
     mode::Mode,
     point::{Coordinate, Point},
-    render::{CellIterator, Colors, CursorVisualStyle, Dirty, RowId, RowIteration, RowIterator},
+    render::{
+        CellIterator, Colors, CursorVisualStyle, Dirty, ImageIterator, ImageLayer, ImageProtocol,
+        RowId, RowIteration, RowIterator, Snapshot,
+    },
     screen::{CellContentTag, CellWide, Screen},
     snapshot,
     style::{Style, StyleColor},
@@ -24,7 +28,7 @@ use std::{
     collections::HashMap,
     io::{self, Read},
     rc::Rc,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, Once, RwLock},
     thread,
     time::{Duration, Instant},
 };
@@ -38,6 +42,9 @@ const QUEUE_CHUNKS: usize = 16;
 const MAX_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_APC_BYTES: usize = 1024 * 1024;
 const SCROLLBACK_BYTES: usize = 32 * 1024 * 1024;
+/// What the pictures of a pane may take in memory, on each of its two screens.
+/// The oldest go when more arrive.
+const PICTURE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_LINK_BYTES: usize = 2048;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 const RENDER_HOLD_LIMIT: Duration = Duration::from_secs(1);
@@ -99,6 +106,32 @@ impl Row {
     }
 }
 
+/// A picture a program sent, as pixels of four bytes each: red, green, blue and
+/// how opaque.
+#[derive(Debug)]
+pub struct Picture {
+    /// Ghostty's name for these pixels. No others are ever given it, in this
+    /// terminal or another.
+    pub id: u64,
+    /// How many pixels wide and tall.
+    pub size: [usize; 2],
+    pub rgba: Vec<u8>,
+}
+
+/// A picture where a frame shows it.
+#[derive(Clone, Debug)]
+pub struct Placed {
+    pub picture: Arc<Picture>,
+    /// It lies under the text, not over it.
+    pub under: bool,
+    /// Its left, its top, its width and its height in cells and parts of them,
+    /// from the frame's top left. It may begin before the frame and end after.
+    pub at: [f32; 4],
+    /// The part of the picture shown there: its left, top, right and bottom,
+    /// each as a fraction of the whole.
+    pub part: [f32; 4],
+}
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub cols: u16,
@@ -128,6 +161,8 @@ pub struct Frame {
     /// While text is looked for: which of its matches is selected, the newest
     /// being the first, and how many have been found.
     pub found: Option<(usize, usize)>,
+    /// The pictures on show, in the order they are drawn.
+    pub pictures: Arc<[Placed]>,
 }
 
 impl Frame {
@@ -176,6 +211,15 @@ pub struct TerminalHandle {
 
 impl TerminalHandle {
     pub fn new(nonce: u64, repaint: Notify) -> Result<Self> {
+        // Ghostty decodes no PNG of its own, and is told how once, for every
+        // terminal, before the first of them has a worker.
+        static PNG: Once = Once::new();
+        PNG.call_once(|| {
+            let decoder = Box::new(graphics::RustPngDecoder::new());
+            // SAFETY: only a terminal's worker and what a window is told of one
+            // call into Ghostty, and until this returns there is no terminal.
+            let _ = unsafe { graphics::set_png_decoder(Some(decoder)) };
+        });
         let (input, receiver) = flume::bounded(QUEUE_CHUNKS);
         let shared = Arc::new(Shared {
             frame: RwLock::new(None),
@@ -371,8 +415,7 @@ fn restore(input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt
     let mut input = input.take(MAX_SNAPSHOT_BYTES);
     let mut decoder = snapshot::Decoder::new(&mut input)?;
     decoder.set_max_continuation_bytes(MAX_APC_BYTES)?;
-    // Images are not shown, so those a snapshot carries are not kept either.
-    decoder.set_kitty_image_storage_limit(0)?;
+    decoder.set_kitty_image_storage_limit(PICTURE_BYTES)?;
     // History is kept compressed, a page at a time as it arrives. A page opens
     // again when it is scrolled to.
     decoder.set_compress_history_enabled(true)?;
@@ -380,9 +423,11 @@ fn restore(input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt
 }
 
 fn configure(terminal: &mut Terminal) -> Result<()> {
-    // A remote pane must never read local paths through an image escape. Images
-    // are intentionally deferred; text and snapshot state remain supported.
-    terminal.set_kitty_image_storage_limit(0)?;
+    // A program sends a picture's pixels in the escape itself. The protocol
+    // would also have the terminal read them from a file, a temporary file it
+    // then removes, or shared memory, by a name the program gives: here that
+    // name would be read on this machine, for a program on another.
+    terminal.set_kitty_image_storage_limit(PICTURE_BYTES)?;
     terminal.set_kitty_image_from_file_allowed(false)?;
     terminal.set_kitty_image_from_shared_mem_allowed(false)?;
     terminal.set_kitty_image_temp_file_dir(None)?;
@@ -548,6 +593,98 @@ fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// The pictures a frame shows, in the order they are drawn: those under the
+/// text first, and of those on one side of it the lower first. One that `old`
+/// shows keeps the pixels it has there.
+fn pictures(
+    images: &mut ImageIterator<'static>,
+    snapshot: &Snapshot<'static, '_>,
+    terminal: &Terminal<'static, '_>,
+    old: &[Placed],
+) -> Result<Arc<[Placed]>> {
+    let storage = terminal.kitty_graphics()?;
+    // Ghostty places a picture in pixels, of cells the size it was last told.
+    let cell = [
+        terminal.width_px()? as f32 / f32::from(terminal.cols()?.max(1)),
+        terminal.height_px()? as f32 / f32::from(terminal.rows()?.max(1)),
+    ];
+    let mut placed: Vec<((bool, i32), Placed)> = Vec::new();
+    let mut iteration = images.update(snapshot)?;
+    while let Some(image) = iteration.next() {
+        let Ok(ImageProtocol::Kitty) = image.protocol() else {
+            continue;
+        };
+        let id = image.image_generation()?;
+        let known = old.iter().chain(placed.iter().map(|(_, placed)| placed));
+        let known = known.map(|placed| &placed.picture).find(|p| p.id == id);
+        let picture = match known {
+            Some(picture) => picture.clone(),
+            None => {
+                let stored = storage
+                    .as_ref()
+                    .and_then(|s| s.image(image.image_id().ok()?));
+                let Some(picture) = stored.and_then(|stored| read_picture(&stored, id)) else {
+                    continue;
+                };
+                Arc::new(picture)
+            }
+        };
+        let [wide, tall] = picture.size.map(|side| side as f32);
+        let (left, top) = (image.source_x()? as f32, image.source_y()? as f32);
+        let part = [
+            left / wide,
+            top / tall,
+            (left + image.source_width()? as f32) / wide,
+            (top + image.source_height()? as f32) / tall,
+        ];
+        let at = [
+            image.viewport_col()? as f32 + image.cell_offset_x()? as f32 / cell[0],
+            image.viewport_row()? as f32 + image.cell_offset_y()? as f32 / cell[1],
+            image.pixel_width()? as f32 / cell[0],
+            image.pixel_height()? as f32 / cell[1],
+        ];
+        let under = image.layer()? != ImageLayer::AboveText;
+        let order = (!under, image.z()?);
+        let picture = Placed {
+            picture,
+            under,
+            at,
+            part,
+        };
+        placed.push((order, picture));
+    }
+    placed.sort_by_key(|(order, _)| *order);
+    Ok(placed.into_iter().map(|(_, placed)| placed).collect())
+}
+
+/// A stored picture's pixels as four bytes each, if they have all arrived.
+fn read_picture(stored: &graphics::Image, id: u64) -> Option<Picture> {
+    let size = [
+        stored.width().ok()? as usize,
+        stored.height().ok()? as usize,
+    ];
+    let data = stored.data().ok()??;
+    let each = match stored.format().ok()? {
+        ImageFormat::Rgba => 4,
+        ImageFormat::Rgb => 3,
+        ImageFormat::GrayAlpha => 2,
+        ImageFormat::Gray => 1,
+        // Ghostty stores what a PNG decodes to.
+        _ => return None,
+    };
+    if size[0] * size[1] == 0 || data.len() != size[0] * size[1] * each {
+        return None;
+    }
+    let pixel = |from: &[u8]| match *from {
+        [r, g, b, a] => [r, g, b, a],
+        [r, g, b] => [r, g, b, 255],
+        [grey, a] => [grey, grey, grey, a],
+        _ => [from[0], from[0], from[0], 255],
+    };
+    let rgba = data.chunks_exact(each).flat_map(pixel).collect();
+    Some(Picture { id, size, rgba })
+}
+
 fn rgb(color: Rgb) -> u32 {
     (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)
 }
@@ -681,6 +818,9 @@ struct Renderer {
     state: RenderState<'static>,
     rows: RowIterator<'static>,
     cells: CellIterator<'static>,
+    images: ImageIterator<'static>,
+    /// What Ghostty called the list of pictures when it was last read.
+    pictured: Option<u64>,
     previous: Option<Arc<Frame>>,
     /// The rows of that frame, by what Ghostty knows each as wherever it moves to.
     known: HashMap<RowId, Arc<Row>>,
@@ -704,6 +844,8 @@ impl Renderer {
             state: RenderState::new()?,
             rows: RowIterator::new()?,
             cells: CellIterator::new()?,
+            images: ImageIterator::new()?,
+            pictured: None,
             previous: None,
             known: HashMap::new(),
             read: Row::default(),
@@ -750,6 +892,9 @@ impl Renderer {
             .map(|p| (p.x, p.y));
         let colors = snapshot.colors()?;
         let recolored = self.colors.as_ref() != Some(&colors);
+        // Nor when only a picture comes, goes or moves.
+        let pictured = Some(snapshot.image_placements_generation()?);
+        let repictured = self.pictured != pictured;
         // Ghostty marks nothing dirty when only the cursor, the colours or a mode
         // changes. It marks all of it dirty when the view moves, by the user's hand
         // or because its history was cut away, and the rows a clear shifts. History
@@ -757,6 +902,7 @@ impl Renderer {
         // and nothing in it, so that alone is no new frame.
         if dirty == Dirty::Clean
             && !recolored
+            && !repictured
             && self.previous.as_ref().is_some_and(|old| {
                 (old.cursor, old.cursor_shape, old.cursor_blink)
                     == (cursor, cursor_shape, cursor_blink)
@@ -807,6 +953,15 @@ impl Renderer {
             lines.push(row);
         }
         self.known = known;
+        let old = self.previous.as_ref().map(|old| &old.pictures);
+        let pictures = match old {
+            Some(old) if !repictured => old.clone(),
+            old => {
+                let old = old.map_or(&[][..], |old| old);
+                pictures(&mut self.images, &snapshot, terminal, old)?
+            }
+        };
+        self.pictured = pictured;
         let frame = Arc::new(Frame {
             cols,
             rows,
@@ -824,6 +979,7 @@ impl Renderer {
             cursor_blink,
             selected,
             found: self.found,
+            pictures,
         });
         snapshot.clean()?;
         self.previous = Some(frame.clone());
