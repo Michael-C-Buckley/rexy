@@ -97,10 +97,7 @@ impl Keymap {
             name: (*name).to_owned(),
             args: Value::Null,
         };
-        Self {
-            bindings: commands::KEYS.iter().rev().map(bound).collect(),
-            ..Self::default()
-        }
+        Self { bindings: commands::KEYS.iter().rev().map(bound).collect(), ..Self::default() }
     }
 
     pub fn has_mode(&self, name: &str) -> bool {
@@ -147,11 +144,7 @@ impl Keymap {
             (name, _) => {
                 let served = self.served(name).map_or("", |served| &served.1);
                 let titles = [commands::title(name), served, name];
-                titles
-                    .into_iter()
-                    .find(|title| !title.is_empty())
-                    .unwrap_or_default()
-                    .to_owned()
+                titles.into_iter().find(|title| !title.is_empty()).unwrap_or_default().to_owned()
             }
         }
     }
@@ -226,9 +219,7 @@ pub fn resolve<'a>(
     pressed: &[Vec<String>],
     can: impl Fn(&Binding) -> bool,
 ) -> Step<'a> {
-    let escape = pressed
-        .last()
-        .is_some_and(|key| key.iter().any(|key| key == input::ESCAPE));
+    let escape = pressed.last().is_some_and(|key| key.iter().any(|key| key == input::ESCAPE));
     if escape && pressed.len() > 1 {
         return Step::Void;
     }

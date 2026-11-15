@@ -75,10 +75,7 @@ impl Kept {
         let [session, tab] = self.shown.get(server)?.clone();
         let held = view.sessions.iter().find(|held| held.id == session)?;
         Some(match held.windows.iter().any(|held| held.id == tab) {
-            true => Action::SelectWindow {
-                session,
-                window: tab,
-            },
+            true => Action::SelectWindow { session, window: tab },
             false => Action::SelectSession(session),
         })
     }
@@ -102,18 +99,11 @@ impl Remembered {
 
     /// A file that is missing or damaged is no file: the window starts afresh.
     fn open(directory: Option<PathBuf>) -> Self {
-        let file = directory
-            .as_ref()
-            .map(|directory| directory.join("state.json"));
+        let file = directory.as_ref().map(|directory| directory.join("state.json"));
         let saved = file.and_then(|file| std::fs::read_to_string(file).ok());
         let saved = saved.and_then(|saved| serde_json::from_str(&saved).ok());
         let kept = Kept::read(&saved.unwrap_or_default());
-        Self {
-            saved: kept.clone(),
-            kept,
-            due: None,
-            directory,
-        }
+        Self { saved: kept.clone(), kept, due: None, directory }
     }
 
     /// Save what has changed, a moment after it first did, and say how long until
@@ -185,9 +175,7 @@ impl App {
         match self.remembered.settle(Instant::now()) {
             Ok(Some(wait)) => ctx.request_repaint_after(wait),
             Ok(None) => {}
-            Err(error) => self
-                .toast
-                .say(format!("Settings could not be saved: {error}")),
+            Err(error) => self.toast.say(format!("Settings could not be saved: {error}")),
         }
     }
 }

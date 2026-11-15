@@ -73,17 +73,12 @@ impl App {
             }
         }
         // A server's keymap holds while the server can be asked to act on it.
-        self.keys
-            .follow(view.keymap.as_ref().filter(|_| view.connected));
+        self.keys.follow(view.keymap.as_ref().filter(|_| view.connected));
         self.keyboard.prefix = None;
         let press = |(index, event): (usize, &egui::Event)| match *event {
-            egui::Event::Key {
-                key,
-                physical_key,
-                pressed: true,
-                repeat,
-                modifiers,
-            } => Some((index, key, physical_key, repeat, modifiers)),
+            egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } => {
+                Some((index, key, physical_key, repeat, modifiers))
+            }
             _ => None,
         };
         let presses: Vec<_> =
@@ -219,10 +214,7 @@ impl App {
     pub(super) fn answer(&mut self, ctx: &egui::Context, views: &[View]) {
         for (name, pane) in std::mem::take(&mut self.todo) {
             let view = &views[self.current];
-            if let Ok(deed) = self
-                .standing(view)
-                .plan(name, &Value::Null, pane.as_deref())
-            {
+            if let Ok(deed) = self.standing(view).plan(name, &Value::Null, pane.as_deref()) {
                 self.act(ctx, self.current, deed, true);
             }
         }

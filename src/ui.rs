@@ -77,10 +77,7 @@ impl Server {
 
     /// Home, the server this window was opened on, has no label of its own.
     fn home(ctx: &egui::Context, endpoint: &str, herald: &Herald) -> Self {
-        let host = Host {
-            label: String::new(),
-            endpoints: vec![endpoint.to_owned()],
-        };
+        let host = Host { label: String::new(), endpoints: vec![endpoint.to_owned()] };
         Self::connect(ctx, host, herald)
     }
 
@@ -89,9 +86,7 @@ impl Server {
         let address = self.host.endpoints.first().map_or("", String::as_str);
         match self.host.label.as_str() {
             "" if address.starts_with('/') || address.starts_with("unix:") => "This Computer",
-            "" => address
-                .split_once("://")
-                .map_or(address, |(_, machine)| machine),
+            "" => address.split_once("://").map_or(address, |(_, machine)| machine),
             label => label,
         }
     }
@@ -253,11 +248,7 @@ impl App {
 
     /// What to show when there is no terminal to show.
     fn empty(&mut self, ui: &mut egui::Ui, view: &View) {
-        let action = |label| {
-            suggested(label)
-                .corner_radius(19)
-                .min_size(Vec2::new(140.0, 38.0))
-        };
+        let action = |label| suggested(label).corner_radius(19).min_size(Vec2::new(140.0, 38.0));
         ui.add_space((ui.available_height() * 0.28).max(20.0));
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing.y = 12.0;
@@ -483,8 +474,7 @@ impl eframe::App for App {
         self.hints(&ctx, shown.inner);
         // Under what a lost connection says there, where it says it.
         let lost = !view.connected && window.is_some_and(|tab| !tab.panes.is_empty());
-        self.toast
-            .show(&ctx, shown.inner, if lost { 60.0 } else { 12.0 });
+        self.toast.show(&ctx, shown.inner, if lost { 60.0 } else { 12.0 });
         // One more drawing when the wait to be asked again to close is over, and
         // none until then.
         if let Some(left) = self.closing.lapse(Instant::now()) {

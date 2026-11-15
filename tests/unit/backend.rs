@@ -58,10 +58,7 @@ fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
     // Each is named by the first pane of either side, inner splits first.
     assert_eq!(
         borders(&tab(json!([tiled]))),
-        [
-            border("b", "c", false, [0.6, 0., 0.4, 1.], 0.25),
-            border("a", "b", true, FULL, 0.6)
-        ]
+        [border("b", "c", false, [0.6, 0., 0.4, 1.], 0.25), border("a", "b", true, FULL, 0.6)]
     );
     // A floating layer has none of its own, and while it is on show it lies over
     // those of the tab. Put away, it is over nothing.
@@ -74,10 +71,7 @@ fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
         json!({"kind": "floating", "state": state, "layout": layout})
     };
     assert_eq!(borders(&tab(json!([tiled, floating("normal")]))), []);
-    assert_eq!(
-        borders(&tab(json!([tiled, floating("minimized")]))).len(),
-        2
-    );
+    assert_eq!(borders(&tab(json!([tiled, floating("minimized")]))).len(), 2);
     // Nor has a tab that one pane fills.
     let mut zoomed = tab(json!([tiled]));
     zoomed["windows"][0]["zoomed_block_id"] = json!("b");
@@ -90,11 +84,7 @@ fn what_is_not_a_terminal_keeps_its_place_and_says_what_it_is() {
         {"block_id": "t", "creator_name": TERMINAL, "label": "shell"},
         {"block_id": "o", "creator_name": "com.superlogical.tunnel"},
     ]);
-    let layout = split(
-        FULL,
-        leaf([0., 0., 0.5, 1.], "t"),
-        leaf([0.5, 0., 0.5, 1.], "o"),
-    );
+    let layout = split(FULL, leaf([0., 0., 0.5, 1.], "t"), leaf([0.5, 0., 0.5, 1.], "o"));
     let layers = json!([{"layout": layout, "blocks": blocks}]);
     let view = json!({"windows": [{"window_id": "w", "layers": layers}]});
     let mut terminals = Vec::new();
@@ -131,11 +121,7 @@ fn the_most_pressing_of_what_programs_report_speaks_for_their_terminal() {
     assert_eq!(message, "Run it?");
     // One that has finished lends its icon no longer.
     assert_eq!(app, Program::named(["claude"]));
-    let waits = [
-        ("question", Wait::Question),
-        ("auth", Wait::SignIn),
-        ("unheard-of", Wait::Input),
-    ];
+    let waits = [("question", Wait::Question), ("auth", Wait::SignIn), ("unheard-of", Wait::Input)];
     for (kind, wait) in waits {
         let records = json!([{"state": "blocked", "kind": kind}]);
         assert_eq!(reported(&records).0, Activity::Blocked(wait));
@@ -162,11 +148,7 @@ fn zoom_and_minimized_layers_are_respected() {
     // are those behind a zoomed one.
     let ids = |panes: &[Pane]| panes.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
     assert_eq!(ids(&windows[0].hidden), ["hidden"]);
-    let layout = split(
-        FULL,
-        leaf([0., 0., 0.5, 1.], "a"),
-        leaf([0.5, 0., 0.5, 1.], "b"),
-    );
+    let layout = split(FULL, leaf([0., 0., 0.5, 1.], "a"), leaf([0.5, 0., 0.5, 1.], "b"));
     let tab = json!({"window_id": "w", "zoomed_block_id": "b", "layers": [{"layout": layout}]});
     let windows = self::windows(&json!({"windows": [tab]}));
     assert_eq!(ids(&windows[0].panes), ["b"]);
@@ -206,10 +188,7 @@ fn the_list_of_sessions_follows_the_news_of_it() {
         let ids = sessions.iter().map(|session| session.id.clone());
         ids.collect::<Vec<_>>().join(" ")
     };
-    let created = |session: &str| Event::Created {
-        session: session.into(),
-        name: String::new(),
-    };
+    let created = |session: &str| Event::Created { session: session.into(), name: String::new() };
     let moved = |session: &str, before: Option<&str>| Event::Moved {
         session: session.into(),
         before: before.map(str::to_owned),
@@ -267,19 +246,9 @@ fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at
     };
     let mut blocks = HashMap::from([("p".to_owned(), block)]);
     let pane = |blocks: &HashMap<String, Block>| {
-        let held = Pane {
-            id: "p".into(),
-            title: "Terminal".into(),
-            ..Pane::default()
-        };
-        let tab = Window {
-            panes: vec![held],
-            ..Window::default()
-        };
-        let mut sessions = vec![Session {
-            windows: vec![tab],
-            ..Session::default()
-        }];
+        let held = Pane { id: "p".into(), title: "Terminal".into(), ..Pane::default() };
+        let tab = Window { panes: vec![held], ..Window::default() };
+        let mut sessions = vec![Session { windows: vec![tab], ..Session::default() }];
         fill(&mut sessions, blocks);
         sessions.remove(0).windows.remove(0).panes.remove(0)
     };
@@ -299,10 +268,7 @@ fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at
     let working = json!({"state": "working", "title": "Refactor auth", "progress": 60});
     note(&mut blocks, status(working));
     let held = pane(&blocks);
-    assert_eq!(
-        (held.task.as_str(), held.progress),
-        ("Refactor auth", Some(60))
-    );
+    assert_eq!((held.task.as_str(), held.progress), ("Refactor auth", Some(60)));
     note(&mut blocks, status(json!({"state": "working"})));
     let held = pane(&blocks);
     assert_eq!((held.task.as_str(), held.progress), ("", Some(10)));
@@ -360,10 +326,7 @@ fn what_keeps_failing_is_tried_again_less_often_or_not_at_all() {
 #[test]
 fn control_and_release_keys_never_duplicate_text() {
     assert_eq!(key_payload("c", "key_c", model::CTRL, "press")["text"], "");
-    assert_eq!(
-        key_payload("A", "key_a", model::SHIFT, "press")["text"],
-        "A"
-    );
+    assert_eq!(key_payload("A", "key_a", model::SHIFT, "press")["text"], "A");
     assert_eq!(key_payload("a", "key_a", 0, "release")["text"], "");
     assert_eq!(key_payload("a", "key_a", 0, "repeat")["text"], "a");
     assert_eq!(key_payload("a", "key_a", 0, "repeat")["action"], "repeat");
@@ -388,9 +351,7 @@ fn a_key_is_known_by_what_it_types_without_shift() {
     let (shift, ctrl) = (model::SHIFT, model::CTRL);
     let unshifted = |key, code, bits| {
         let key = key_payload(key, code, bits, "press");
-        key["unshifted_codepoint"]
-            .as_u64()
-            .and_then(|c| char::from_u32(c as u32))
+        key["unshifted_codepoint"].as_u64().and_then(|c| char::from_u32(c as u32))
     };
     assert_eq!(unshifted("n", "key_n", 0), Some('n'));
     assert_eq!(unshifted("N", "key_n", shift), Some('n'));
@@ -429,18 +390,11 @@ fn client() -> (Client, mpsc::Receiver<(Action, u64)>) {
     let (actions, queue) = mpsc::channel(256);
     let shared = Shared {
         state: Arc::default(),
-        wake: Arc::new(Wake {
-            pending: AtomicBool::new(false),
-            callback: Arc::new(|| {}),
-        }),
+        wake: Arc::new(Wake { pending: AtomicBool::new(false), callback: Arc::new(|| {}) }),
         herald: Herald::new().0,
     };
     let done = flume::bounded(0).1;
-    let client = Client {
-        actions,
-        shared,
-        done,
-    };
+    let client = Client { actions, shared, done };
     (client, queue)
 }
 
@@ -488,10 +442,7 @@ fn input_racing_a_disconnect_never_outlives_it() {
 #[test]
 fn what_is_asked_to_be_shown_is_shown_at_once_and_numbered() {
     let (client, mut queue) = client();
-    let tab = |id: &str| Window {
-        id: id.into(),
-        ..Window::default()
-    };
+    let tab = |id: &str| Window { id: id.into(), ..Window::default() };
     let session = |id: &str, active: &str| Session {
         id: id.into(),
         name: id.into(),
@@ -543,22 +494,13 @@ fn a_terminal_fed_no_more_is_kept_for_its_last_screen() {
     wakes.recv_timeout(WAIT).unwrap();
     // One has drawn its pane, and one has yet to.
     let (blank, _wakes) = worker(Vec::new());
-    let pane = |id: &str| Pane {
-        id: id.into(),
-        ..Pane::default()
-    };
-    let tab = Window {
-        id: "w".into(),
-        panes: vec![pane("drawn"), pane("blank")],
-        ..Window::default()
-    };
+    let pane = |id: &str| Pane { id: id.into(), ..Pane::default() };
+    let tab =
+        Window { id: "w".into(), panes: vec![pane("drawn"), pane("blank")], ..Window::default() };
     {
         let mut state = client.shared.lock();
-        state.view.sessions = vec![Session {
-            id: "s".into(),
-            windows: vec![tab],
-            ..Session::default()
-        }];
+        state.view.sessions =
+            vec![Session { id: "s".into(), windows: vec![tab], ..Session::default() }];
         state.view.selected_session = Some("s".into());
         state.terminals.insert("drawn".into(), drawn);
         state.terminals.insert("blank".into(), blank);
@@ -568,12 +510,7 @@ fn a_terminal_fed_no_more_is_kept_for_its_last_screen() {
     }
     // What was drawn is still shown, and can be asked for what is selected on it.
     // Nothing is typed into it: only a terminal that is fed takes input.
-    let shown = |id: &str| {
-        client
-            .snapshot()
-            .pane(id)
-            .is_some_and(|p| p.frame.is_some())
-    };
+    let shown = |id: &str| client.snapshot().pane(id).is_some_and(|p| p.frame.is_some());
     assert!(shown("drawn") && client.terminal("drawn").is_ok());
     assert!(client.shared.terminal("drawn").is_none());
     assert!(!shown("blank") && client.terminal("blank").is_err());
@@ -672,11 +609,7 @@ mod served {
     }
 
     pub async fn answer(socket: &mut Socket, id: &str, payload: Value) {
-        say(
-            socket,
-            json!({"type": "response", "id": id, "payload": payload}),
-        )
-        .await;
+        say(socket, json!({"type": "response", "id": id, "payload": payload})).await;
     }
 
     /// Answer what a client asks first, with the sessions there are, and what
@@ -768,12 +701,7 @@ async fn news_sent_ahead_of_an_answer_is_not_told_as_if_it_came_after() {
         answer(&mut socket, id, payload).await;
     }
     // The last view comes, and the client is connected.
-    answer(
-        &mut socket,
-        &views["s2"],
-        json!({"revision": 1, "windows": []}),
-    )
-    .await;
+    answer(&mut socket, &views["s2"], json!({"revision": 1, "windows": []})).await;
     let at_work = |view: &View| {
         let pane = view.find("b1").map(|(_, _, pane)| pane.activity);
         view.connected && pane == Some(Activity::Working)
@@ -795,10 +723,7 @@ async fn a_view_that_does_not_come_is_said_and_asked_for_again() {
     // In the server's words, without its code.
     let said = |view: &View| view.error.is_some();
     let view = served::until(&client, "its saying so", said).await;
-    assert_eq!(
-        view.error.as_deref(),
-        Some("A session's tabs were not read: busy")
-    );
+    assert_eq!(view.error.as_deref(), Some("A session's tabs were not read: busy"));
     let view = served::until(&client, "a connection", |view| view.connected).await;
     assert_eq!(view.sessions.len(), 1);
     // Asked for again before long, its tabs come.
@@ -846,16 +771,9 @@ async fn a_server_that_closes_while_a_client_begins_is_said_to_have_and_why() {
     let mut socket = server.welcome().await.unwrap();
     let (_, method, _) = served::asked(&mut socket).await.unwrap();
     assert_eq!(method, "session.bootstrap");
-    let frame = CloseFrame {
-        code: CloseCode::from(1008),
-        reason: "event backlog exceeded".into(),
-    };
+    let frame = CloseFrame { code: CloseCode::from(1008), reason: "event backlog exceeded".into() };
     socket.close(Some(frame)).await.unwrap();
     let lost = |view: &View| view.status.starts_with("Disconnected");
     let view = served::until(&client, "its end", lost).await;
-    assert!(
-        view.status.contains("fell too far behind"),
-        "{}",
-        view.status
-    );
+    assert!(view.status.contains("fell too far behind"), "{}", view.status);
 }

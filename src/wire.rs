@@ -72,9 +72,8 @@ impl Ended {
     /// What a close frame says, on the control connection or on a terminal's `stream`.
     fn closed(frame: Option<CloseFrame>, stream: bool) -> Self {
         // A close with no status is 1005, by the WebSocket standard.
-        let (code, reason) = frame.map_or((1005, String::new()), |frame| {
-            (frame.code.into(), frame.reason.to_string())
-        });
+        let (code, reason) = frame
+            .map_or((1005, String::new()), |frame| (frame.code.into(), frame.reason.to_string()));
         match (stream, code) {
             (true, 4000) => Self::BlockClosed,
             (true, _) => Self::StreamClosed { code, reason },
@@ -148,10 +147,7 @@ impl fmt::Display for Ended {
                 5 => f.write_str("The server did not get the terminal stream's hello in time"),
                 6 => f.write_str("The server failed to open the terminal's stream"),
                 7 => f.write_str("The ticket was for another kind of stream"),
-                _ => write!(
-                    f,
-                    "The server refused the terminal's stream (reason {reason})"
-                ),
+                _ => write!(f, "The server refused the terminal's stream (reason {reason})"),
             },
             Self::Dropped => f.write_str("The connection to the server was lost"),
             Self::Silent => f.write_str("The server stopped answering"),
@@ -240,8 +236,7 @@ pub fn targets(endpoint: &str) -> Result<Vec<Target>> {
                 bail!("Use a Unix socket path, a host name, or an ssh://, ws:// or wss:// endpoint")
             }
         };
-        url.set_scheme(scheme)
-            .map_err(|_| anyhow!("Invalid endpoint scheme"))?;
+        url.set_scheme(scheme).map_err(|_| anyhow!("Invalid endpoint scheme"))?;
         url.set_path("");
         url.set_query(None);
         url.set_fragment(None);
@@ -262,9 +257,7 @@ pub fn targets(endpoint: &str) -> Result<Vec<Target>> {
     };
     match named.port() {
         Some(port) => [at("wss", port), at("ws", port)].into_iter().collect(),
-        None => [at("wss", 443), at("wss", 7297), at("ws", 7297)]
-            .into_iter()
-            .collect(),
+        None => [at("wss", 443), at("wss", 7297), at("ws", 7297)].into_iter().collect(),
     }
 }
 
@@ -295,9 +288,7 @@ pub async fn socket(target: &Target, path: &str, protocol: &str) -> Result<Socke
         };
         url.set_path(path);
         let mut request = url.as_str().into_client_request()?;
-        request
-            .headers_mut()
-            .insert("Sec-WebSocket-Protocol", protocol.parse()?);
+        request.headers_mut().insert("Sec-WebSocket-Protocol", protocol.parse()?);
         let config = WebSocketConfig::default()
             .max_message_size(Some(64 * 1024 * 1024))
             .max_frame_size(Some(16 * 1024 * 1024));
@@ -305,10 +296,7 @@ pub async fn socket(target: &Target, path: &str, protocol: &str) -> Result<Socke
             tokio_tungstenite::client_async_tls_with_config(request, io, Some(config), None)
                 .await?;
         ensure!(
-            response
-                .headers()
-                .get("Sec-WebSocket-Protocol")
-                .and_then(|h| h.to_str().ok())
+            response.headers().get("Sec-WebSocket-Protocol").and_then(|h| h.to_str().ok())
                 == Some(protocol),
             "Rex did not negotiate {protocol}"
         );
@@ -431,11 +419,7 @@ impl Rpc {
     pub async fn enqueue(&self, method: &str, payload: Value) -> Result<Response> {
         let (reply, rx) = oneshot::channel();
         self.requests
-            .send(Request {
-                method: method.into(),
-                payload,
-                reply,
-            })
+            .send(Request { method: method.into(), payload, reply })
             .await
             .map_err(|_| anyhow!(ENDED))?;
         Ok(rx)
@@ -509,12 +493,8 @@ impl Control {
         if let Some(token) = token {
             hello["reconnect_token"] = json!(token);
         }
-        send_with_deadline(
-            &mut socket,
-            Message::Text(hello.to_string().into()),
-            STEP_TIMEOUT,
-        )
-        .await?;
+        send_with_deadline(&mut socket, Message::Text(hello.to_string().into()), STEP_TIMEOUT)
+            .await?;
         // A server that cannot serve this client closes instead, and says why.
         let welcome = tokio::time::timeout(STEP_TIMEOUT, text(&mut socket)).await;
         let welcome = welcome.context("The server did not answer this client's hello")??;
@@ -533,16 +513,10 @@ impl Control {
             );
             return Err(Ended::Incompatible(why).into());
         }
-        let client_id = welcome["client"]["id"]
-            .as_str()
-            .context("Missing Rex client identity")?
-            .to_owned();
-        let reconnect_token = welcome["client"]["reconnect_token"]
-            .as_str()
-            .map(str::to_owned);
-        let max_message = welcome["limits"]["max_message_bytes"]
-            .as_u64()
-            .unwrap_or(65536) as usize;
+        let client_id =
+            welcome["client"]["id"].as_str().context("Missing Rex client identity")?.to_owned();
+        let reconnect_token = welcome["client"]["reconnect_token"].as_str().map(str::to_owned);
+        let max_message = welcome["limits"]["max_message_bytes"].as_u64().unwrap_or(65536) as usize;
         let (requests, receiver) = mpsc::channel(MAX_IN_FLIGHT);
         let (sender, events) = mpsc::unbounded_channel();
         let closing = Arc::new(Notify::new());
@@ -628,10 +602,7 @@ pub enum News {
     /// Its title.
     Title(String),
     /// The program in its foreground, by the name `program` gives it, and its process.
-    Program {
-        program: Option<Program>,
-        pid: Option<u64>,
-    },
+    Program { program: Option<Program>, pid: Option<u64> },
     /// What its programs say they are doing: each record of it that has changed, by
     /// its name and whole, or `None` for one that is no more.
     Status(Vec<(String, Option<Value>)>),
@@ -683,27 +654,20 @@ fn event(message: &Value) -> Option<Event> {
             session: text(&fields["session"]["session_id"])?,
             name: text(&fields["session"]["label"]).unwrap_or_default(),
         },
-        "session_destroyed" => Event::Destroyed {
-            session: text(&fields["session_id"])?,
-        },
+        "session_destroyed" => Event::Destroyed { session: text(&fields["session_id"])? },
         "session_moved" => Event::Moved {
             session: text(&fields["session_id"])?,
             before: text(&fields["before_session_id"]),
         },
-        "session_view_changed" => Event::Viewed {
-            session: session?.to_owned(),
-            revision: fields["revision"].as_u64()?,
-        },
-        "hosts_changed" => Event::Hosts {
-            hash: text(&fields["hash"])?,
-        },
+        "session_view_changed" => {
+            Event::Viewed { session: session?.to_owned(), revision: fields["revision"].as_u64()? }
+        }
+        "hosts_changed" => Event::Hosts { hash: text(&fields["hash"])? },
         "block_event" => Event::Block {
             block: text(&fields["block_id"])?,
             news: news(fields["name"].as_str()?, &fields["payload"])?,
         },
-        "keymap_changed" => Event::Keymap {
-            hash: text(&fields["hash"])?,
-        },
+        "keymap_changed" => Event::Keymap { hash: text(&fields["hash"])? },
         "client_perform_requested" => Event::Asked(Asked {
             call: Some(text(&fields["call_id"])?),
             name: text(&fields["action"])?,
@@ -759,10 +723,7 @@ fn response_result(message: &Value) -> Answer {
     let error = &message["error"];
     if error.is_object() {
         let text = |key: &str| error[key].as_str().unwrap_or_default().to_owned();
-        return Err(Failed::Refused {
-            code: text("code"),
-            message: text("message"),
-        });
+        return Err(Failed::Refused { code: text("code"), message: text("message") });
     }
     Ok(message.get("payload").cloned().unwrap_or_else(|| json!({})))
 }
@@ -776,10 +737,7 @@ struct Pending {
 
 /// Tell the server this client is leaving, so that it does not hold the client's place.
 async fn goodbye(socket: &mut Socket) -> Result<()> {
-    let frame = CloseFrame {
-        code: CloseCode::Normal,
-        reason: "".into(),
-    };
+    let frame = CloseFrame { code: CloseCode::Normal, reason: "".into() };
     if socket.close(Some(frame)).await.is_ok() {
         // Written is not yet sent: a tunnel that ends with this client may still be
         // holding it. The server's own close, or the link's end, says that it came.

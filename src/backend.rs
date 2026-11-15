@@ -161,39 +161,25 @@ impl Client {
         let (ended, done) = flume::bounded(0);
         let shared = Shared {
             state: Arc::default(),
-            wake: Arc::new(Wake {
-                pending: AtomicBool::new(false),
-                callback: wake,
-            }),
+            wake: Arc::new(Wake { pending: AtomicBool::new(false), callback: wake }),
             herald,
         };
         let (actions, receiver) = mpsc::channel(256);
         let worker = shared.clone();
-        let started = std::thread::Builder::new()
-            .name("rex-io".into())
-            .spawn(move || {
-                // Dropped last, once the runtime and all it carried are gone.
-                let _ended = ended;
-                match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => {
-                        runtime.block_on(run(endpoints, keymap, theme, receiver, worker))
-                    }
-                    Err(error) => {
-                        worker.status(format!("Cannot start network runtime: {error}"), false)
-                    }
+        let started = std::thread::Builder::new().name("rex-io".into()).spawn(move || {
+            // Dropped last, once the runtime and all it carried are gone.
+            let _ended = ended;
+            match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => runtime.block_on(run(endpoints, keymap, theme, receiver, worker)),
+                Err(error) => {
+                    worker.status(format!("Cannot start network runtime: {error}"), false)
                 }
-            });
+            }
+        });
         if let Err(error) = started {
             shared.status(format!("Cannot start network worker: {error}"), false);
         }
-        Self {
-            actions,
-            shared,
-            done,
-        }
+        Self { actions, shared, done }
     }
 
     pub fn snapshot(&self) -> View {
@@ -289,9 +275,7 @@ impl Client {
         let state = self.shared.lock();
         let kept = || state.last.get(pane)?.as_ref();
         let terminal = state.terminals.get(pane).or_else(kept);
-        terminal
-            .cloned()
-            .ok_or_else(|| "Terminal is not ready".into())
+        terminal.cloned().ok_or_else(|| "Terminal is not ready".into())
     }
 }
 
@@ -335,14 +319,8 @@ async fn run(
     mut actions: mpsc::Receiver<(Action, u64)>,
     shared: Shared,
 ) {
-    let login = endpoints
-        .iter()
-        .any(|endpoint| endpoint.starts_with("ssh://"));
-    let mut link = Link {
-        keymap,
-        theme,
-        ..Link::default()
-    };
+    let login = endpoints.iter().any(|endpoint| endpoint.starts_with("ssh://"));
+    let mut link = Link { keymap, theme, ..Link::default() };
     // Tries in a row that never connected.
     let mut failures = 0;
     loop {
@@ -689,8 +667,7 @@ impl<'a> Connection<'a> {
         let before = std::mem::replace(&mut link.attached, shown.iter().cloned().collect());
         for before in before.iter().filter(|_| control.resumed) {
             if Some(before) != shown.as_ref() {
-                rpc.call("session.detach", json!({"session_id": before}))
-                    .await?;
+                rpc.call("session.detach", json!({"session_id": before})).await?;
             }
         }
         // Events of the whole server, so that tabs not on show keep their titles too.
@@ -701,12 +678,9 @@ impl<'a> Connection<'a> {
         let listed = items(&boot["attach_all"]["sessions"]).filter_map(|session| {
             Some((session["session_id"].as_str()?, session["label"].as_str()))
         });
-        let views: HashMap<_, _> = listed
-            .clone()
-            .map(|(id, _)| (id.to_owned(), Held::default()))
-            .collect();
-        link.blocks
-            .retain(|_, block| views.contains_key(&block.session));
+        let views: HashMap<_, _> =
+            listed.clone().map(|(id, _)| (id.to_owned(), Held::default())).collect();
+        link.blocks.retain(|_, block| views.contains_key(&block.session));
         shared.change(|s| {
             let mut held = std::mem::take(&mut s.view.sessions);
             for (id, name) in listed {
@@ -800,8 +774,7 @@ impl<'a> Connection<'a> {
         let held = self.views.get_mut(session);
         if held.is_some_and(|held| held.want(revision)) {
             let request = json!({"session_id": session});
-            self.ask(Reply::View(session.into()), "session.view", request)
-                .await;
+            self.ask(Reply::View(session.into()), "session.view", request).await;
         }
     }
 
@@ -878,9 +851,7 @@ impl<'a> Connection<'a> {
             }
             Event::Destroyed { ref session } => {
                 self.views.remove(session);
-                self.link
-                    .blocks
-                    .retain(|_, block| &block.session != session);
+                self.link.blocks.retain(|_, block| &block.session != session);
             }
             Event::Moved { .. } => {}
         }
@@ -899,9 +870,7 @@ impl<'a> Connection<'a> {
             let waits = |held: &mut model::Asked| held.call == call;
             let untaken = shared.lock().view.asked.extract_if(.., waits).count() > 0;
             if let Some(call) = call.filter(|_| untaken) {
-                let _ = rpc
-                    .enqueue("client.reply", reply(&call, Some("refused")))
-                    .await;
+                let _ = rpc.enqueue("client.reply", reply(&call, Some("refused"))).await;
             }
         });
     }
@@ -932,15 +901,11 @@ impl<'a> Connection<'a> {
             }
             (Reply::Keymap, Ok(keymap)) => {
                 self.keys = keymap["config"]["hash"].as_str().unwrap_or_default().into();
-                return self
-                    .shared
-                    .change(|s| s.view.keymap = Some(Arc::new(keymap)));
+                return self.shared.change(|s| s.view.keymap = Some(Arc::new(keymap)));
             }
             // This client's own keys go on as they are.
             (Reply::Keymap, Err(error)) => {
-                return self
-                    .shared
-                    .fail(format!("The server's keys were not read: {error}"));
+                return self.shared.fail(format!("The server's keys were not read: {error}"));
             }
             (Reply::Performed, Ok(done)) => {
                 // Its configuration may ask this client for actions of its own, in turn.
@@ -975,9 +940,8 @@ impl<'a> Connection<'a> {
                     terminal.folder = text(&folder["pwd"]);
                     terminal.foreground = process["foreground"]["pid"].as_u64();
                     let records = items(&status["records"]);
-                    terminal.records = records
-                        .map(|record| (text(&record["id"]), record.clone()))
-                        .collect();
+                    terminal.records =
+                        records.map(|record| (text(&record["id"]), record.clone())).collect();
                     held.into_iter().for_each(|news| terminal.note(news));
                 });
             }
@@ -1073,10 +1037,8 @@ impl<'a> Connection<'a> {
             let current = view.selected_session.as_ref().is_some_and(current);
             let settled = *picks == self.settled && self.unsettled == 0;
             view.settle(settled && current);
-            let seen = |id: &String| {
-                view.tabs()
-                    .any(|(_, tab)| tab.panes.iter().any(|p| &p.id == id))
-            };
+            let seen =
+                |id: &String| view.tabs().any(|(_, tab)| tab.panes.iter().any(|p| &p.id == id));
             if let Some(made) = self.made.take_if(|made| seen(made)) {
                 view.made = Some(made);
             }
@@ -1115,8 +1077,7 @@ impl<'a> Connection<'a> {
             },
         };
         self.joining = Some(session.clone());
-        self.ask(reply, method, json!({"session_id": session}))
-            .await;
+        self.ask(reply, method, json!({"session_id": session})).await;
     }
 
     /// Stream the terminals of the tab on show, once its session is joined, and
@@ -1151,10 +1112,8 @@ impl<'a> Connection<'a> {
                 let held = (session.id.clone(), tab.id.clone());
                 if self.warm.contains(&held) {
                     let on_show = shown.as_ref() == Some(&held);
-                    let terminals = tab
-                        .panes
-                        .iter()
-                        .filter(|pane| self.link.blocks.contains_key(&pane.id));
+                    let terminals =
+                        tab.panes.iter().filter(|pane| self.link.blocks.contains_key(&pane.id));
                     kept.extend(
                         terminals
                             .map(|pane| (pane.id.clone(), (held.0.clone(), on_show, pane.owner))),
@@ -1209,8 +1168,7 @@ impl<'a> Connection<'a> {
                         pane.clone(),
                         shown.clone(),
                     );
-                    self.streams
-                        .insert(pane.clone(), (tokio::spawn(stream), shown));
+                    self.streams.insert(pane.clone(), (tokio::spawn(stream), shown));
                 }
             }
             if !on_show || owner {
@@ -1248,8 +1206,7 @@ impl<'a> Connection<'a> {
         let before = block.says().0;
         change(block);
         let said = block.news(before).filter(|_| loud);
-        self.shared
-            .change(|s| fill(&mut s.view.sessions, &self.link.blocks));
+        self.shared.change(|s| fill(&mut s.view.sessions, &self.link.blocks));
         if let Some(said) = said {
             self.tell(id, &said);
         }
@@ -1351,11 +1308,7 @@ impl<'a> Connection<'a> {
                 let payload = json!({"layout": shell(), "focus": true});
                 (session, "session.new_window", payload, None)
             }
-            Action::Edit {
-                session,
-                window,
-                edit,
-            } => {
+            Action::Edit { session, window, edit } => {
                 let (method, mut payload) = match (edit, window.is_some()) {
                     (Edit::Rename(name), true) => {
                         ("session.set_window_label", json!({"label": name}))
@@ -1426,12 +1379,7 @@ impl<'a> Connection<'a> {
                 let payload = json!({"block_id": pane});
                 (session, "session.focus_block", payload, None)
             }
-            Action::Perform {
-                name,
-                args,
-                origin,
-                pane,
-            } => {
+            Action::Perform { name, args, origin, pane } => {
                 // A terminal's action is done to a pane, in the pane's session.
                 // One of the configuration's is given what there is.
                 let session = match &pane {
@@ -1472,18 +1420,13 @@ impl<'a> Connection<'a> {
         let event =
             |kind: &str, payload: Value| json!({"event": {"type": kind, "payload": payload}});
         // What is typed, which a terminal takes before it has drawn.
-        let typed = matches!(
-            action,
-            Action::Key { .. } | Action::Text { .. } | Action::Paste { .. }
-        );
+        let typed =
+            matches!(action, Action::Key { .. } | Action::Text { .. } | Action::Paste { .. });
         // Input that engages the terminal takes ownership and returns to live
         // output. A size engages nothing, and is taken by a terminal not yet seen.
         let (pane, method, mut payload, engage) = match action {
             Action::Resize { pane, size } => {
-                ensure!(
-                    size.cols > 0 && size.rows > 0,
-                    "Terminal dimensions must be nonzero"
-                );
+                ensure!(size.cols > 0 && size.rows > 0, "Terminal dimensions must be nonzero");
                 // The server holds the size asked by a client that does not own the
                 // terminal, for when it does.
                 let args = json!({
@@ -1495,15 +1438,7 @@ impl<'a> Connection<'a> {
                 let method = "com.superlogical.terminal.resize";
                 (pane, method, json!({"args": args}), None)
             }
-            Action::Key {
-                pane,
-                key,
-                code,
-                modifiers,
-                pressed,
-                repeat,
-                prefix,
-            } => {
+            Action::Key { pane, key, code, modifiers, pressed, repeat, prefix } => {
                 let stroke = match (pressed, repeat) {
                     (false, _) => "release",
                     (true, false) => "press",
@@ -1525,26 +1460,14 @@ impl<'a> Connection<'a> {
                 let payload = event("paste", json!({"text": text}));
                 (pane, "block.event", payload, Some(true))
             }
-            Action::Mouse {
-                pane,
-                kind,
-                x,
-                y,
-                button,
-                modifiers,
-            } => {
+            Action::Mouse { pane, kind, x, y, button, modifiers } => {
                 // Shift is the local override for mouse capture; programs never see it.
                 let mods = modifier_names(modifiers & !model::SHIFT);
                 let mut mouse = json!({"action": kind, "x": x, "y": y, "mods": mods});
                 if let Some(button) = button {
                     mouse["button"] = json!(button);
                 }
-                (
-                    pane,
-                    "block.event",
-                    event("mouse", mouse),
-                    Some(kind == "press"),
-                )
+                (pane, "block.event", event("mouse", mouse), Some(kind == "press"))
             }
             Action::Wheel { pane, x, y, lines } => {
                 let wheel = json!({"x": x, "y": y, "delta_x": 0, "delta_y": lines});
@@ -1679,9 +1602,7 @@ async fn stream(
         "subprotocol": wire::DATA_PROTOCOL,
     });
     let response = rpc.call("data.connect", request).await?;
-    let ticket = response["ticket"]
-        .as_str()
-        .context("Missing terminal ticket")?;
+    let ticket = response["ticket"].as_str().context("Missing terminal ticket")?;
     let mut socket = wire::socket(target, "/api/data", wire::DATA_PROTOCOL).await?;
     let nonce = wire::handshake(&mut socket, ticket).await?;
     // The worker says when it has drawn, and so when it has stopped. One that
@@ -1963,27 +1884,19 @@ fn rect(value: &Value) -> Option<[f32; 4]> {
 }
 
 fn modifier_names(bits: u8) -> String {
-    [
-        (model::SHIFT, "shift"),
-        (model::CTRL, "ctrl"),
-        (model::ALT, "alt"),
-        (model::SUPER, "super"),
-    ]
-    .into_iter()
-    .filter_map(|(bit, name)| (bits & bit != 0).then_some(name))
-    .collect::<Vec<_>>()
-    .join("+")
+    [(model::SHIFT, "shift"), (model::CTRL, "ctrl"), (model::ALT, "alt"), (model::SUPER, "super")]
+        .into_iter()
+        .filter_map(|(bit, name)| (bits & bit != 0).then_some(name))
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// A key as the server is told of it. `key` is what it types, `code` the name of
 /// the key itself, and `stroke` is `press`, `repeat` or `release`.
 fn key_payload(key: &str, code: &str, bits: u8, stroke: &str) -> Value {
     // Releases and Control/Super chords do not type anything.
-    let text = if stroke != "release" && bits & (model::CTRL | model::SUPER) == 0 {
-        key
-    } else {
-        ""
-    };
+    let text =
+        if stroke != "release" && bits & (model::CTRL | model::SUPER) == 0 { key } else { "" };
     let shift = bits & model::SHIFT != 0;
     // Shift is used up in typing a capital or a symbol. In Shift+Tab it is not, nor
     // in Shift+Enter or Shift+Space: those type what they would without it.

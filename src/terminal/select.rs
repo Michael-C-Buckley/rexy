@@ -65,9 +65,7 @@ impl Selecting {
             return self.drag(terminal, at, false);
         }
         let (cell, [x, y]) = place(&grid(terminal)?, at);
-        self.press
-            .set_position(x, y)?
-            .set_time(self.began.elapsed())?;
+        self.press.set_position(x, y)?.set_time(self.began.elapsed())?;
         let pressed = terminal.grid_ref(Point::Viewport(cell))?;
         let selected = self.press.apply(&mut self.gesture, terminal, pressed)?;
         terminal.set_selection(selected.as_ref())?;

@@ -21,10 +21,7 @@ impl App {
     /// the focused pane or below it. They stand together, apart from the window's own.
     fn makers(&mut self, ui: &mut egui::Ui, view: &View) {
         self.button(ui, view, Icon::Plus, "New tab", "client.tab.new");
-        let splits = [
-            (Icon::SplitRight, "pane.split.right"),
-            (Icon::SplitDown, "pane.split.down"),
-        ];
+        let splits = [(Icon::SplitRight, "pane.split.right"), (Icon::SplitDown, "pane.split.down")];
         for (icon, name) in splits {
             self.button(ui, view, icon, title(name), name);
         }
@@ -53,10 +50,7 @@ impl App {
                     label: &pane.title,
                     ..Default::default()
                 };
-                if item(ui, Vec2::new(ui.available_width(), 32.0), row)
-                    .0
-                    .clicked()
-                {
+                if item(ui, Vec2::new(ui.available_width(), 32.0), row).0.clicked() {
                     picked = Some(pane.id.clone());
                 }
             }
@@ -134,10 +128,10 @@ impl App {
                     session: session.id.clone(),
                     window: None,
                 });
-                let tabbed = named.clone().zip(tab).map(|(named, tab)| Target {
-                    window: Some(tab.id.clone()),
-                    ..named
-                });
+                let tabbed = named
+                    .clone()
+                    .zip(tab)
+                    .map(|(named, tab)| Target { window: Some(tab.id.clone()), ..named });
                 // The tab was asked to close, and asks again after the names, on
                 // a button so wide.
                 let asked = tabbed.clone();
@@ -154,12 +148,7 @@ impl App {
                         DIM,
                         None,
                     ),
-                    (
-                        session.map(|session| session.name.as_str()),
-                        &bold(BODY),
-                        TEXT,
-                        named,
-                    ),
+                    (session.map(|session| session.name.as_str()), &bold(BODY), TEXT, named),
                     (tab.map(Window::name), &plain, DIM, tabbed),
                     // A tab that was given a name has this to add.
                     (
@@ -189,8 +178,7 @@ impl App {
                         None => {
                             let name = fitted(ui, name, font.clone(), color, left);
                             let size = name.size();
-                            ui.painter()
-                                .galley(at - egui::vec2(0.0, size.y / 2.0), name, color);
+                            ui.painter().galley(at - egui::vec2(0.0, size.y / 2.0), name, color);
                             size
                         }
                     };

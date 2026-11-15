@@ -32,8 +32,7 @@ fn corners(ctx: &egui::Context) -> f32 {
 /// The window's ground, which everything in it lies on.
 pub fn ground(ui: &egui::Ui, fill: egui::Color32) {
     let ctx = ui.ctx();
-    ui.painter()
-        .rect_filled(ctx.content_rect(), corners(ctx), fill);
+    ui.painter().rect_filled(ctx.content_rect(), corners(ctx), fill);
 }
 
 /// A row of controls along the top of the window. Where none of them is under
@@ -87,8 +86,7 @@ pub fn edges(ui: &egui::Ui) {
     }
     let window = ctx.content_rect();
     let line = Stroke::new(1.0, EDGE_LINE);
-    ui.painter()
-        .rect_stroke(window, corners(ctx), line, StrokeKind::Inside);
+    ui.painter().rect_stroke(window, corners(ctx), line, StrokeKind::Inside);
     use ResizeDirection::*;
     // The corners come after the sides they lie over.
     let (x, y) = (window.x_range(), window.y_range());

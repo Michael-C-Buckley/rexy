@@ -25,12 +25,7 @@ impl App {
             return;
         }
         self.find_close();
-        self.find = Some(Find {
-            pane: pane.into(),
-            text: String::new(),
-            fresh: true,
-            shown: true,
-        });
+        self.find = Some(Find { pane: pane.into(), text: String::new(), fresh: true, shown: true });
     }
 
     /// Stop looking. The match last shown stays selected.
@@ -58,11 +53,7 @@ impl App {
         let font = FontId::proportional(SMALL);
         let said = ui.painter().layout_no_wrap(said, font, DIM);
         // The whole bar is the field, so that a click anywhere on it leaves it open.
-        let margin = Margin {
-            left: 10,
-            right: (said.size().x + 20.0) as i8,
-            ..Margin::ZERO
-        };
+        let margin = Margin { left: 10, right: (said.size().x + 20.0) as i8, ..Margin::ZERO };
         let field = egui::TextEdit::singleline(&mut find.text)
             .id(egui::Id::unique("find"))
             .hint_text("Find")

@@ -35,10 +35,7 @@ fn pressed(keys: &[&str]) -> Vec<Vec<String>> {
 
 /// What a press comes to, by the name of what it runs.
 fn step<'a>(map: &'a Keymap, modes: &[&str], keys: &[&str]) -> Result<&'a str, Step<'a>> {
-    let modes: Vec<_> = modes
-        .iter()
-        .map(|mode| ((*mode).to_owned(), false))
-        .collect();
+    let modes: Vec<_> = modes.iter().map(|mode| ((*mode).to_owned(), false)).collect();
     let can = |bound: &Binding| bound.name != "client.mac.only";
     match resolve(map, &modes, &pressed(keys), can) {
         Step::Run(bound) => Ok(&bound.name),
@@ -73,10 +70,7 @@ fn a_key_does_the_first_thing_bound_to_it_that_can_be_done() {
     assert_eq!(step(&map, &[], &["ctrl+q"]), Err(Step::Pass));
     // By its place on the keyboard as by what it types.
     let place = [vec!["ctrl+e".to_owned(), "ctrl+[KeyT]".to_owned()]];
-    assert_eq!(
-        resolve(&map, &[], &place, |_| true),
-        Step::Run(&map.bindings[6])
-    );
+    assert_eq!(resolve(&map, &[], &place, |_| true), Step::Run(&map.bindings[6]));
 }
 
 #[test]
@@ -90,10 +84,7 @@ fn a_sequence_waits_for_its_keys_and_hides_the_key_it_starts_with() {
     assert_eq!(step(&map, &[], &["ctrl+b", "esc"]), Err(Step::Void));
     // With nothing the sequence could come to, its first key is free.
     let none = |bound: &Binding| bound.keys.len() == 1;
-    assert_eq!(
-        resolve(&map, &[], &pressed(&["ctrl+b"]), none),
-        Step::Run(&map.bindings[11])
-    );
+    assert_eq!(resolve(&map, &[], &pressed(&["ctrl+b"]), none), Step::Run(&map.bindings[11]));
 }
 
 #[test]
@@ -109,10 +100,7 @@ fn a_mode_has_its_own_keys_and_leaves_the_rest_unless_it_says_otherwise() {
     assert_eq!(step(&map, &["move"], &["esc"]), Err(Step::Leave));
     // One that is all there is ignores every other key. The last entered is asked first.
     assert_eq!(step(&map, &["move", "only"], &["left"]), Err(Step::Void));
-    assert_eq!(
-        step(&map, &["only", "move"], &["left"]),
-        Ok("pane.focus.left")
-    );
+    assert_eq!(step(&map, &["only", "move"], &["left"]), Ok("pane.focus.left"));
     assert_eq!(step(&map, &["only", "move"], &["ctrl+m"]), Err(Step::Void));
 }
 
@@ -161,10 +149,7 @@ fn what_can_be_pressed_next_is_said_with_what_it_does() {
         next.iter().map(said).collect::<Vec<_>>()
     };
     // After the first key of a sequence, the keys that go on from it.
-    assert_eq!(
-        next(&[], &["ctrl+b"]),
-        ["c: New Tab", "x: Send to Terminal"]
-    );
+    assert_eq!(next(&[], &["ctrl+b"]), ["c: New Tab", "x: Send to Terminal"]);
     // Nothing goes on from a key that is whole.
     assert!(next(&[], &["ctrl+l"]).is_empty());
     // In a mode, what the mode binds, and that more keys follow one of them.

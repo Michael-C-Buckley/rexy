@@ -25,11 +25,7 @@ pub enum Drawing {
     /// light or heavy.
     Arms([u8; 4]),
     /// A line across or down in so many dashes, light or heavy.
-    Dashes {
-        upright: bool,
-        count: u8,
-        heavy: bool,
-    },
+    Dashes { upright: bool, count: u8, heavy: bool },
     /// A quarter circle between two sides: toward the right or not, and down or not.
     Arc { right: bool, down: bool },
     /// Part of the cell, filled: its edges as eighths of the cell, from left,
@@ -57,10 +53,7 @@ pub fn drawing(c: char) -> Option<Drawing> {
             },
             heavy: code & 1 != 0,
         },
-        0x256D..=0x2570 => Arc {
-            right: matches!(code, 0x256D | 0x2570),
-            down: code < 0x256F,
-        },
+        0x256D..=0x2570 => Arc { right: matches!(code, 0x256D | 0x2570), down: code < 0x256F },
         0x2500..=0x257F => {
             let arms = ARMS[(code - 0x2500) as usize];
             // Double lines and diagonals are left to the font.
@@ -136,11 +129,7 @@ pub fn paint(
                 fill(across(down, true), (y.0, edges.bottom()), color);
             }
         }
-        Drawing::Dashes {
-            upright,
-            count,
-            heavy,
-        } => {
+        Drawing::Dashes { upright, count, heavy } => {
             let weight = 1 + u8::from(heavy);
             let (start, length) = match upright {
                 true => (edges.top(), edges.height()),
@@ -167,10 +156,7 @@ pub fn paint(
             let (x, y) = (across(1, true), across(1, false));
             let center = Pos2::new((x.0 + x.1) / 2.0, (y.0 + y.1) / 2.0);
             let radius = (edges.width().min(edges.height()) / 2.0).max(1.0);
-            let toward = egui::vec2(
-                if right { 1.0 } else { -1.0 },
-                if down { 1.0 } else { -1.0 },
-            );
+            let toward = egui::vec2(if right { 1.0 } else { -1.0 }, if down { 1.0 } else { -1.0 });
             let side = if right { edges.right() } else { edges.left() };
             let end = if down { edges.bottom() } else { edges.top() };
             let turn = center + radius * toward;
@@ -194,10 +180,8 @@ pub fn paint(
         }
         Drawing::Quarters(filled) => {
             let (x, y) = (snap(middle.x), snap(middle.y));
-            let (columns, rows) = (
-                [(edges.left(), x), (x, edges.right())],
-                [(edges.top(), y), (y, edges.bottom())],
-            );
+            let (columns, rows) =
+                ([(edges.left(), x), (x, edges.right())], [(edges.top(), y), (y, edges.bottom())]);
             for quarter in 0..4 {
                 if filled >> quarter & 1 != 0 {
                     fill(columns[quarter % 2], rows[quarter / 2], color);

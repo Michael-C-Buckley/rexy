@@ -102,9 +102,7 @@ impl View {
         };
         let there = |id: &&String| session.windows.iter().any(|tab| &tab.id == *id);
         let asked = self.selected_window.as_ref().filter(|_| !answered);
-        let shown = asked
-            .filter(there)
-            .or(session.active.as_ref().filter(there));
+        let shown = asked.filter(there).or(session.active.as_ref().filter(there));
         let first = || session.windows.first().map(|tab| &tab.id);
         self.selected_window = shown.or_else(first).cloned();
     }
@@ -338,21 +336,14 @@ impl Window {
         };
         let reach = |pane: &Pane| {
             let ((start, end), (from_start, from_end)) = (span(pane, along), span(from, along));
-            let gap = if toward[along] > 0.0 {
-                start - from_end
-            } else {
-                from_start - end
-            };
+            let gap = if toward[along] > 0.0 { start - from_end } else { from_start - end };
             // It lies that way, and alongside rather than merely past a corner.
             let ((start, end), (from_start, from_end)) =
                 (span(pane, 1 - along), span(from, 1 - along));
             let alongside = start < from_end - SLACK && end > from_start + SLACK;
             (gap > -SLACK && alongside).then_some((gap, start))
         };
-        let near = self
-            .panes
-            .iter()
-            .filter_map(|pane| Some((reach(pane)?, pane)));
+        let near = self.panes.iter().filter_map(|pane| Some((reach(pane)?, pane)));
         let nearest = near.min_by(|(a, _), (b, _)| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
         nearest.map(|(_, pane)| pane)
     }
@@ -425,9 +416,9 @@ impl Pane {
 /// `~`, and of one many levels down only the last two are given.
 pub fn folder(pwd: &str) -> String {
     // A shell may give it as an address, with its machine's name.
-    let path = pwd.strip_prefix("file://").map_or(pwd, |rest| {
-        rest.find('/').map_or("/", |slash| &rest[slash..])
-    });
+    let path = pwd
+        .strip_prefix("file://")
+        .map_or(pwd, |rest| rest.find('/').map_or("/", |slash| &rest[slash..]));
     let levels: Vec<_> = path.split('/').filter(|level| !level.is_empty()).collect();
     let (head, rest) = match levels.as_slice() {
         ["home" | "Users", _, rest @ ..] | ["root", rest @ ..] => ("~", rest),

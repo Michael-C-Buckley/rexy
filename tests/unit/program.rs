@@ -20,13 +20,7 @@ fn a_program_gets_the_icon_of_the_first_of_its_names_to_have_one() {
     assert_eq!(icon(&[script, "node", "node"]), "pi");
     assert_eq!(icon(&["sleep"]), "shell-sleep");
     // A shell's icon stands for shells and for whatever has none.
-    for names in [
-        &["-zsh", "zsh"][..],
-        &["frobnicate"],
-        &["shell-top"],
-        &["net"],
-        &[],
-    ] {
+    for names in [&["-zsh", "zsh"][..], &["frobnicate"], &["shell-top"], &["net"], &[]] {
         assert_eq!(icon(names), "shell");
     }
     assert_eq!(icon(&["dotnet"]), "net");

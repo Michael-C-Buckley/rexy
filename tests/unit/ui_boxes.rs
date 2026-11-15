@@ -17,11 +17,7 @@ fn lines_are_known_by_their_arms() {
 #[test]
 fn dashes_arcs_and_blocks_are_drawn_and_the_rest_left_to_the_font() {
     use Drawing::*;
-    let dashes = |upright, count, heavy| Dashes {
-        upright,
-        count,
-        heavy,
-    };
+    let dashes = |upright, count, heavy| Dashes { upright, count, heavy };
     assert_eq!(drawing('┄'), Some(dashes(false, 3, false)));
     assert_eq!(drawing('┇'), Some(dashes(true, 3, true)));
     assert_eq!(drawing('┈'), Some(dashes(false, 4, false)));

@@ -1,14 +1,7 @@
 use super::*;
 
 fn pane(id: &str, [x, y, width, height]: [f32; 4]) -> Pane {
-    Pane {
-        id: id.into(),
-        x,
-        y,
-        width,
-        height,
-        ..Pane::default()
-    }
+    Pane { id: id.into(), x, y, width, height, ..Pane::default() }
 }
 
 #[test]
@@ -33,12 +26,7 @@ fn the_pane_beside_another_is_the_nearest_alongside_it() {
     // Past the nearer pane, not the one it touches only across that pane.
     assert_eq!(beside("corner", left), Some("low"));
     assert_eq!(beside("low", left), Some("left"));
-    for (pane, toward) in [
-        ("left", left),
-        ("top", up),
-        ("corner", right),
-        ("low", down),
-    ] {
+    for (pane, toward) in [("left", left), ("top", up), ("corner", right), ("low", down)] {
         assert_eq!(beside(pane, toward), None);
     }
     assert_eq!(beside("gone", right), None);
@@ -51,29 +39,17 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
         message: message.into(),
         ..pane(id, [0.0; 4])
     };
-    let tab = |panes, hidden| Window {
-        id: "w".into(),
-        zoomed: true,
-        panes,
-        hidden,
-        ..Window::default()
-    };
+    let tab =
+        |panes, hidden| Window { id: "w".into(), zoomed: true, panes, hidden, ..Window::default() };
     // One out of sight is heard too, and of two as pressing, the first.
-    let hidden = vec![
-        says("b", Activity::Done, "Built"),
-        says("c", Activity::Done, "Later"),
-    ];
+    let hidden = vec![says("b", Activity::Done, "Built"), says("c", Activity::Done, "Later")];
     let busy = tab(vec![says("a", Activity::Working, "Thinking")], hidden);
     assert_eq!(busy.says(), (Activity::Done, "Built"));
     let quiet = tab(vec![pane("d", [0.0; 4])], Vec::new());
     assert_eq!(quiet.says(), (Activity::Idle, ""));
     assert_eq!(tab(Vec::new(), Vec::new()).says(), (Activity::Idle, ""));
-    let session = Session {
-        id: "s".into(),
-        name: "s".into(),
-        active: None,
-        windows: vec![quiet, busy],
-    };
+    let session =
+        Session { id: "s".into(), name: "s".into(), active: None, windows: vec![quiet, busy] };
     assert_eq!(session.activity(), Activity::Done);
     // It is told as one line, of whichever parts there are.
     assert_eq!(line("Done", "Built"), "Done: Built");
@@ -83,10 +59,7 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
 }
 
 fn tab(id: &str) -> Window {
-    Window {
-        id: id.into(),
-        ..Window::default()
-    }
+    Window { id: id.into(), ..Window::default() }
 }
 
 fn session(id: &str, active: Option<&str>, tabs: &[&str]) -> Session {
@@ -233,15 +206,9 @@ fn a_pane_says_how_far_along_it_is_only_while_it_works() {
         message: "running tests".into(),
         ..Pane::default()
     };
-    assert_eq!(
-        pane(Activity::Working, Some(60)).word().as_deref(),
-        Some("60%")
-    );
+    assert_eq!(pane(Activity::Working, Some(60)).word().as_deref(), Some("60%"));
     assert_eq!(pane(Activity::Working, None).word(), None);
-    assert_eq!(
-        pane(Activity::Done, Some(60)).word().as_deref(),
-        Some("Done")
-    );
+    assert_eq!(pane(Activity::Done, Some(60)).word().as_deref(), Some("Done"));
     assert_eq!(pane(Activity::Idle, Some(60)).word(), None);
     let saying = pane(Activity::Working, None).saying();
     assert_eq!(saying, "Refactor auth: running tests");

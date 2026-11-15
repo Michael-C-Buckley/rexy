@@ -104,9 +104,7 @@ impl App {
             let said = dot(ui.ctx(), pane.activity).map(|(_, color)| color);
             if let Some((word, color)) = pane.word().zip(said) {
                 let (edge, font) = (header.right_center(), FontId::proportional(SMALL));
-                let word = ui
-                    .painter()
-                    .text(edge, Align2::RIGHT_CENTER, word, font, color);
+                let word = ui.painter().text(edge, Align2::RIGHT_CENTER, word, font, color);
                 header.max.x = word.left() - 8.0;
             }
             // Its program's icon leads, with the dot of what it has to say. A
@@ -122,11 +120,7 @@ impl App {
         let state = self.panes.entry(pane.id.clone()).or_default();
         let within = room(rect, window.split());
         // What dims the terminal, where it is dimmed, keeps to the card's corners.
-        let below = CornerRadius {
-            sw: CARD_RADIUS,
-            se: CARD_RADIUS,
-            ..CornerRadius::ZERO
-        };
+        let below = CornerRadius { sw: CARD_RADIUS, se: CARD_RADIUS, ..CornerRadius::ZERO };
         let corners = match window.split() {
             true => below,
             false => CornerRadius::same(CARD_RADIUS),
@@ -160,9 +154,7 @@ impl App {
         // With Ctrl held, a link under the pointer is there to be followed, even in
         // a program that takes the mouse for itself.
         let link = frame.and_then(|frame| {
-            let pointer = response
-                .hover_pos()
-                .filter(|_| ui.input(|i| i.modifiers.ctrl))?;
+            let pointer = response.hover_pos().filter(|_| ui.input(|i| i.modifiers.ctrl))?;
             let (x, y) = grid.cell_at(pointer, frame);
             link::at(frame, x.into(), y.into())
         });
@@ -182,15 +174,11 @@ impl App {
             && let Some(link) = &link
             && let Err(error) = link::open(&link.target)
         {
-            self.toast
-                .say(format!("The link could not be opened: {error}"));
+            self.toast.say(format!("The link could not be opened: {error}"));
         }
         // The terminal is as large as the card will be at rest, from the first:
         // its program is told its size once, not all the way there.
-        let settled = Grid {
-            rect: room(rest, window.split()),
-            ..grid
-        };
+        let settled = Grid { rect: room(rest, window.split()), ..grid };
         let size = settled.size(ui.ctx().pixels_per_point());
         if state.last_size != Some(size) {
             let (pane, client) = (pane.id.clone(), &self.servers[self.current].client);
@@ -217,9 +205,7 @@ impl App {
             // A pane that is this window's, and where the server has the keyboard
             // already, needs no telling.
             if !active || !pane.owner || window.focus.as_ref() != Some(&pane.id) {
-                actions.push(Action::FocusPane {
-                    pane: pane.id.clone(),
-                });
+                actions.push(Action::FocusPane { pane: pane.id.clone() });
             }
         }
         if let Some(text) = paste {
@@ -255,17 +241,14 @@ impl App {
             for &(row, start, end) in link.iter().flat_map(|link| &link.spans) {
                 let span = grid.span(row, start, end).intersect(grid.rect);
                 let line = Stroke::new(1.0, rgb(frame.fg));
-                ui.painter()
-                    .hline(span.x_range(), span.bottom() - 1.0, line);
+                ui.painter().hline(span.x_range(), span.bottom() - 1.0, line);
             }
             // Scrolled back, it says so at its foot, where a click returns it to
             // the last of its output. How far back is known only as of this
             // frame, so that is not said.
             if frame.scroll_offset > 0 {
                 let font = FontId::proportional(SMALL);
-                let said = ui
-                    .painter()
-                    .layout_no_wrap("Scrolled back".into(), font, TEXT);
+                let said = ui.painter().layout_no_wrap("Scrolled back".into(), font, TEXT);
                 let size = said.size() + egui::vec2(20.0, 10.0);
                 let pill = Rect::from_min_size(grid.rect.right_bottom() - size, size);
                 let id = ui.scope_id().with(("scrolled", &pane.id));
@@ -276,10 +259,8 @@ impl App {
                 if back.clicked() {
                     scroll = Some(Scroll::Bottom);
                 }
-                ui.painter()
-                    .rect_filled(pill, size.y / 2.0, ui.visuals().window_fill);
-                ui.painter()
-                    .galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
+                ui.painter().rect_filled(pill, size.y / 2.0, ui.visuals().window_fill);
+                ui.painter().galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
             }
             if active && response.has_focus() {
                 compose(ui, grid, frame, &self.keyboard.preedit);
@@ -304,10 +285,8 @@ impl App {
                 let said = fitted(ui, &pane.status, font, TEXT, grid.rect.width() - 20.0);
                 let size = said.size() + egui::vec2(20.0, 10.0);
                 let pill = Rect::from_min_size(grid.rect.min, size);
-                ui.painter()
-                    .rect_filled(pill, size.y / 2.0, ui.visuals().window_fill);
-                ui.painter()
-                    .galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
+                ui.painter().rect_filled(pill, size.y / 2.0, ui.visuals().window_fill);
+                ui.painter().galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
             }
         } else {
             ui.painter().text(
@@ -323,8 +302,7 @@ impl App {
         let own = egui::Id::unique(("own", &pane.id));
         let own = eased(ui, own, active && window.split());
         let line = Stroke::new(1.0, BORDER.lerp_to_gamma(tints(ui.ctx()).accent, own));
-        ui.painter()
-            .rect_stroke(rect, CARD_RADIUS, line, StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, CARD_RADIUS, line, StrokeKind::Inside);
         if !tracking {
             asking(&response, 270.0, |ui| {
                 let entries = [
@@ -341,11 +319,7 @@ impl App {
                     // Each is there to be taken when it can be done to this pane.
                     let plan = self.standing(view).plan(name, &Value::Null, Some(&pane.id));
                     let keys = self.keys.map.shortcut(name);
-                    let row = Item {
-                        label,
-                        keys: Some(&keys),
-                        ..Default::default()
-                    };
+                    let row = Item { label, keys: Some(&keys), ..Default::default() };
                     if entry(ui, plan.is_ok(), row).clicked() {
                         self.todo.push((name, Some(pane.id.clone())));
                         ui.close();
@@ -428,8 +402,7 @@ fn compose(ui: &egui::Ui, grid: Grid, frame: &Frame, preedit: &str) {
             TEXT,
         );
         let background = Rect::from_min_size(cursor.min, galley.size()).expand(3.0);
-        ui.painter()
-            .rect_filled(background, 4, ui.visuals().window_fill);
+        ui.painter().rect_filled(background, 4, ui.visuals().window_fill);
         ui.painter().galley(cursor.min, galley, TEXT);
     }
 }

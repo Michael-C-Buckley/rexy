@@ -16,11 +16,7 @@ fn draw(
     confirm: Option<&str>,
     events: Vec<egui::Event>,
 ) -> Vec<(egui::Response, Option<usize>)> {
-    let input = egui::RawInput {
-        screen_rect: Some(SCREEN),
-        events,
-        ..Default::default()
-    };
+    let input = egui::RawInput { screen_rect: Some(SCREEN), events, ..Default::default() };
     let mut drawn = Vec::new();
     let output = ctx.run_ui(input, |ui| {
         drawn.clear();
@@ -83,10 +79,7 @@ fn the_icon_is_drawn() {
     assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
     // Its corners are clear, and its middle is not.
     let alpha = |x: u32, y: u32| icon.rgba[((y * icon.width + x) * 4 + 3) as usize];
-    assert_eq!(
-        (alpha(0, 0), alpha(icon.width / 2, icon.height / 2)),
-        (0, 255)
-    );
+    assert_eq!((alpha(0, 0), alpha(icon.width / 2, icon.height / 2)), (0, 255));
 }
 
 #[test]
@@ -113,18 +106,10 @@ fn what_lies_over_the_window_is_lighter_than_its_ground_and_of_its_hue() {
 fn a_menu_entry_that_cannot_be_taken_does_not_answer_a_click() {
     let ctx = window();
     let draw = |enabled: bool, events: Vec<egui::Event>| {
-        let input = egui::RawInput {
-            screen_rect: Some(SCREEN),
-            events,
-            ..Default::default()
-        };
+        let input = egui::RawInput { screen_rect: Some(SCREEN), events, ..Default::default() };
         let mut drawn = None;
         let output = ctx.run_ui(input, |ui| {
-            let row = Item {
-                label: "Paste",
-                keys: Some("Ctrl+Shift+V"),
-                ..Default::default()
-            };
+            let row = Item { label: "Paste", keys: Some("Ctrl+Shift+V"), ..Default::default() };
             drawn = Some(entry(ui, enabled, row));
         });
         output.drop_without_applying_deltas();

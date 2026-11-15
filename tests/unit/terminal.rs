@@ -151,14 +151,7 @@ fn a_picture_is_placed_where_its_program_put_it_and_comes_back_with_a_snapshot()
 fn a_picture_that_comes_or_goes_alone_is_drawn_and_keeps_its_pixels_meanwhile() {
     let mut terminal = pictured();
     let mut renderer = Renderer::new().unwrap();
-    assert!(
-        renderer
-            .frame(&terminal)
-            .unwrap()
-            .unwrap()
-            .pictures
-            .is_empty()
-    );
+    assert!(renderer.frame(&terminal).unwrap().unwrap().pictures.is_empty());
     // It leaves the cursor where it was (C=1), so no row is written to.
     terminal.vt_write(b"\x1b_Ga=T,f=24,s=1,v=1,i=7,C=1,z=-1;CQkJ\x1b\\");
     let first = renderer.frame(&terminal).unwrap().unwrap();
@@ -169,51 +162,29 @@ fn a_picture_that_comes_or_goes_alone_is_drawn_and_keeps_its_pixels_meanwhile() 
     // Text written beside it reads no pixels anew.
     terminal.vt_write(b"\x1b[2;1Htext");
     let second = renderer.frame(&terminal).unwrap().unwrap();
-    assert!(Arc::ptr_eq(
-        &first.pictures[0].picture,
-        &second.pictures[0].picture
-    ));
+    assert!(Arc::ptr_eq(&first.pictures[0].picture, &second.pictures[0].picture));
     terminal.vt_write(b"\x1b_Ga=d\x1b\\");
-    assert!(
-        renderer
-            .frame(&terminal)
-            .unwrap()
-            .unwrap()
-            .pictures
-            .is_empty()
-    );
+    assert!(renderer.frame(&terminal).unwrap().unwrap().pictures.is_empty());
 }
 
 #[test]
 fn a_picture_is_never_read_from_a_file_its_program_names() {
     let mut terminal = pictured();
-    assert_eq!(
-        terminal.is_kitty_image_from_file_allowed().unwrap(),
-        Some(false)
-    );
-    assert_eq!(
-        terminal.is_kitty_image_from_shared_mem_allowed().unwrap(),
-        Some(false)
-    );
+    assert_eq!(terminal.is_kitty_image_from_file_allowed().unwrap(), Some(false));
+    assert_eq!(terminal.is_kitty_image_from_shared_mem_allowed().unwrap(), Some(false));
     // A file that holds one white pixel, named as the protocol has it: in base64.
     let file = std::env::temp_dir().join(format!("rex-lite-picture-{}", std::process::id()));
     std::fs::write(&file, [255; 3]).unwrap();
     let name = file.to_str().unwrap().as_bytes();
     let mut named = String::new();
     for chunk in name.chunks(3) {
-        let bits = chunk
-            .iter()
-            .fold(0u32, |bits, byte| bits << 8 | u32::from(*byte))
+        let bits = chunk.iter().fold(0u32, |bits, byte| bits << 8 | u32::from(*byte))
             << (8 * (3 - chunk.len()));
         for index in 0..4 {
             let six = (bits >> (18 - 6 * index)) & 63;
             let letter =
                 b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[six as usize];
-            named.push(if index <= chunk.len() {
-                letter as char
-            } else {
-                '='
-            });
+            named.push(if index <= chunk.len() { letter as char } else { '=' });
         }
     }
     for medium in ["f", "t"] {
@@ -248,8 +219,7 @@ fn dropping_last_handle_stops_worker_waiting_for_snapshot_bytes() {
             handle.input.send(Command::Bytes(prefix)).unwrap();
         }
         drop(handle);
-        done.recv_timeout(Duration::from_secs(3))
-            .expect("worker retained its channel or callback");
+        done.recv_timeout(Duration::from_secs(3)).expect("worker retained its channel or callback");
     }
 }
 
@@ -292,10 +262,7 @@ fn metadata_is_refused_when_malformed_or_past_its_cap() {
     // Another stream's is no metadata, and is passed on however long it is.
     let mut foreign = b"\x1b_rex1;9;".to_vec();
     foreign.resize(MAX_APC_BYTES + 1, b'x');
-    assert_eq!(
-        ApcParser::new(42).feed(&foreign).unwrap(),
-        [Part::Output(foreign)]
-    );
+    assert_eq!(ApcParser::new(42).feed(&foreign).unwrap(), [Part::Output(foreign)]);
 }
 
 #[test]
@@ -352,9 +319,8 @@ fn a_cell_holds_the_whole_of_a_cluster_and_a_wide_glyph_has_its_spare_half() {
     let flag = "🇯🇵";
     let family = "👨\u{200d}👩\u{200d}👧";
     // Two clusters side by side that begin alike, and two cells that are alike.
-    let wanted = [
-        flag, "", family, "", "e\u{301}", "e\u{302}", "a", "a", "界", "", "界", "", "y", "",
-    ];
+    let wanted =
+        [flag, "", family, "", "e\u{301}", "e\u{302}", "a", "a", "界", "", "界", "", "y", ""];
     assert_eq!(shown, wanted);
     let spare = |x: usize| (row.cells[x].spacer_tail, row.cells[x].spacer_head);
     assert_eq!(
@@ -381,10 +347,7 @@ fn looks_are_reversed_hidden_and_laid_on_a_colour_of_their_own() {
     let (red, blue, green) = (0xcc6666, 0x81a2be, 0xb5bd68);
     assert_eq!([colours(0, 0), colours(2, 0)], [(red, blue), (blue, red)]);
     // Hidden text is not there to draw or to copy, and its cells still are.
-    assert_eq!(
-        (colours(4, 0), frame.lines[0].text(4, 6)),
-        ((red, blue), "")
-    );
+    assert_eq!((colours(4, 0), frame.lines[0].text(4, 6)), ((red, blue), ""));
     // A cell a program erased holds the colour it was erased to, and no style.
     let erased = [colours(6, 0), colours(11, 0), colours(1, 1), colours(2, 1)];
     let ground = |color| (frame.fg, color);
@@ -405,9 +368,7 @@ fn a_link_covers_the_cells_it_was_written_over_and_no_others() {
     terminal.vt_write(bytes.as_bytes());
     let frame = render(&terminal);
     let links = frame.lines[0].links.iter();
-    let links: Vec<_> = links
-        .map(|(start, end, target)| (*start, *end, &**target))
-        .collect();
+    let links: Vec<_> = links.map(|(start, end, target)| (*start, *end, &**target)).collect();
     assert_eq!(links, [(2, 4, first), (4, 6, second)]);
     assert_eq!(frame.text(), "xxxxxxxx");
 }
@@ -439,24 +400,15 @@ fn a_cursor_that_only_moved_and_colours_that_changed_are_drawn() {
     assert!(!shaped.cursor_blink);
     assert!(drawn(&mut terminal, b"\x1b[5 q").cursor_blink);
     let steady = drawn(&mut terminal, b"\x1b[2 q");
-    assert_eq!(
-        (steady.cursor_shape, steady.cursor_blink),
-        (CursorShape::Block, false)
-    );
+    assert_eq!((steady.cursor_shape, steady.cursor_blink), (CursorShape::Block, false));
     // A steady block was asked for, and is kept. So is a steady bar.
     configure(&mut terminal).unwrap();
     let block = drawn(&mut terminal, b"\x1b[1;4H");
-    assert_eq!(
-        (block.cursor_shape, block.cursor_blink),
-        (CursorShape::Block, false)
-    );
+    assert_eq!((block.cursor_shape, block.cursor_blink), (CursorShape::Block, false));
     drawn(&mut terminal, b"\x1b[6 q");
     configure(&mut terminal).unwrap();
     let asked = drawn(&mut terminal, b"\x1b[1;3H");
-    assert_eq!(
-        (asked.cursor_shape, asked.cursor_blink),
-        (CursorShape::Bar, false)
-    );
+    assert_eq!((asked.cursor_shape, asked.cursor_blink), (CursorShape::Bar, false));
     assert!(drawn(&mut terminal, b"\x1b[0 q").cursor_blink);
     let colored = drawn(&mut terminal, b"\x1b]12;#0a0b0c\x1b\\");
     assert_eq!(colored.cursor_color, 0x0a0b0c);
@@ -496,10 +448,7 @@ fn worker_wakes_for_output_and_sleeps_when_idle() {
     wakes.recv_timeout(WAIT).unwrap();
     assert_eq!(top(&handle), "hello world");
     drop(handle);
-    assert!(matches!(
-        wakes.recv_timeout(WAIT),
-        Err(flume::RecvTimeoutError::Disconnected)
-    ));
+    assert!(matches!(wakes.recv_timeout(WAIT), Err(flume::RecvTimeoutError::Disconnected)));
 }
 
 #[test]
@@ -507,10 +456,7 @@ fn what_stops_a_worker_is_told_by_its_handle() {
     let snapshot = encode(&mut terminal(20, 2));
     let malformed = [snapshot.as_slice(), b"\x1b_rex1;7;{\x1b\\"].concat();
     for (bytes, cause) in [
-        (
-            b"no snapshot begins so".to_vec(),
-            "restoring terminal snapshot",
-        ),
+        (b"no snapshot begins so".to_vec(), "restoring terminal snapshot"),
         (malformed, "invalid Rex metadata"),
     ] {
         let (handle, wakes) = worker(bytes);
@@ -771,10 +717,7 @@ fn links_are_those_marked_and_those_written_out() {
     terminal.scroll_viewport(ScrollViewport::Top);
     let frame = render(&terminal);
     assert_eq!(frame.beyond, [Some(String::new()), Some(String::new())]);
-    let short = Some((
-        "https://example.com/a".to_owned(),
-        vec![(0, 2, 20), (1, 0, 3)],
-    ));
+    let short = Some(("https://example.com/a".to_owned(), vec![(0, 2, 20), (1, 0, 3)]));
     assert_eq!(shown(frame, 2, 0), short);
 }
 
@@ -884,9 +827,7 @@ pub(crate) const SCREENS: [(&str, Program); 5] = [
         let rows: Vec<String> = (frame * 60..frame * 60 + 60).map(coloured).collect();
         format!("\x1b[H{}", rows.join("\r\n"))
     }),
-    ("coloured text, one line scrolls", |frame| {
-        format!("\r\n{}", coloured(frame))
-    }),
+    ("coloured text, one line scrolls", |frame| format!("\r\n{}", coloured(frame))),
     ("wide glyphs and clusters", |frame| {
         let rows: Vec<String> = (frame..frame + 60).map(clustered).collect();
         format!("\x1b[H\x1b[J{}", rows.join("\r\n"))
@@ -899,9 +840,7 @@ pub(crate) const SCREENS: [(&str, Program); 5] = [
     }),
     // Its first row goes on from a word longer than any address, out of sight
     // above it, which is read every frame for as far as an address may go.
-    ("unbroken text, two rows scroll", |frame| {
-        format!("{:x}", frame * 2_654_435_761).repeat(40)
-    }),
+    ("unbroken text, two rows scroll", |frame| format!("{:x}", frame * 2_654_435_761).repeat(40)),
 ];
 
 /// One of those screens, a frame at a time.
@@ -919,12 +858,7 @@ impl Bench {
         // Characters that belong together share a cell, as a shell asks of Rex.
         terminal.vt_write(b"\x1b[?2027h");
         let renderer = Renderer::new().unwrap();
-        let mut screen = Self {
-            terminal,
-            renderer,
-            write,
-            frame: 0,
-        };
+        let mut screen = Self { terminal, renderer, write, frame: 0 };
         // Enough frames that a screen which scrolls is full.
         (0..60).for_each(|_| drop(screen.next(&mut Meter::default())));
         screen
@@ -953,10 +887,6 @@ fn bench_frames() {
             frames += 1;
             last = frame;
         });
-        println!(
-            "{:42}{:8.1} rows a frame are new",
-            "",
-            new as f64 / frames as f64
-        );
+        println!("{:42}{:8.1} rows a frame are new", "", new as f64 / frames as f64);
     }
 }

@@ -9,10 +9,7 @@ fn a_pane_is_listed_under_what_it_is_doing_and_a_shell_at_rest_is_not() {
         ..Default::default()
     };
     let under = |activity, program| kind(&pane(activity, program)).map(|kind| KINDS[kind]);
-    assert_eq!(
-        under(Activity::Blocked(Wait::Approval), "zsh"),
-        Some("Needs you")
-    );
+    assert_eq!(under(Activity::Blocked(Wait::Approval), "zsh"), Some("Needs you"));
     assert_eq!(under(Activity::Error, "cargo"), Some("Needs you"));
     assert_eq!(under(Activity::Done, "zsh"), Some("Done"));
     assert_eq!(under(Activity::Working, "zsh"), Some("Working"));

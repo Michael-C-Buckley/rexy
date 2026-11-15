@@ -259,12 +259,7 @@ impl TerminalHandle {
 
     async fn send(&self, bytes: Vec<u8>) -> Result<()> {
         let sent = self.input.send_async(Command::Bytes(bytes)).await;
-        sent.map_err(|_| {
-            anyhow!(
-                self.status()
-                    .unwrap_or_else(|| "terminal worker stopped".into())
-            )
-        })
+        sent.map_err(|_| anyhow!(self.status().unwrap_or_else(|| "terminal worker stopped".into())))
     }
 
     pub fn latest(&self) -> Option<Arc<Frame>> {
@@ -359,10 +354,7 @@ struct ApcParser {
 
 impl ApcParser {
     fn new(nonce: u64) -> Self {
-        Self {
-            prefix: format!("\x1b_rex1;{nonce};").into_bytes(),
-            pending: Vec::new(),
-        }
+        Self { prefix: format!("\x1b_rex1;{nonce};").into_bytes(), pending: Vec::new() }
     }
 
     fn feed(&mut self, mut bytes: &[u8]) -> Result<Vec<Part>> {
@@ -370,10 +362,7 @@ impl ApcParser {
         let mut output = Vec::new();
         while !bytes.is_empty() {
             if self.pending.is_empty() {
-                let plain = bytes
-                    .iter()
-                    .position(|&byte| byte == 0x1b)
-                    .unwrap_or(bytes.len());
+                let plain = bytes.iter().position(|&byte| byte == 0x1b).unwrap_or(bytes.len());
                 output.extend_from_slice(&bytes[..plain]);
                 bytes = &bytes[plain..];
                 if bytes.is_empty() {
@@ -384,10 +373,7 @@ impl ApcParser {
             bytes = &bytes[1..];
             loop {
                 if self.pending.starts_with(&self.prefix) {
-                    ensure!(
-                        self.pending.len() <= MAX_APC_BYTES,
-                        "Rex metadata exceeds 1 MiB"
-                    );
+                    ensure!(self.pending.len() <= MAX_APC_BYTES, "Rex metadata exceeds 1 MiB");
                     if self.pending.ends_with(b"\x1b\\") {
                         if !output.is_empty() {
                             parts.push(Part::Output(std::mem::take(&mut output)));
@@ -444,11 +430,7 @@ fn configure(terminal: &mut Terminal) -> Result<()> {
 }
 
 fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u64) -> Result<()> {
-    let mut input = Input {
-        receiver,
-        bytes: Vec::new(),
-        offset: 0,
-    };
+    let mut input = Input { receiver, bytes: Vec::new(), offset: 0 };
     // The snapshot streams through bounded chunks on this worker, but the first
     // frame waits for the whole of it to validate.
     let mut terminal = match restore(&mut input) {
@@ -500,10 +482,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
             let found = finding.found()?;
             owed |= std::mem::replace(&mut renderer.found, found) != found;
             // The terminal has no clock, so a hold that never ends is ended here.
-            if renderer
-                .held
-                .is_some_and(|since| now.duration_since(since) >= RENDER_HOLD_LIMIT)
-            {
+            if renderer.held.is_some_and(|since| now.duration_since(since) >= RENDER_HOLD_LIMIT) {
                 terminal.set_mode(Mode::SYNC_OUTPUT, false)?;
                 renderer.held = None;
             }
@@ -560,16 +539,8 @@ fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
             let pixels = |key: &str| value[key].as_u64().unwrap_or(0).min(u32::MAX.into()) as u32;
             let cols = dimension("cols")?;
             let rows = dimension("rows")?;
-            ensure!(
-                u32::from(cols) * u32::from(rows) <= 4_000_000,
-                "terminal grid is too large"
-            );
-            terminal.resize(
-                cols,
-                rows,
-                pixels("cell_width_px"),
-                pixels("cell_height_px"),
-            )?;
+            ensure!(u32::from(cols) * u32::from(rows) <= 4_000_000, "terminal grid is too large");
+            terminal.resize(cols, rows, pixels("cell_width_px"), pixels("cell_height_px"))?;
         }
         Some("theme") => {
             // One left out, empty or unreadable is the built-in one.
@@ -620,9 +591,7 @@ fn pictures(
         let picture = match known {
             Some(picture) => picture.clone(),
             None => {
-                let stored = storage
-                    .as_ref()
-                    .and_then(|s| s.image(image.image_id().ok()?));
+                let stored = storage.as_ref().and_then(|s| s.image(image.image_id().ok()?));
                 let Some(picture) = stored.and_then(|stored| read_picture(&stored, id)) else {
                     continue;
                 };
@@ -645,12 +614,7 @@ fn pictures(
         ];
         let under = image.layer()? != ImageLayer::AboveText;
         let order = (!under, image.z()?);
-        let picture = Placed {
-            picture,
-            under,
-            at,
-            part,
-        };
+        let picture = Placed { picture, under, at, part };
         placed.push((order, picture));
     }
     placed.sort_by_key(|(order, _)| *order);
@@ -659,10 +623,7 @@ fn pictures(
 
 /// A stored picture's pixels as four bytes each, if they have all arrived.
 fn read_picture(stored: &graphics::Image, id: u64) -> Option<Picture> {
-    let size = [
-        stored.width().ok()? as usize,
-        stored.height().ok()? as usize,
-    ];
+    let size = [stored.width().ok()? as usize, stored.height().ok()? as usize];
     let data = stored.data().ok()??;
     let each = match stored.format().ok()? {
         ImageFormat::Rgba => 4,
@@ -743,11 +704,7 @@ fn read(
             before = Some(raw);
             continue;
         }
-        let tag = if blank || clustered {
-            raw.content_tag()?
-        } else {
-            CellContentTag::Codepoint
-        };
+        let tag = if blank || clustered { raw.content_tag()? } else { CellContentTag::Codepoint };
         // Cells of one style look alike, but for a blank one that holds a colour
         // of its own to lie on.
         let ground = (blank && tag != CellContentTag::Codepoint).then_some(raw);
@@ -769,12 +726,7 @@ fn read(
             };
             hidden = style.invisible;
             like.look = row.looks.len() as u16;
-            row.looks.push(Look {
-                fg,
-                bg,
-                underline_color,
-                style,
-            });
+            row.looks.push(Look { fg, bg, underline_color, style });
         }
         if blank || hidden {
         } else if tag == CellContentTag::CodepointGrapheme {
@@ -871,9 +823,8 @@ impl Renderer {
     fn frame(&mut self, terminal: &Terminal<'static, '_>) -> Result<Option<Arc<Frame>>> {
         let snapshot = self.state.update(terminal)?;
         let scrollbar = terminal.scrollbar()?;
-        let scroll_offset = scrollbar
-            .total
-            .saturating_sub(scrollbar.offset + scrollbar.len) as usize;
+        let scroll_offset =
+            scrollbar.total.saturating_sub(scrollbar.offset + scrollbar.len) as usize;
         let mouse_tracking = terminal.is_mouse_tracking()?;
         let alternate_screen = terminal.active_screen()? == Screen::Alternate;
         let alternate_scroll = terminal.mode(Mode::ALT_SCROLL)?;
@@ -886,10 +837,7 @@ impl Renderer {
             _ => CursorShape::Block,
         };
         let cursor_blink = cursor.blinking;
-        let cursor = cursor
-            .viewport
-            .filter(|_| cursor.visible)
-            .map(|p| (p.x, p.y));
+        let cursor = cursor.viewport.filter(|_| cursor.visible).map(|p| (p.x, p.y));
         let colors = snapshot.colors()?;
         let recolored = self.colors.as_ref() != Some(&colors);
         // Nor when only a picture comes, goes or moves.
@@ -939,8 +887,7 @@ impl Renderer {
                     // as it did.
                     let row = &mut self.read;
                     read(line, &mut self.cells, terminal, &colors, row)?;
-                    old.filter(|old| **old == *row)
-                        .unwrap_or_else(|| Arc::new(row.clone()))
+                    old.filter(|old| **old == *row).unwrap_or_else(|| Arc::new(row.clone()))
                 }
             };
             if selecting {

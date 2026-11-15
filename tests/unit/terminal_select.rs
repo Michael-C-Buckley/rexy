@@ -136,9 +136,7 @@ fn a_worker_selects_as_asked_and_hands_back_the_text() {
     let (handle, wakes) = worker(encode(&mut server));
     let selected = || handle.latest().map(|frame| frame.selected.clone());
     drag_asked(&handle, [0.1, 1.5], [2.9, 1.5]);
-    until(&wakes, || {
-        selected() == Some(vec![None, Some((0, 3)), None])
-    });
+    until(&wakes, || selected() == Some(vec![None, Some((0, 3)), None]));
     assert_eq!(handle.copied(), []);
     // Let go, it is the desktop's selection. Copying is asked for.
     handle.ask(Request::Release);
@@ -147,9 +145,7 @@ fn a_worker_selects_as_asked_and_hands_back_the_text() {
     assert_eq!(handed(&handle, &wakes), Copied::Clipboard("two".into()));
     // The pane goes on while something is selected in it.
     write(&handle, b"\r\nfour");
-    until(&wakes, || {
-        selected() == Some(vec![Some((0, 3)), None, None])
-    });
+    until(&wakes, || selected() == Some(vec![Some((0, 3)), None, None]));
     assert_eq!(handle.latest().unwrap().text(), "two\nthree\nfour");
     handle.ask(Request::Deselect);
     until(&wakes, || selected() == Some(Vec::new()));
@@ -175,10 +171,7 @@ fn a_drag_held_past_the_top_scrolls_back_and_goes_on_selecting() {
     let Copied::Selection(text) = handed(&handle, &wakes) else {
         panic!("not the desktop's selection");
     };
-    assert!(
-        text.lines().count() > 5 && text.ends_with("line 37\nline"),
-        "{text}"
-    );
+    assert!(text.lines().count() > 5 && text.ends_with("line 37\nline"), "{text}");
     // Let go, the view comes to rest: a frame may be on its way yet, and no
     // more after it.
     assert!((0..3).any(|_| wakes.recv_timeout(QUIET).is_err()));

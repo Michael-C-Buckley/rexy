@@ -19,9 +19,7 @@ pub fn ghostty() -> Option<&'static Value> {
         let shared: Vec<_> = env::split_paths(&shared).collect();
         let named = |name: &str| {
             let own = [PathBuf::from(name), home.join("ghostty/themes").join(name)];
-            let came = shared
-                .iter()
-                .map(|dir| dir.join("ghostty/themes").join(name));
+            let came = shared.iter().map(|dir| dir.join("ghostty/themes").join(name));
             let mut files = own.into_iter().chain(came);
             files.find_map(|file| fs::read_to_string(file).ok())
         };
@@ -33,9 +31,7 @@ pub fn ghostty() -> Option<&'static Value> {
 /// The settings of a file of Ghostty's: a key and its value to a line, with
 /// `#` before what is said in passing.
 fn settings(text: &str) -> impl Iterator<Item = (&str, &str)> {
-    let lines = text
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'));
+    let lines = text.lines().filter(|line| !line.trim_start().starts_with('#'));
     lines.filter_map(|line| {
         let (key, value) = line.split_once('=')?;
         Some((key.trim(), value.trim().trim_matches('"')))
@@ -86,9 +82,7 @@ fn read(config: &str, named: impl Fn(&str) -> Option<String>) -> Option<Value> {
         };
     }
     if !palette.is_empty() {
-        let entries = palette
-            .iter()
-            .map(|(index, color)| format!("{index}={color}"));
+        let entries = palette.iter().map(|(index, color)| format!("{index}={color}"));
         colors.insert("palette".into(), entries.collect());
     }
     (!colors.is_empty()).then_some(Value::Object(colors))

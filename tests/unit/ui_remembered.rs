@@ -71,10 +71,7 @@ fn a_damaged_file_starts_afresh() {
 
 #[test]
 fn a_window_returns_to_where_it_was_if_that_is_still_there() {
-    let tab = |id: &str| Window {
-        id: id.into(),
-        ..Window::default()
-    };
+    let tab = |id: &str| Window { id: id.into(), ..Window::default() };
     let session = |id: &str, tabs: &[&str]| Session {
         id: id.into(),
         windows: tabs.iter().copied().map(tab).collect(),

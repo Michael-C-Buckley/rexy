@@ -23,9 +23,7 @@ fn drag(ui: &egui::Ui, border: &Border, area: Rect) -> Option<f32> {
         true => Rect::from_x_y_ranges(at..=at, room.y_range()),
         false => Rect::from_x_y_ranges(room.x_range(), at..=at),
     };
-    let id = ui
-        .scope_id()
-        .with(("border", &border.before, &border.after));
+    let id = ui.scope_id().with(("border", &border.before, &border.after));
     let grab = ui.interact(line(at).expand(4.0), id, Sense::click_and_drag());
     let pointer = grab.interact_pointer_pos().filter(|_| grab.dragged());
     let ratio = pointer.map(|pointer| (pointer - room.min)[axis] / room.size()[axis]);

@@ -32,11 +32,7 @@ impl Target {
 
     /// The action that changes it.
     pub(super) fn edit(self, edit: Edit) -> Action {
-        Action::Edit {
-            session: self.session,
-            window: self.window,
-            edit,
-        }
+        Action::Edit { session: self.session, window: self.window, edit }
     }
 }
 
@@ -80,12 +76,7 @@ impl App {
     ) {
         let windows = session.windows.iter().enumerate();
         let tabs: Vec<_> = windows
-            .map(|(index, window)| {
-                (
-                    &window.id,
-                    self.tab(ui, server, session, shown, index, size),
-                )
-            })
+            .map(|(index, window)| (&window.id, self.tab(ui, server, session, shown, index, size)))
             .collect();
         self.reorder(ui, server, &tabs);
     }
@@ -140,11 +131,7 @@ impl App {
         shown: bool,
     ) {
         let session = &sessions[index];
-        let target = Target {
-            server,
-            session: session.id.clone(),
-            window: None,
-        };
+        let target = Target { server, session: session.id.clone(), window: None };
         let lone = match session.windows.as_slice() {
             [tab] => Some(tab),
             _ => None,
@@ -156,10 +143,7 @@ impl App {
             return;
         }
         // Its one tab has no row of its own for the field that renames it.
-        let tab = lone.map(|tab| Target {
-            window: Some(tab.id.clone()),
-            ..target.clone()
-        });
+        let tab = lone.map(|tab| Target { window: Some(tab.id.clone()), ..target.clone() });
         if let Some(tab) = &tab
             && self.renaming(ui, tab, self.row(tab), size).is_some()
         {
@@ -259,11 +243,8 @@ impl App {
     ) -> Rect {
         let across = ui.layout().is_horizontal();
         let window = &session.windows[index];
-        let target = Target {
-            server,
-            session: session.id.clone(),
-            window: Some(window.id.clone()),
-        };
+        let target =
+            Target { server, session: session.id.clone(), window: Some(window.id.clone()) };
         let id = self.row(&target);
         // Along the top a tab is as wide as its name, up to the size given: its
         // icon and the room for its mark or its button come to as much again as
@@ -299,11 +280,7 @@ impl App {
             id: Some(id),
             icon: Some(window.program()),
             selected,
-            mark: if muted {
-                Some((Icon::Muted, DIM))
-            } else {
-                dot(ui.ctx(), said)
-            },
+            mark: if muted { Some((Icon::Muted, DIM)) } else { dot(ui.ctx(), said) },
             under: &under,
             word: word.as_deref().filter(|_| !muted),
             buttons: &[(Icon::Close, "Close tab")],
@@ -433,10 +410,7 @@ impl App {
         } else if output.response.lost_focus() {
             // Escape leaves the name as it was. Anything else, such as Enter or a
             // click elsewhere, takes the new one, if it is new.
-            let name = self
-                .rename
-                .take()
-                .filter(|rename| rename.text != rename.was);
+            let name = self.rename.take().filter(|rename| rename.text != rename.was);
             let name = name.map(|rename| rename.text);
             if let Some(name) = name.filter(|_| !ui.input(|i| i.key_pressed(Key::Escape))) {
                 self.edit(target.clone(), Edit::Rename(name));
@@ -490,10 +464,7 @@ fn menu(
             )),
         ];
         for (label, enabled, choice) in entries.into_iter().flatten() {
-            let row = Item {
-                label,
-                ..Default::default()
-            };
+            let row = Item { label, ..Default::default() };
             if entry(ui, enabled, row).clicked() {
                 picked = Some(choice);
                 ui.close();

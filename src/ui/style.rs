@@ -60,12 +60,7 @@ pub struct Tints {
 
 impl Default for Tints {
     fn default() -> Self {
-        Self {
-            accent: ACCENT,
-            done: GREEN,
-            waiting: AMBER,
-            failed: RED,
-        }
+        Self { accent: ACCENT, done: GREEN, waiting: AMBER, failed: RED }
     }
 }
 
@@ -89,8 +84,7 @@ impl Tints {
 
 /// The colours in force.
 pub fn tints(ctx: &egui::Context) -> Tints {
-    ctx.data(|data| data.get_temp(egui::Id::NULL))
-        .unwrap_or_default()
+    ctx.data(|data| data.get_temp(egui::Id::NULL)).unwrap_or_default()
 }
 
 /// Put the colours that go by the terminal on show in force, which is known by
@@ -186,10 +180,8 @@ pub fn apply(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let inter = FontData::from_static(include_bytes!("../../assets/fonts/Inter.ttf"));
     let mono = FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMono.ttf"));
-    let faces = [
-        (FontFamily::Proportional, "bold", inter),
-        (FontFamily::Monospace, "mono-bold", mono),
-    ];
+    let faces =
+        [(FontFamily::Proportional, "bold", inter), (FontFamily::Monospace, "mono-bold", mono)];
     for (regular, bold, face) in faces {
         let fallbacks = fonts.families[&regular].clone();
         for (family, weight) in [(regular, 400.0), (FontFamily::Name(bold.into()), 700.0)] {
@@ -450,11 +442,7 @@ pub fn icon() -> egui::IconData {
     const SIDE: usize = 128;
     let image = raster(include_str!("../../assets/dev.rex-lite.client.svg"), SIDE);
     let rgba = image.pixels.iter().flat_map(Color32::to_srgba_unmultiplied);
-    egui::IconData {
-        rgba: rgba.collect(),
-        width: SIDE as u32,
-        height: SIDE as u32,
-    }
+    egui::IconData { rgba: rgba.collect(), width: SIDE as u32, height: SIDE as u32 }
 }
 
 /// A flat button that draws its own symbol.
@@ -500,8 +488,7 @@ pub fn round_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response 
         true => PRESSED,
         false => white((20.0 + HOVER * lit) as u8),
     };
-    ui.painter()
-        .circle_filled(rect.center(), SMALL_BUTTON / 2.0, fill);
+    ui.painter().circle_filled(rect.center(), SMALL_BUTTON / 2.0, fill);
     icon.paint(ui.painter(), rect.center(), white(205));
     response.on_hover_text(tip)
 }
@@ -521,9 +508,7 @@ pub fn fitted(
 
 /// The word that a button asks with, and how wide that makes the button.
 fn asks(ui: &egui::Ui, word: &str) -> (Arc<egui::Galley>, f32) {
-    let word = ui
-        .painter()
-        .layout_no_wrap(word.to_owned(), bold(SMALL), TEXT);
+    let word = ui.painter().layout_no_wrap(word.to_owned(), bold(SMALL), TEXT);
     let width = word.size().x + 2.0 * PILL;
     (word, width)
 }
@@ -541,8 +526,7 @@ pub fn confirm(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: &str) -> egui::Res
     let rect = Rect::from_min_size(edge - egui::vec2(size.x, size.y / 2.0), size);
     let response = ui.interact(rect, id, Sense::click());
     ui.painter().rect_filled(rect, RADIUS, DANGER);
-    ui.painter()
-        .galley(rect.center() - word.size() / 2.0, word, TEXT);
+    ui.painter().galley(rect.center() - word.size() / 2.0, word, TEXT);
     response
 }
 
@@ -594,11 +578,7 @@ pub struct Item<'a> {
 /// Draw a row. Returns its response, and which of its buttons was pressed.
 pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, Option<usize>) {
     const BUTTON: f32 = SMALL_BUTTON;
-    let sense = if item.movable {
-        Sense::click_and_drag()
-    } else {
-        Sense::click()
-    };
+    let sense = if item.movable { Sense::click_and_drag() } else { Sense::click() };
     let (rect, response) = match item.id {
         Some(id) => {
             let (_, rect) = ui.allocate_space(size);
@@ -631,10 +611,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let word = item.word.filter(|_| item.align != Align::Center);
     let word = word.map(|word| {
         // In the colour of the mark it goes with, where there is one.
-        let (font, color) = (
-            FontId::proportional(SMALL),
-            item.mark.map_or(DIM, |mark| mark.1),
-        );
+        let (font, color) = (FontId::proportional(SMALL), item.mark.map_or(DIM, |mark| mark.1));
         ui.painter().layout_no_wrap(word.to_owned(), font, color)
     });
     let keys = caps(ui, item.keys.unwrap_or_default());
@@ -643,9 +620,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let docked = item.icon.is_some() && matches!(item.mark, Some((Icon::Dot, _)));
     let aside = item.mark.filter(|_| !docked);
     let marks = f32::from(u8::from(aside.is_some()) + u8::from(item.menu));
-    let marks = word
-        .as_ref()
-        .map_or(14.0 * marks, |word| word.size().x + 8.0);
+    let marks = word.as_ref().map_or(14.0 * marks, |word| word.size().x + 8.0);
     let marks = marks + caps_width(&keys);
     // The button that asks is where the last one was, and goes by its name: the
     // pointer is on it already.
@@ -655,9 +630,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         confirm(ui, edge, response.id.with(("button", last)), word)
     });
     let room = (12.0 + marks).max(4.0 + BUTTON * item.buttons.len() as f32);
-    let room = asks
-        .as_ref()
-        .map_or(room, |asks| room.max(asks.rect.width() + 10.0));
+    let room = asks.as_ref().map_or(room, |asks| room.max(asks.rect.width() + 10.0));
     let mut text = rect.shrink2(egui::vec2(12.0, 0.0));
     text.min.x += item.inset;
     text.max.x = rect.right() - room;
@@ -685,16 +658,10 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         text = middle;
     }
     let anchor = Align2([item.align, Align::Center]);
-    let place = anchor
-        .align_size_within_rect(needs, text)
-        .translate(egui::vec2(0.0, -lift));
+    let place = anchor.align_size_within_rect(needs, text).translate(egui::vec2(0.0, -lift));
     if let Some(program) = item.icon {
         let left = egui::pos2(place.left(), rect.center().y);
-        let ink = if item.selected {
-            tints(ui.ctx()).accent
-        } else {
-            DIM
-        };
+        let ink = if item.selected { tints(ui.ctx()).accent } else { DIM };
         let dot = item.mark.filter(|_| docked).map(|(_, color)| color);
         badge(ui.painter(), program, left, side, ink, dot);
     }
@@ -774,10 +741,7 @@ fn caps(ui: &egui::Ui, keys: &str) -> Vec<Arc<egui::Galley>> {
         names.push("+");
     }
     let font = FontId::proportional(11.0);
-    let key = |key: &str| {
-        ui.painter()
-            .layout_no_wrap(key.to_owned(), font.clone(), white(205))
-    };
+    let key = |key: &str| ui.painter().layout_no_wrap(key.to_owned(), font.clone(), white(205));
     names.into_iter().map(key).collect()
 }
 
@@ -797,8 +761,7 @@ fn paint_caps(ui: &egui::Ui, keys: Vec<Arc<egui::Galley>>, mut right: Pos2) {
         let size = cap(&name);
         let key = Rect::from_min_size(right - egui::vec2(size.x, 9.0), size);
         ui.painter().rect_filled(key, 5, white(22));
-        ui.painter()
-            .galley(key.center() - name.size() / 2.0, name, TEXT);
+        ui.painter().galley(key.center() - name.size() / 2.0, name, TEXT);
         right.x -= size.x + 4.0;
     }
 }
@@ -834,8 +797,7 @@ pub fn search(ui: &mut egui::Ui, keys: &str) -> egui::Response {
     let size = Vec2::new(ui.available_width(), 28.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let lit = eased(ui, response.id.with("over"), response.hovered());
-    ui.painter()
-        .rect_filled(rect, RADIUS, white((OVER + OVER * lit) as u8));
+    ui.painter().rect_filled(rect, RADIUS, white((OVER + OVER * lit) as u8));
     let left = rect.left_center();
     Icon::Search.paint(ui.painter(), left + egui::vec2(16.0, 0.0), DIM);
     let font = FontId::proportional(BODY);

@@ -65,12 +65,7 @@ impl Closing {
     /// `near` says the press was the pointer's.
     pub fn press(&mut self, what: egui::Id, spared: bool, near: bool, now: Instant) -> bool {
         let first = self.ask(what, spared) == Ask::First;
-        self.0 = first.then_some(Asked {
-            what,
-            near,
-            kept: true,
-            until: now + Self::TIME,
-        });
+        self.0 = first.then_some(Asked { what, near, kept: true, until: now + Self::TIME });
         !first
     }
 
@@ -143,11 +138,7 @@ pub fn asking(response: &egui::Response, width: f32, entries: impl FnOnce(&mut e
 /// chosen again.
 pub fn closer(ui: &mut egui::Ui, label: &str, ask: Ask) -> bool {
     ui.separator();
-    let row = Item {
-        label,
-        danger: ask == Ask::Again,
-        ..Default::default()
-    };
+    let row = Item { label, danger: ask == Ask::Again, ..Default::default() };
     let chosen = entry(ui, true, row).clicked();
     if chosen && ask != Ask::First {
         ui.close();

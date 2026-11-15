@@ -38,12 +38,10 @@ fn default_endpoint() -> String {
     if chosen {
         eprintln!("Rex's home.json names no home rex-lite can read; opening the local server.");
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // SAFETY: geteuid has no arguments and cannot fail.
-            PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
-        });
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| {
+        // SAFETY: geteuid has no arguments and cannot fail.
+        PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
+    });
     format!("unix:{}", runtime.join("rex/server.sock").display())
 }
 

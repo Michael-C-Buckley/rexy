@@ -33,9 +33,7 @@ fn frame<'a>(view: &'a View, pane: &str) -> Option<&'a Arc<Frame>> {
 }
 
 fn screen(view: &View, pane: &str) -> String {
-    frame(view, pane)
-        .map(|frame| frame.text())
-        .unwrap_or_default()
+    frame(view, pane).map(|frame| frame.text()).unwrap_or_default()
 }
 
 fn find<'a>(view: &'a View, id: &str) -> Option<&'a Window> {
@@ -68,13 +66,7 @@ fn enter(client: &Client, pane: &str) {
 /// A client of the server, with the keys a window has.
 fn open(endpoint: &str, herald: Herald) -> Client {
     let keymap = Some(rex_lite::ui::commands::request());
-    Client::spawn(
-        vec![endpoint.to_owned()],
-        Arc::new(|| {}),
-        herald,
-        keymap,
-        None,
-    )
+    Client::spawn(vec![endpoint.to_owned()], Arc::new(|| {}), herald, keymap, None)
 }
 
 /// A terminal has been drawn.
@@ -133,16 +125,8 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let owned = |v: &View| v.pane(&pane).is_some_and(|p| p.owner);
     wait(&client, "a pane whose owner has gone", owned);
     send(&client, Action::FocusPane { pane: pane.clone() });
-    let size = Size {
-        cols: 100,
-        rows: 32,
-        cell_width: 9,
-        cell_height: 19,
-    };
-    let resize = Action::Resize {
-        pane: pane.clone(),
-        size,
-    };
+    let size = Size { cols: 100, rows: 32, cell_width: 9, cell_height: 19 };
+    let resize = Action::Resize { pane: pane.clone(), size };
     send(&client, resize);
     wait(&client, "server resize metadata", |v| {
         frame(v, &pane).is_some_and(|f| f.cols == 100 && f.rows == 32)
@@ -160,34 +144,21 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         screen(v, &pane).contains("rex-lite-verified")
     });
 
-    let paste = Action::Paste {
-        pane: pane.clone(),
-        text: "printf 'paste-%s\\n' verified".into(),
-    };
+    let paste = Action::Paste { pane: pane.clone(), text: "printf 'paste-%s\\n' verified".into() };
     send(&client, paste);
     enter(&client, &pane);
-    wait(&client, "paste and live output", |v| {
-        screen(v, &pane).contains("paste-verified")
-    });
+    wait(&client, "paste and live output", |v| screen(v, &pane).contains("paste-verified"));
 
     // A program that asks is told where the mouse moves and of each step of the
     // wheel, and can tell Shift+Tab and Shift+Enter from Tab and Enter. It reads
     // one line, which the terminal shows as it comes.
     let tracking = |v: &View| frame(v, &pane).is_some_and(|f| f.mouse_tracking);
-    run(
-        "printf '\\033[?1003h\\033[?1006h\\033[>1u'; head -n 1 | cat -v; \
-        printf '\\033[<u\\033[?1003l\\033[?1006l'",
-    );
+    run("printf '\\033[?1003h\\033[?1006h\\033[>1u'; head -n 1 | cat -v; \
+        printf '\\033[<u\\033[?1003l\\033[?1006l'");
     wait(&client, "a program tracking the mouse", tracking);
     let (id, x, y) = (pane.clone(), 3, 4);
-    let motion = Action::Mouse {
-        pane: pane.clone(),
-        kind: "motion",
-        x,
-        y,
-        button: None,
-        modifiers: 0,
-    };
+    let motion =
+        Action::Mouse { pane: pane.clone(), kind: "motion", x, y, button: None, modifiers: 0 };
     send(&client, motion);
     for _ in 0..3 {
         let (pane, lines) = (id.clone(), -1);
@@ -215,10 +186,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
             && frame(v, &pane).is_some_and(|f| !Arc::ptr_eq(f, &old_frame))
             && screen(v, &pane).contains("rex-lite-verified")
     });
-    let split = Action::Split {
-        pane: pane.clone(),
-        direction: Direction::Right,
-    };
+    let split = Action::Split { pane: pane.clone(), direction: Direction::Right };
     send(&client, split);
     let split = wait(&client, "split layout and streams", |v| {
         find(v, &window)
@@ -273,10 +241,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
             behind.is_some_and(|p| p.id == other && p.activity == Activity::Done)
         });
         let note = notes.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(
-            (note.pane.as_str(), note.body.as_str()),
-            (other.as_str(), "Done")
-        );
+        assert_eq!((note.pane.as_str(), note.body.as_str()), (other.as_str(), "Done"));
     }
     // A pane of a floating layer that has been put away runs on out of sight too,
     // and comes back, with the keyboard, when it is revealed.
@@ -290,18 +255,11 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let away = json!({"session_id": session, "layer_id": layer["layer_id"], "state": "minimized"});
     call("session.set_layer_state", away);
     let tab = |v: &View, shown: usize, hidden: &[&str]| {
-        let hides = |w: &Window| {
-            w.hidden
-                .iter()
-                .map(|p| p.id.as_str())
-                .eq(hidden.iter().copied())
-        };
+        let hides = |w: &Window| w.hidden.iter().map(|p| p.id.as_str()).eq(hidden.iter().copied());
         find(v, &window).is_some_and(|w| w.panes.len() == shown && hides(w))
     };
     wait(&client, "a pane put away", |v| tab(v, 2, &[&floating]));
-    let reveal = Action::Reveal {
-        pane: floating.clone(),
-    };
+    let reveal = Action::Reveal { pane: floating.clone() };
     send(&client, reveal);
     // Nor is there one to drag under a pane that floats over it.
     let borders = |v: &View| find(v, &window).unwrap().borders.len();
@@ -316,14 +274,11 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let next = wait(&client, "new tab", |v| {
         v.windows().len() == initial.windows().len() + 1
             && v.selected_window.as_ref() != Some(&window)
-            && v.current_window()
-                .is_some_and(|w| w.panes.iter().all(|p| p.frame.is_some()))
+            && v.current_window().is_some_and(|w| w.panes.iter().all(|p| p.frame.is_some()))
     });
     assert_eq!(next.selected_session.as_ref(), Some(&session));
-    let show = |window: &str| Action::SelectWindow {
-        session: session.clone(),
-        window: window.into(),
-    };
+    let show =
+        |window: &str| Action::SelectWindow { session: session.clone(), window: window.into() };
     send(&client, show(&window));
     wait(&client, "return to existing tab", |v| {
         v.selected_window.as_ref() == Some(&window) && screen(v, &pane).contains("paste-verified")
@@ -345,9 +300,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     };
     let rename = |name: &str| edit(&session, Some(&window), Edit::Rename(name.into()));
     send(&client, rename("Named"));
-    wait(&client, "a tab renamed", |v| {
-        find(v, &window).is_some_and(|w| w.name() == "Named")
-    });
+    wait(&client, "a tab renamed", |v| find(v, &window).is_some_and(|w| w.name() == "Named"));
     send(&client, rename(""));
     // Of its panes, the one that typing goes to.
     send(&client, Action::FocusPane { pane: pane.clone() });
@@ -375,9 +328,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     said("state=working", Activity::Working, None);
     // What a program comes to while the connection is lost is news when it is back.
     run("sleep 1; printf '\\033]7501;state=%s\\007' error");
-    wait(&client, "a report to come", |v| {
-        screen(v, &pane).contains("sleep 1")
-    });
+    wait(&client, "a report to come", |v| screen(v, &pane).contains("sleep 1"));
     let old_frame = frame(&client.snapshot(), &pane).unwrap().clone();
     send(&client, Action::Reconnect);
     wait(&client, "a status that changed out of hearing", |v| {
@@ -402,9 +353,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // A tab has the icon of the program in its foreground, or of the one that
     // reports from it.
     let program = |label: &str, icon: &str| {
-        wait(&client, label, |v| {
-            find(v, &window).is_some_and(|w| w.program().name() == icon)
-        });
+        wait(&client, label, |v| find(v, &window).is_some_and(|w| w.program().name() == icon));
     };
     program("a shell", "shell");
     run("sleep 1");
@@ -418,9 +367,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let copy = |text: &str| format!("printf '\\033]52;c;%s\\007' \"$({text} | base64 -w0)\"");
     run(&copy("printf copied-text"));
     wait(&client, "a program's copy", |v| {
-        v.copied
-            .as_ref()
-            .is_some_and(|c| c.0 == pane && c.1 == "copied-text")
+        v.copied.as_ref().is_some_and(|c| c.0 == pane && c.1 == "copied-text")
     });
     run(&copy("head -c 1500000 /dev/zero | tr '\\0' x"));
     wait(&client, "a long copy", |v| {
@@ -435,13 +382,9 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let order = |v: &View| -> Vec<String> { v.windows().iter().map(|w| w.id.clone()).collect() };
     let first = Edit::MoveBefore(Some(window.clone()));
     send(&client, edit(&session, Some(&tab), first));
-    wait(&client, "a tab moved first", |v| {
-        order(v).first() == Some(&tab)
-    });
+    wait(&client, "a tab moved first", |v| order(v).first() == Some(&tab));
     send(&client, edit(&session, Some(&tab), Edit::MoveBefore(None)));
-    wait(&client, "a tab moved last", |v| {
-        order(v).last() == Some(&tab)
-    });
+    wait(&client, "a tab moved last", |v| order(v).last() == Some(&tab));
 
     // A session made with a name is shown at once, and ending it shows another.
     send(&client, Action::CreateSession(Some("Second".into())));
@@ -455,14 +398,10 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let behind = behind.sessions.iter().find(|s| s.id == session).unwrap();
     assert_eq!(behind.windows.len(), initial.windows().len() + 1);
     send(&client, edit(&second, None, Edit::Rename("Renamed".into())));
-    wait(&client, "a session renamed", |v| {
-        v.session().is_some_and(|s| s.name == "Renamed")
-    });
+    wait(&client, "a session renamed", |v| v.session().is_some_and(|s| s.name == "Renamed"));
     let first = Edit::MoveBefore(Some(session.clone()));
     send(&client, edit(&second, None, first));
-    wait(&client, "a session moved first", |v| {
-        v.sessions[0].id == second
-    });
+    wait(&client, "a session moved first", |v| v.sessions[0].id == second);
     // A window that opens is shown the server's first session, and asks at once
     // to be where it last was instead. That is where it comes to be.
     let again = open(&endpoint, Herald::new().0);
@@ -489,9 +428,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     // A tab of a session shown again is shown with it.
     send(&client, show(&tab));
-    wait(&client, "a tab chosen", |v| {
-        v.selected_window.as_ref() == Some(&tab)
-    });
+    wait(&client, "a tab chosen", |v| v.selected_window.as_ref() == Some(&tab));
     send(&client, edit(&session, Some(&tab), Edit::Close));
     wait(&client, "a tab closed", |v| {
         v.windows().len() == initial.windows().len() && v.selected_window.as_ref() == Some(&window)
@@ -508,8 +445,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         let listed = call("session.list_clients", json!({"session_id": session}));
         let clients = listed["clients"].as_array().unwrap().iter();
         let ours = clients.filter(|c| c["info"]["name"] == "Rex Lite");
-        ours.filter(|c| c["info"]["label"] == hostname.trim())
-            .count()
+        ours.filter(|c| c["info"]["label"] == hostname.trim()).count()
     };
     assert_eq!(clients(), 2);
     std::thread::sleep(Duration::from_millis(300));
@@ -547,9 +483,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     stays_left();
     let third = third.sessions.iter().find(|s| s.name == "Third").unwrap();
     send(&client, edit(&third.id, None, Edit::Close));
-    wait(&client, "that session ended", |v| {
-        v.sessions.iter().all(|s| s.name != "Third")
-    });
+    wait(&client, "that session ended", |v| v.sessions.iter().all(|s| s.name != "Third"));
     // The probe shows the first session as a window would, and sees its terminal.
     let probed = rex_lite::backend::probe(endpoint, Duration::from_secs(12)).unwrap();
     assert!(probed.contains("1 sessions") && !probed.contains(" 0 decoded"));
@@ -597,9 +531,7 @@ fn live_keymap_actions_and_requests() {
     for binding in &own {
         let action = binding["action"].as_str().unwrap();
         let read = bound(&read, &binding["keys"], action);
-        let kept = ["[Copy]", "[Paste]"]
-            .map(Value::from)
-            .contains(&binding["keys"][0]);
+        let kept = ["[Copy]", "[Paste]"].map(Value::from).contains(&binding["keys"][0]);
         assert!(read != kept, "{binding}");
     }
 
@@ -611,9 +543,7 @@ fn live_keymap_actions_and_requests() {
     let pane = shown.current_window().unwrap().panes[0].id.clone();
     let clients = call("client.list", json!({})).unwrap();
     let me = list(&clients["clients"]).into_iter();
-    let me = me
-        .filter(|c| c["info"]["name"] == "Rex Lite")
-        .map(|c| c["client_id"].clone());
+    let me = me.filter(|c| c["info"]["name"] == "Rex Lite").map(|c| c["client_id"].clone());
     let me: Vec<Value> = me.collect();
     assert_eq!(me.len(), 1);
     let perform = |action: &str, error: Option<&'static str>| {
@@ -623,10 +553,7 @@ fn live_keymap_actions_and_requests() {
             let asking = scope.spawn(|| call("client.perform", request));
             let mut asked = wait(&client, "another client's asking", |v| !v.asked.is_empty()).asked;
             let asked = asked.remove(0);
-            assert_eq!(
-                (asked.name.as_str(), asked.pane.as_ref()),
-                (action, Some(&pane))
-            );
+            assert_eq!((asked.name.as_str(), asked.pane.as_ref()), (action, Some(&pane)));
             let call = asked.call.unwrap();
             send(&client, Action::Reply { call, error });
             asking.join().unwrap()
@@ -650,10 +577,7 @@ fn live_keymap_actions_and_requests() {
     let path = first["config"]["path"].as_str().unwrap();
     // Only that of a server made for testing, as `tests/smoke.py` makes one.
     let disposable = ["/work/rex-lite-live-", "/work/rex-lite-smoke-"];
-    assert!(
-        disposable.iter().any(|made| path.contains(made)),
-        "refusing to write {path}"
-    );
+    assert!(disposable.iter().any(|made| path.contains(made)), "refusing to write {path}");
     let config = r#"
         rex.bind("ctrl+shift+d", "pane.zoom")
         rex.unbind("ctrl+tab")
@@ -673,42 +597,21 @@ fn live_keymap_actions_and_requests() {
     let zoom = json!(["ctrl+shift+d"]);
     let changed = keymap("a keymap read again", &|map| bound(map, &zoom, "pane.zoom"));
     let bindings = list(&changed["bindings"]);
-    let at = |action: &str| {
-        bindings
-            .iter()
-            .position(|b| b["keys"] == zoom && b["action"] == action)
-    };
+    let at =
+        |action: &str| bindings.iter().position(|b| b["keys"] == zoom && b["action"] == action);
     // The key's own binding is still there, to be tried after the new one.
     assert!(at("pane.zoom") < at("pane.split.right") && at("pane.zoom").is_some());
     assert!(!bindings.iter().any(|b| b["keys"] == json!(["ctrl+tab"])));
-    assert!(bound(
-        &changed,
-        &json!(["ctrl+shift+tab"]),
-        "client.tab.previous"
-    ));
-    assert!(bound(
-        &changed,
-        &json!(["ctrl+x", "ctrl+s"]),
-        "client.key.forward"
-    ));
+    assert!(bound(&changed, &json!(["ctrl+shift+tab"]), "client.tab.previous"));
+    assert!(bound(&changed, &json!(["ctrl+x", "ctrl+s"]), "client.key.forward"));
     let mode = &changed["modes"][0];
-    assert_eq!(
-        (&mode["name"], &mode["exclusive"]),
-        (&json!("only"), &json!(true))
-    );
+    assert_eq!((&mode["name"], &mode["exclusive"]), (&json!("only"), &json!(true)));
     let in_mode = |b: &Value| b["mode"] == "only" && b["keys"] == json!(["z"]);
     assert!(bindings.iter().any(in_mode));
     let action = list(&changed["actions"]).into_iter();
     let action: Vec<_> = action.filter(|a| a["name"] == "focus_mode").collect();
-    assert_eq!(
-        (&action[0]["title"], &action[0]["repeats"]),
-        (&json!("Focus Mode"), &json!(true))
-    );
-    assert!(
-        list(&changed["diagnostics"]).is_empty(),
-        "{:#}",
-        changed["diagnostics"]
-    );
+    assert_eq!((&action[0]["title"], &action[0]["repeats"]), (&json!("Focus Mode"), &json!(true)));
+    assert!(list(&changed["diagnostics"]).is_empty(), "{:#}", changed["diagnostics"]);
 
     // The last key of a sequence goes to the function bound to it with the keys
     // before it, and without them to the terminal.
@@ -736,20 +639,11 @@ fn live_keymap_actions_and_requests() {
     };
     send(&client, perform("focus_mode"));
     let queued = wait(&client, "an action asked in turn", |v| !v.asked.is_empty()).asked;
-    assert_eq!(
-        (queued[0].name.as_str(), &queued[0].call),
-        ("pane.zoom", &None)
-    );
+    assert_eq!((queued[0].name.as_str(), &queued[0].call), ("pane.zoom", &None));
     // So is a terminal's own: this one clears what the terminal shows.
     let typed = |v: &View| screen(v, &pane).contains("rex-lite-typed");
     let text = "echo rex-lite-typed".into();
-    send(
-        &client,
-        Action::Text {
-            pane: pane.clone(),
-            text,
-        },
-    );
+    send(&client, Action::Text { pane: pane.clone(), text });
     wait(&client, "something typed", typed);
     enter(&client, &pane);
     wait(&client, "a second line of it", |v| {

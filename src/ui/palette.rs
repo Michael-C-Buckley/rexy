@@ -22,9 +22,7 @@ pub fn id() -> egui::Id {
 /// Whether what is typed finds something, by any of the words for it.
 fn found(typed: &str, words: &[&str]) -> bool {
     let typed = typed.trim().to_lowercase();
-    words
-        .iter()
-        .any(|word| word.to_lowercase().contains(&typed))
+    words.iter().any(|word| word.to_lowercase().contains(&typed))
 }
 
 /// A row of the list, and what taking it does.
@@ -56,9 +54,7 @@ impl App {
             sessions.filter(move |session| Some(&session.id) != shown)
         });
         let elsewhere = elsewhere.map(|session| session.activity()).max();
-        let text = ui
-            .painter()
-            .layout_no_wrap(name.to_owned(), bold(BODY), TEXT);
+        let text = ui.painter().layout_no_wrap(name.to_owned(), bold(BODY), TEXT);
         let size = Vec2::new((text.size().x + 54.0).min(240.0), 28.0);
         let button = Item {
             menu: true,
@@ -149,10 +145,7 @@ impl App {
             let (step, enter) = ui.input_mut(|i| {
                 let down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
                 let up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
-                (
-                    isize::from(down) - isize::from(up),
-                    i.key_pressed(Key::Enter),
-                )
+                (isize::from(down) - isize::from(up), i.key_pressed(Key::Enter))
             });
             // The field is the head of the list, with a line under it and none
             // around it: nothing else here could be taking what is typed.

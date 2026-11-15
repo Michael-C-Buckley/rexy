@@ -96,9 +96,7 @@ fn remote_socket(status: &Value) -> Option<String> {
 /// Ask the machine where its Rex server listens.
 async fn server_socket(destination: &str) -> Result<String> {
     let mut status = ssh();
-    status
-        .args(["--", destination, STATUS])
-        .stdin(Stdio::null());
+    status.args(["--", destination, STATUS]).stdin(Stdio::null());
     // `ssh` gives up on a machine that does not answer, but not on a login or a
     // command that hangs. Given up on here, it is killed.
     let output = tokio::time::timeout(PATIENCE, status.output()).await;
@@ -125,10 +123,7 @@ async fn drain(mut pipe: impl AsyncRead + Unpin) -> Vec<u8> {
 /// Make a directory that only `user` can reach, or be sure that the one already
 /// there is such. In a place others can write to, one of them may have made it first.
 fn private(directory: &Path, user: u32) -> Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(directory)?;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(directory)?;
     // Asked of the name itself: a link to a directory is not one.
     let found = std::fs::symlink_metadata(directory)?;
     ensure!(
@@ -186,16 +181,9 @@ impl Tunnel {
         let stderr = child.stderr.take().context("Read ssh")?;
         // Left running once the forward is open, to end when `ssh` does.
         let mut said = tokio::spawn(drain(stderr));
-        let mut tunnel = Self {
-            _stdin: child.stdin.take(),
-            child,
-            local,
-        };
+        let mut tunnel = Self { _stdin: child.stdin.take(), child, local };
         let started = Instant::now();
-        while tokio::net::UnixStream::connect(&tunnel.local)
-            .await
-            .is_err()
-        {
+        while tokio::net::UnixStream::connect(&tunnel.local).await.is_err() {
             if tunnel.child.try_wait()?.is_some() {
                 // Its last words may still be on their way. Something it started
                 // can hold the pipe open, so they are not waited on for long.
@@ -203,10 +191,7 @@ impl Tunnel {
                 let said = said.ok().and_then(Result::ok).unwrap_or_default();
                 bail!("{}", reason(&said));
             }
-            ensure!(
-                started.elapsed() < PATIENCE,
-                "ssh did not open the forward in time"
-            );
+            ensure!(started.elapsed() < PATIENCE, "ssh did not open the forward in time");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(tunnel)

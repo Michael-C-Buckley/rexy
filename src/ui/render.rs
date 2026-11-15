@@ -31,11 +31,7 @@ impl Grid {
     pub fn new(ctx: &egui::Context, rect: Rect, font_size: f32) -> Self {
         let font = FontId::monospace(font_size);
         let width = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
-        Self {
-            rect,
-            cell: egui::vec2(width, (font_size * 1.35).ceil()),
-            font_size,
-        }
+        Self { rect, cell: egui::vec2(width, (font_size * 1.35).ceil()), font_size }
     }
 
     /// How many cells fit, and a cell's size in physical pixels.
@@ -140,13 +136,9 @@ impl PaneView {
         // backgrounds here too.
         let shown = |id: &u64| frame.pictures.iter().any(|placed| placed.picture.id == *id);
         self.pictures.retain(|id, _| shown(id));
-        let (under, over) = frame.pictures.split_at(
-            frame
-                .pictures
-                .iter()
-                .take_while(|placed| placed.under)
-                .count(),
-        );
+        let (under, over) = frame
+            .pictures
+            .split_at(frame.pictures.iter().take_while(|placed| placed.under).count());
         self.picture(&painter, grid, under);
         for (y, row) in frame.lines.iter().take(visible).enumerate() {
             let source = Arc::as_ptr(row).addr();
@@ -188,10 +180,7 @@ impl PaneView {
                 let span = grid.span(y, start, end);
                 let level = span.top() + height * grid.cell.y;
                 let cell = grid.cell.x;
-                let line = [
-                    Pos2::new(span.left(), level),
-                    Pos2::new(span.right(), level),
-                ];
+                let line = [Pos2::new(span.left(), level), Pos2::new(span.right(), level)];
                 let stroke = Stroke::new(1.0, color);
                 // Each pattern repeats with the cell, so runs side by side join up.
                 match kind {
@@ -293,9 +282,7 @@ impl PaneView {
             let texture = self.pictures.entry(picture.id).or_insert_with(|| {
                 let name = format!("picture {}", picture.id);
                 let image = pixels(picture, painter.ctx().input(|i| i.max_texture_side));
-                painter
-                    .ctx()
-                    .load_texture(name, image, egui::TextureOptions::LINEAR)
+                painter.ctx().load_texture(name, image, egui::TextureOptions::LINEAR)
             });
             let [left, top, wide, tall] = placed.at;
             let corner = grid.rect.min + grid.cell * egui::vec2(left, top);
@@ -364,11 +351,8 @@ impl CachedRow {
             }
             let text = row.text(start, x);
             let look = row.look(cell);
-            let color = if look.style.faint {
-                rgb(look.fg).gamma_multiply(0.65)
-            } else {
-                rgb(look.fg)
-            };
+            let color =
+                if look.style.faint { rgb(look.fg).gamma_multiply(0.65) } else { rgb(look.fg) };
             let mut letters = text.chars();
             let alone = letters.next().filter(|_| letters.next().is_none());
             if let Some(drawing) = alone.and_then(boxes::drawing) {
@@ -402,14 +386,10 @@ impl CachedRow {
                 }
             }
             if look.style.strikethrough {
-                result
-                    .decorations
-                    .push((start, x, 0.51, color, Underline::Single));
+                result.decorations.push((start, x, 0.51, color, Underline::Single));
             }
             if look.style.overline {
-                result
-                    .decorations
-                    .push((start, x, 0.05, color, Underline::Single));
+                result.decorations.push((start, x, 0.05, color, Underline::Single));
             }
         }
         result

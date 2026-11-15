@@ -39,11 +39,7 @@ fn keeps_up_with_sessions_and_their_views_by_what_the_news_carries() {
     let hosts = sent(None, "hosts_changed", json!({"hash": "4f53"}));
     let hash = "4f53".to_owned();
     assert_eq!(event(&hosts), Some(Event::Hosts { hash }));
-    let keymap = sent(
-        None,
-        "keymap_changed",
-        json!({"generation": 2, "hash": "a52e"}),
-    );
+    let keymap = sent(None, "keymap_changed", json!({"generation": 2, "hash": "a52e"}));
     let hash = "a52e".to_owned();
     assert_eq!(event(&keymap), Some(Event::Keymap { hash }));
     // Another client's asking names what to answer it by, and may name a pane.
@@ -90,25 +86,16 @@ fn keeps_up_with_what_each_terminal_says_of_itself() {
         Some(Event::Block { block, news })
     };
     let owner = json!({"pid": 2455975, "name": "zsh"});
-    let changed = block(
-        "title_changed",
-        json!({"title": "ada@studio: ~", "owner": owner}),
-    );
+    let changed = block("title_changed", json!({"title": "ada@studio: ~", "owner": owner}));
     assert_eq!(changed, news(News::Title("ada@studio: ~".into())));
     // A program has the icon of its script, of what it was started as, or of its executable.
     let program = |foreground: Value, icon: Option<&str>| {
         let pid = foreground["pid"].as_u64();
-        let event = block(
-            "process_changed",
-            json!({"generation": 2, "foreground": foreground}),
-        );
+        let event = block("process_changed", json!({"generation": 2, "foreground": foreground}));
         let program = Program::named(icon);
         assert_eq!(event, news(News::Program { program, pid }));
     };
-    program(
-        json!({"name": "2.1.325", "argv0": "claude"}),
-        Some("claude-code"),
-    );
+    program(json!({"name": "2.1.325", "argv0": "claude"}), Some("claude-code"));
     let script = "/opt/lib/pi-coding-agent/dist/cli.js";
     let script = json!({"name": "node", "argv0": "node", "script": script});
     program(script, Some("pi"));
@@ -129,22 +116,13 @@ fn keeps_up_with_what_each_terminal_says_of_itself() {
     // Where its shell is, and how far along a program says it is: in hundredths
     // while it counts, and no longer once it stops counting.
     let folder = News::Folder("/home/a".into());
-    assert_eq!(
-        block("pwd_changed", json!({"pwd": "/home/a"})),
-        news(folder)
-    );
+    assert_eq!(block("pwd_changed", json!({"pwd": "/home/a"})), news(folder));
     let along = |state: &str, progress: Value| {
-        block(
-            "progress_report",
-            json!({"state": state, "progress": progress}),
-        )
+        block("progress_report", json!({"state": state, "progress": progress}))
     };
     assert_eq!(along("set", json!(40)), news(News::Progress(Some(40))));
     assert_eq!(along("set", json!(400)), news(News::Progress(Some(100))));
-    assert_eq!(
-        along("indeterminate", Value::Null),
-        news(News::Progress(None))
-    );
+    assert_eq!(along("indeterminate", Value::Null), news(News::Progress(None)));
     assert_eq!(along("remove", json!(0)), news(News::Progress(None)));
     // Text a program copies comes with the news of it, unless it is long.
     let copied = |text: Option<&str>, id| {
@@ -226,14 +204,7 @@ fn an_endpoint_stands_for_the_addresses_to_try_in_order() {
     assert_eq!(of("192.168.1.20:7297"), both("192.168.1.20:7297"));
     assert_eq!(of("[::1]:7297"), both("[::1]:7297"));
     assert_eq!(of("box:443"), both("box:443"));
-    for bad in [
-        "",
-        "ssh://box",
-        "tailnet://:7297",
-        "ws://",
-        "box:port",
-        "a b",
-    ] {
+    for bad in ["", "ssh://box", "tailnet://:7297", "ws://", "box:port", "a b"] {
         assert!(targets(bad).is_err(), "{bad:?} is no endpoint");
     }
 }
@@ -285,14 +256,7 @@ impl Link {
         let ticks = stream::poll_fn(move |cx| ticks.poll_recv(cx));
         let closed = closing.clone();
         let run = control_loop(socket, receiver, sender, max_message, closed, ticks);
-        Self {
-            rpc: Rpc { requests },
-            events,
-            task: tokio::spawn(run),
-            server,
-            closing,
-            clock,
-        }
+        Self { rpc: Rpc { requests }, events, task: tokio::spawn(run), server, closing, clock }
     }
 
     /// One look over the link, and time for it to be taken: with one thread, the
@@ -345,8 +309,7 @@ async fn answers_reach_their_askers_and_news_its_readers() {
     // Answers come in any order, among news and things this client does not know.
     let response = |id: &str| json!({"type": "response", "id": id, "payload": {"for": id}});
     link.answer(response("2")).await;
-    link.answer(sent(None, "hosts_changed", json!({"hash": "h"})))
-        .await;
+    link.answer(sent(None, "hosts_changed", json!({"hash": "h"}))).await;
     link.answer(sent(None, "client_joined", json!({}))).await;
     link.answer(response("99")).await;
     link.answer(json!({"type": "later", "id": "1"})).await;
@@ -369,10 +332,7 @@ async fn a_request_too_large_for_the_server_fails_alone() {
     let mut link = Link::open(256).await;
     let large = link.rpc.call("paste", json!({"text": "a".repeat(256)}));
     let error = large.await.unwrap_err().to_string();
-    assert!(
-        error.contains("exceeds server limit (256 bytes)"),
-        "{error}"
-    );
+    assert!(error.contains("exceeds server limit (256 bytes)"), "{error}");
     // Nothing of it was sent, and the next request is the first to arrive.
     let small = link.rpc.enqueue("key", json!({})).await.unwrap();
     let (id, method) = link.asked().await;
@@ -461,14 +421,9 @@ async fn the_server_says_why_it_closes_the_control_connection() {
     let plain = ended(None).await.to_string();
     assert_eq!(plain, "The server closed the connection");
     let unknown = ended(close(4321, "new")).await.to_string();
-    assert_eq!(
-        unknown,
-        "The server closed the connection (status 4321: new)"
-    );
+    assert_eq!(unknown, "The server closed the connection (status 4321: new)");
     // A link that goes with no close frame is another thing.
-    let Link {
-        server, task, rpc, ..
-    } = Link::open(65536).await;
+    let Link { server, task, rpc, .. } = Link::open(65536).await;
     drop(server);
     let error = task.await.unwrap().unwrap_err();
     assert_eq!(error.downcast_ref(), Some(&Ended::Dropped));
@@ -592,10 +547,7 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["reconnect_token"], "last");
     // It offers the one revision it speaks, and no older.
-    assert_eq!(
-        (&hello["api_revision"], &hello["api_min_revision"]),
-        (&json!(13), &json!(13))
-    );
+    assert_eq!((&hello["api_revision"], &hello["api_min_revision"]), (&json!(13), &json!(13)));
     let Some(Message::Close(Some(frame))) = last else {
         panic!("the server was sent no close frame");
     };

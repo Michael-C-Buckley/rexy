@@ -74,11 +74,7 @@ pub const COMMANDS: &[Command] = &[
     ("client.font.decrease", "Decrease Font Size", HELD),
     ("client.font.reset", "Reset Font Size", ONCE),
     ("client.sidebar.toggle", "Toggle Sidebar", ONCE),
-    (
-        "client.sidebar.activity.toggle",
-        "Show What Is at Work",
-        ONCE,
-    ),
+    ("client.sidebar.activity.toggle", "Show What Is at Work", ONCE),
     ("client.palette.toggle", "Command Palette…", ONCE),
     ("client.mode.enter", "Enter Mode", ONCE),
     ("client.mode.exit", "Exit Mode", ONCE),
@@ -274,9 +270,7 @@ impl Standing<'_> {
         let on = name.ends_with("next");
         let round = |at: usize, of: usize| (at + if on { 1 } else { of - 1 }) % of;
         let (tab, tabs) = (view.current_window(), view.windows());
-        let at = tabs
-            .iter()
-            .position(|tab| Some(&tab.id) == view.selected_window.as_ref());
+        let at = tabs.iter().position(|tab| Some(&tab.id) == view.selected_window.as_ref());
         let pane = pane.or(self.focused);
         let pane = pane.and_then(|id| tab?.panes.iter().find(|pane| pane.id == id));
         // What the pane shows, once its terminal has drawn.
@@ -343,9 +337,7 @@ impl Standing<'_> {
             }
             "session.next" | "session.previous" => {
                 let sessions = &view.sessions;
-                let at = sessions
-                    .iter()
-                    .position(|s| Some(&s.id) == session().as_ref())?;
+                let at = sessions.iter().position(|s| Some(&s.id) == session().as_ref())?;
                 let to = &sessions[round(at, sessions.len())];
                 Deed::Ask(Action::SelectSession(to.id.clone()))
             }
@@ -442,11 +434,7 @@ impl App {
     /// Do what a command comes to, on the server it was planned for. `near` says
     /// the pointer asked.
     pub(super) fn act(&mut self, ctx: &egui::Context, server: usize, deed: Deed, near: bool) {
-        let row = |session, window| Target {
-            server,
-            session,
-            window,
-        };
+        let row = |session, window| Target { server, session, window };
         match deed {
             Deed::Ask(action) => self.open(server, action),
             Deed::Focus(pane) => {

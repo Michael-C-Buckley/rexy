@@ -1,13 +1,7 @@
 use super::*;
 
 fn key(key: Key, pressed: bool, modifiers: Modifiers) -> Event {
-    Event::Key {
-        key,
-        physical_key: Some(key),
-        pressed,
-        modifiers,
-        repeat: false,
-    }
+    Event::Key { key, physical_key: Some(key), pressed, modifiers, repeat: false }
 }
 
 /// Every key the server knows by name.
@@ -34,18 +28,13 @@ const SERVER_KEYS: &str = "unidentified backquote backslash bracket_left bracket
 #[test]
 fn every_key_is_named_as_the_server_names_it() {
     let known: HashSet<&str> = SERVER_KEYS.split_whitespace().collect();
-    let named = Key::ALL
-        .iter()
-        .filter_map(|key| Some((key, key_code(*key)?)));
+    let named = Key::ALL.iter().filter_map(|key| Some((key, key_code(*key)?)));
     for (key, code) in named.clone() {
         assert!(known.contains(code.as_str()), "{key:?} is sent as {code}");
     }
     assert!(named.count() > 80, "most keys have a name");
     assert_eq!(key_code(Key::SuperLeft).as_deref(), Some("meta_left"));
-    assert_eq!(
-        (key_code(Key::F25).as_deref(), key_code(Key::F26)),
-        (Some("f25"), None)
-    );
+    assert_eq!((key_code(Key::F25).as_deref(), key_code(Key::F26)), (Some("f25"), None));
     assert!(model::is_modifier("meta_right") && !model::is_modifier("key_a"));
 }
 
@@ -92,12 +81,7 @@ fn a_key_held_down_repeats() {
 /// The text, modifiers and direction of a key action.
 fn key_of(action: &Action) -> (&str, u8, bool) {
     match action {
-        Action::Key {
-            key,
-            modifiers,
-            pressed,
-            ..
-        } => (key, *modifiers, *pressed),
+        Action::Key { key, modifiers, pressed, .. } => (key, *modifiers, *pressed),
         other => panic!("expected a key, got {other:?}"),
     }
 }
@@ -146,10 +130,7 @@ fn a_paste_is_sent_once_as_a_paste() {
     let mut keyboard = Keyboard::default();
     let chord = Modifiers::CTRL | Modifiers::SHIFT;
     // The shell consumes the V press and asks for the clipboard; only its release remains.
-    let out = keyboard.translate(
-        "p",
-        &[Event::Paste("hello\n".into()), key(Key::V, false, chord)],
-    );
+    let out = keyboard.translate("p", &[Event::Paste("hello\n".into()), key(Key::V, false, chord)]);
     assert_eq!(out.len(), 1);
     assert!(matches!(&out[0], Action::Paste { text, .. } if text == "hello\n"));
 }
@@ -159,10 +140,7 @@ fn ime_commit_has_no_extra_printable_press() {
     let mut keyboard = Keyboard::default();
     let out = keyboard.translate(
         "p",
-        &[
-            key(Key::E, true, Modifiers::NONE),
-            Event::Ime(ImeEvent::Commit("é".into())),
-        ],
+        &[key(Key::E, true, Modifiers::NONE), Event::Ime(ImeEvent::Commit("é".into()))],
     );
     assert_eq!(out.len(), 1);
     assert!(matches!(&out[0], Action::Text { text, .. } if text == "é"));
@@ -175,11 +153,7 @@ fn losing_the_window_releases_held_keys() {
     let out = keyboard.translate("p", &[Event::WindowFocused(false)]);
     assert_eq!(out.len(), 1);
     assert_eq!(key_of(&out[0]), ("", 0, false));
-    assert!(
-        keyboard
-            .translate("p", &[key(Key::ArrowUp, false, Modifiers::NONE)])
-            .is_empty()
-    );
+    assert!(keyboard.translate("p", &[key(Key::ArrowUp, false, Modifiers::NONE)]).is_empty());
 }
 
 #[test]
@@ -218,10 +192,7 @@ fn only_real_input_clears_a_selection() {
 fn news_of_nothing_composed_is_kept_only_when_something_was() {
     let preedit = |text: &str| {
         let (text, active_range_chars) = (text.to_owned(), None);
-        Event::Ime(ImeEvent::Preedit {
-            text,
-            active_range_chars,
-        })
+        Event::Ime(ImeEvent::Preedit { text, active_range_chars })
     };
     let commit = || Event::Ime(ImeEvent::Commit("に".into()));
     let mut keyboard = Keyboard::default();
@@ -250,10 +221,7 @@ fn a_key_is_spelled_as_rex_spells_it() {
     // Shift is left written, and the symbol it types is not: a plus is the
     // equals key's, and an exclamation mark the 1's.
     assert_eq!(spelled(Key::Plus, Key::Equals, chord)[0], "ctrl+shift+=");
-    assert_eq!(
-        spelled(Key::Exclamationmark, Key::Num1, model::SHIFT)[0],
-        "shift+1"
-    );
+    assert_eq!(spelled(Key::Exclamationmark, Key::Num1, model::SHIFT)[0], "shift+1");
     // A plus typed without Shift, as on a number pad, is itself.
     assert_eq!(spelled(Key::Plus, Key::Plus, model::CTRL)[0], "ctrl++");
     let named = [
@@ -273,30 +241,20 @@ fn a_key_is_spelled_as_rex_spells_it() {
     assert_eq!(key_code(Key::Escape).as_deref(), Some("escape"));
     assert_eq!(spelled(Key::K, Key::K, model::SUPER)[0], "cmd+k");
     // A modifier alone is no chord.
-    assert_eq!(
-        spellings(Key::ShiftLeft, Some(Key::ShiftLeft), model::SHIFT),
-        None
-    );
+    assert_eq!(spellings(Key::ShiftLeft, Some(Key::ShiftLeft), model::SHIFT), None);
 }
 
 #[test]
 fn a_key_rex_spells_is_pressed_as_itself() {
     let pressed = |chord| match press("p", chord) {
-        Some(Action::Key {
-            key,
-            code,
-            modifiers,
-            pressed: true,
-            ..
-        }) => Some((key, code, modifiers)),
+        Some(Action::Key { key, code, modifiers, pressed: true, .. }) => {
+            Some((key, code, modifiers))
+        }
         _ => None,
     };
     let key = |key: &str, code: &str, modifiers| Some((key.to_owned(), code.to_owned(), modifiers));
     assert_eq!(pressed("ctrl+b"), key("b", "key_b", model::CTRL));
-    assert_eq!(
-        pressed("alt+shift+left"),
-        key("", "arrow_left", model::ALT | model::SHIFT)
-    );
+    assert_eq!(pressed("alt+shift+left"), key("", "arrow_left", model::ALT | model::SHIFT));
     assert_eq!(pressed("[KeyB]"), key("b", "key_b", 0));
     assert_eq!(pressed("enter"), key("\n", "enter", 0));
     assert_eq!((pressed("hyper+b"), pressed("ctrl+nothing")), (None, None));
@@ -315,27 +273,16 @@ fn a_key_taken_takes_what_it_typed() {
         text("c"),
     ];
     remove(&mut events, &[2]);
-    let left = [
-        key(Key::A, true, none),
-        text("a"),
-        key(Key::B, false, none),
-        text("c"),
-    ];
+    let left = [key(Key::A, true, none), text("a"), key(Key::B, false, none), text("c")];
     assert_eq!(events, left);
 }
 
 #[test]
 fn the_key_that_ends_a_sequence_goes_with_the_keys_before_it() {
     let prefix = Some((Key::S, vec!["ctrl+x".into()]));
-    let mut keyboard = Keyboard {
-        prefix,
-        ..Default::default()
-    };
+    let mut keyboard = Keyboard { prefix, ..Default::default() };
     // Only that key: one pressed ahead of it goes as it is.
-    let events = [
-        key(Key::ArrowUp, true, Modifiers::NONE),
-        key(Key::S, true, Modifiers::CTRL),
-    ];
+    let events = [key(Key::ArrowUp, true, Modifiers::NONE), key(Key::S, true, Modifiers::CTRL)];
     let out = keyboard.translate("p", &events);
     let prefix = |action: &Action| match action {
         Action::Key { prefix, .. } => prefix.clone(),

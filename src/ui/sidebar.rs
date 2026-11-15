@@ -19,10 +19,7 @@ impl App {
     /// Every server, each with its sessions beneath it, and under each session its tabs.
     /// It lies on the window's own ground.
     pub(super) fn sidebar(&mut self, root_ui: &mut egui::Ui, views: &[View]) {
-        let rows = egui::Frame::new().inner_margin(Margin {
-            top: 0,
-            ..Margin::same(8)
-        });
+        let rows = egui::Frame::new().inner_margin(Margin { top: 0, ..Margin::same(8) });
         // No wider than leaves the terminal half the window, however it was left.
         let [least, most] = SIDEBAR_RANGE;
         let most = (root_ui.available_width() / 2.0).clamp(least, most);
@@ -86,9 +83,7 @@ impl App {
         let sense = Sense::click_and_drag();
         let edge = root_ui.interact(grab, egui::Id::unique("sidebar edge"), sense);
         if edge.hovered() || edge.dragged() {
-            root_ui
-                .ctx()
-                .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            root_ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             root_ui.painter().vline(x, height, Stroke::new(1.0, DIM));
         }
         // The next drawing holds it to its least and its most.
@@ -110,8 +105,7 @@ impl App {
                 let font = FontId::proportional(SMALL);
                 let mut status = LayoutJob::simple(view.status.clone(), font, DIM, 0.0);
                 status.wrap.max_rows = 3;
-                ui.add(egui::Label::new(status).wrap())
-                    .on_hover_text(&view.status);
+                ui.add(egui::Label::new(status).wrap()).on_hover_text(&view.status);
             });
         }
         let mut sessions = Vec::new();
@@ -167,7 +161,6 @@ fn rule(ui: &mut egui::Ui) {
     ui.add_space(8.0);
     let (line, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     let across = line.shrink2(egui::vec2(4.0, 0.0)).x_range();
-    ui.painter()
-        .hline(across, line.center().y, Stroke::new(1.0, BORDER));
+    ui.painter().hline(across, line.center().y, Stroke::new(1.0, BORDER));
     ui.add_space(4.0);
 }

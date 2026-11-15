@@ -43,27 +43,15 @@ pub fn at(frame: &Frame, x: usize, y: usize) -> Option<Link> {
 /// on past the rows shown: the frame holds what of it is out of sight there.
 fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
     let wraps = |row: usize| frame.lines.get(row).is_some_and(|row| row.wrapped);
-    let first = (0..y)
-        .rev()
-        .take_while(|row| wraps(*row))
-        .last()
-        .unwrap_or(y);
+    let first = (0..y).rev().take_while(|row| wraps(*row)).last().unwrap_or(y);
     let rows = y..frame.lines.len();
     let last = rows.clone().find(|row| !wraps(*row)).or(rows.last())?;
     // What of the line is out of sight, before the rows shown and after them:
     // none of it where it begins or ends among them, and None where it is more
     // than the frame holds.
     let [above, below] = &frame.beyond;
-    let above = if first == 0 {
-        above.as_deref()
-    } else {
-        Some("")
-    };
-    let below = if wraps(last) {
-        below.as_deref()
-    } else {
-        Some("")
-    };
+    let above = if first == 0 { above.as_deref() } else { Some("") };
+    let below = if wraps(last) { below.as_deref() } else { Some("") };
     // Every character of the line, and for one on show its row and its column.
     let unseen = |c: char| (c, None);
     let mut line: Vec<_> = above.unwrap_or_default().chars().map(unseen).collect();
@@ -93,10 +81,7 @@ fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
     }
     let word: String = line[start..end].iter().map(|c| c.0).collect();
     // It begins where its kind is named, which may be after a bracket or a quote.
-    let begin = SCHEMES
-        .iter()
-        .filter_map(|scheme| word.find(scheme))
-        .min()?;
+    let begin = SCHEMES.iter().filter_map(|scheme| word.find(scheme)).min()?;
     let mut target = &word[begin..];
     loop {
         let unopened = |(open, close): &(char, char)| {

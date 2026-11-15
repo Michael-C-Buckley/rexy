@@ -52,11 +52,7 @@ impl Motion {
         self.places.retain(|pane, _| open(pane));
         let mut moving = false;
         let shown = belong.iter().map(|&(pane, to)| {
-            let set_out = |from: Rect| Place {
-                from,
-                to,
-                since: now,
-            };
+            let set_out = |from: Rect| Place { from, to, since: now };
             let place = match self.places.get(pane) {
                 _ if still => set_out(to),
                 // On its way there already.

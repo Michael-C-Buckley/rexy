@@ -48,11 +48,7 @@ impl App {
         let name = "client.sidebar.activity.toggle";
         let button = toggle(ui, Icon::Agents, &self.keys.map.tip(tip, name), self.agents);
         let sessions = views.iter().flat_map(|view| &view.sessions);
-        worn(
-            ui,
-            &button,
-            sessions.map(|session| session.activity()).max(),
-        );
+        worn(ui, &button, sessions.map(|session| session.activity()).max());
         if button.clicked() {
             self.todo.push((name, None));
         }

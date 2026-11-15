@@ -3,10 +3,7 @@ use super::*;
 #[test]
 fn an_endpoint_splits_into_a_destination_and_an_optional_socket() {
     assert_eq!(parse("ssh://studio"), ("ssh://studio", None));
-    assert_eq!(
-        parse("ssh://me@studio:2222"),
-        ("ssh://me@studio:2222", None)
-    );
+    assert_eq!(parse("ssh://me@studio:2222"), ("ssh://me@studio:2222", None));
     assert_eq!(
         parse("ssh://me@studio/run/rex/server.sock"),
         ("ssh://me@studio", Some("/run/rex/server.sock"))

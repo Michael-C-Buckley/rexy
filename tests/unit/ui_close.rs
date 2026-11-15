@@ -44,10 +44,7 @@ fn the_wait_ends_when_the_pointer_leaves() {
     assert_eq!(closing.lapse(now), Some(Closing::TIME));
     closing.keep();
     let later = now + Duration::from_secs(1);
-    assert_eq!(
-        closing.lapse(later),
-        Some(Closing::TIME - Duration::from_secs(1))
-    );
+    assert_eq!(closing.lapse(later), Some(Closing::TIME - Duration::from_secs(1)));
     // Not kept since, it ends, and says so once.
     assert_eq!(closing.lapse(later), Some(Duration::ZERO));
     assert_eq!(closing.lapse(later), None);

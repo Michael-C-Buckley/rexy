@@ -48,12 +48,8 @@ impl Keyboard {
     pub fn watch(&mut self, events: &[Event]) {
         for event in events {
             match event {
-                Event::Key {
-                    key,
-                    physical_key,
-                    pressed,
-                    ..
-                } => match physical_key.unwrap_or(*key) {
+                Event::Key { key, physical_key, pressed, .. } => match physical_key.unwrap_or(*key)
+                {
                     Key::SuperLeft => self.supers[0] = *pressed,
                     Key::SuperRight => self.supers[1] = *pressed,
                     _ => {}
@@ -85,24 +81,12 @@ impl Keyboard {
         };
         for (index, event) in events.iter().enumerate() {
             match event {
-                Event::Key {
-                    key,
-                    physical_key,
-                    pressed: false,
-                    modifiers,
-                    ..
-                } => {
+                Event::Key { key, physical_key, pressed: false, modifiers, .. } => {
                     if let Some(held) = self.held.remove(&physical_key.unwrap_or(*key)) {
                         actions.push(key_action(&held, self.bits(*modifiers), false, false));
                     }
                 }
-                Event::Key {
-                    key,
-                    physical_key,
-                    pressed: true,
-                    modifiers,
-                    repeat,
-                } => {
+                Event::Key { key, physical_key, pressed: true, modifiers, repeat } => {
                     let identity = physical_key.unwrap_or(*key);
                     // A key that types nothing is named for what it does, not for
                     // where it is: with NumLock off, the 8 of a number pad is Up.
@@ -135,12 +119,7 @@ impl Keyboard {
                         None if is_printable(*key) && !chord && !modifiers.alt => continue,
                         None => logical_text(*key).unwrap_or_default(),
                     };
-                    let held = Held {
-                        pane: pane.into(),
-                        key,
-                        code,
-                        modifiers: bits,
-                    };
+                    let held = Held { pane: pane.into(), key, code, modifiers: bits };
                     let mut pressed = key_action(&held, bits, true, *repeat);
                     if let Action::Key { prefix, .. } = &mut pressed
                         && let Some(before) = self.prefix.take_if(|(key, _)| *key == identity)
@@ -151,25 +130,18 @@ impl Keyboard {
                     self.held.insert(identity, held);
                 }
                 Event::Text(text) if !used_text.contains(&index) && !text.is_empty() => {
-                    actions.push(Action::Text {
-                        pane: pane.into(),
-                        text: text.clone(),
-                    });
+                    actions.push(Action::Text { pane: pane.into(), text: text.clone() });
                 }
-                Event::Paste(text) => actions.push(Action::Paste {
-                    pane: pane.into(),
-                    text: text.clone(),
-                }),
+                Event::Paste(text) => {
+                    actions.push(Action::Paste { pane: pane.into(), text: text.clone() })
+                }
                 Event::Ime(ImeEvent::Preedit { text, .. }) => {
                     self.preedit.clone_from(text);
                 }
                 Event::Ime(ImeEvent::Commit(text)) => {
                     self.preedit.clear();
                     if !text.is_empty() {
-                        actions.push(Action::Text {
-                            pane: pane.into(),
-                            text: text.clone(),
-                        });
+                        actions.push(Action::Text { pane: pane.into(), text: text.clone() });
                     }
                 }
                 Event::WindowFocused(false) => {
@@ -191,11 +163,7 @@ impl Keyboard {
 pub fn clears_selection(action: &Action) -> bool {
     match action {
         Action::Text { text, .. } | Action::Paste { text, .. } => !text.is_empty(),
-        Action::Key {
-            pressed: true,
-            code,
-            ..
-        } => !model::is_modifier(code),
+        Action::Key { pressed: true, code, .. } => !model::is_modifier(code),
         _ => false,
     }
 }
@@ -204,12 +172,8 @@ pub fn clears_selection(action: &Action) -> bool {
 pub const ESCAPE: &str = "esc";
 
 /// The modifiers as Rex spells them, in the order it writes them.
-const MODIFIERS: [(u8, &str); 4] = [
-    (model::CTRL, "ctrl"),
-    (model::ALT, "alt"),
-    (model::SHIFT, "shift"),
-    (model::SUPER, "cmd"),
-];
+const MODIFIERS: [(u8, &str); 4] =
+    [(model::CTRL, "ctrl"), (model::ALT, "alt"), (model::SHIFT, "shift"), (model::SUPER, "cmd")];
 
 /// The two ways Rex spells a key pressed with these modifiers: by what it types,
 /// as `ctrl+shift+d`, and by its place on the keyboard, as `ctrl+shift+[KeyD]`.
@@ -220,11 +184,7 @@ pub fn spellings(key: Key, physical: Option<Key>, modifiers: u8) -> Option<Vec<S
     // Rex writes a key without Shift applied. Of a symbol typed with Shift, all
     // that is known is the key's place, which is taken for a US keyboard's.
     let symbol = is_printable(key) && !between(key, Key::A, Key::Z);
-    let plain = if modifiers & model::SHIFT != 0 && symbol {
-        place
-    } else {
-        key
-    };
+    let plain = if modifiers & model::SHIFT != 0 && symbol { place } else { key };
     let name = match logical_text(plain) {
         Some(text) if !text.trim().is_empty() => text,
         _ if plain == Key::Escape => ESCAPE.to_owned(),

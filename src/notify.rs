@@ -56,21 +56,14 @@ impl Herald {
         // A program can say things faster than they can be passed on.
         let (notes, out) = flume::bounded(256);
         let (news, server) = (Arc::default(), String::new());
-        let herald = Self {
-            notes,
-            news,
-            server,
-        };
+        let herald = Self { notes, news, server };
         (herald, out)
     }
 
     /// The same for another server, by its name.
     pub fn of(&self, server: &str) -> Self {
         let server = server.to_owned();
-        Self {
-            server,
-            ..self.clone()
-        }
+        Self { server, ..self.clone() }
     }
 
     /// Whether anything has been said, by any server, since this was last asked.
@@ -101,10 +94,8 @@ impl Herald {
 fn plain(text: &str) -> String {
     let turns = |c| matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
     let kept = text.chars().filter(|c| !turns(*c));
-    let mut plain: String = kept
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .take(MAX_TEXT + 1)
-        .collect();
+    let mut plain: String =
+        kept.map(|c| if c.is_control() { ' ' } else { c }).take(MAX_TEXT + 1).collect();
     if let Some((end, _)) = plain.char_indices().nth(MAX_TEXT) {
         plain.truncate(end);
         plain.push('…');
@@ -137,9 +128,7 @@ impl Desktop {
         let (requests, asked) = flume::unbounded();
         let (pick, picked) = flume::unbounded();
         let work = move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
             if let Ok(runtime) = runtime {
                 let picked = |pane, token: Option<&str>| {
                     let _ = pick.send(pane);
@@ -149,9 +138,7 @@ impl Desktop {
             }
         };
         // Without the worker nothing is passed on, and nothing else is the worse for it.
-        let _ = std::thread::Builder::new()
-            .name("rex-notify".into())
-            .spawn(work);
+        let _ = std::thread::Builder::new().name("rex-notify".into()).spawn(work);
         Self { requests, picked }
     }
 
@@ -294,9 +281,7 @@ impl Worker {
         R: for<'a> zbus::wire::DynamicDeserialize<'a>,
     {
         let bus = self.bus.as_ref()?;
-        let call = bus
-            .connection
-            .call_method(Some(SERVICE), PATH, Some(SERVICE), method, body);
+        let call = bus.connection.call_method(Some(SERVICE), PATH, Some(SERVICE), method, body);
         match timeout(PATIENCE, call).await {
             Ok(Ok(reply)) => reply.body().deserialize().ok(),
             Ok(Err(zbus::Error::MethodError(..) | zbus::Error::FDO(_))) => None,
@@ -351,20 +336,14 @@ impl Bus {
             .interface(SERVICE)
             .build()
             .ok()?;
-        let signals = MessageStream::for_match_rule(rule, &connection, None)
-            .await
-            .ok()?;
+        let signals = MessageStream::for_match_rule(rule, &connection, None).await.ok()?;
         let able = connection
             .call_method(Some(SERVICE), PATH, Some(SERVICE), "GetCapabilities", &())
             .await
             .ok()?;
         let able: Vec<String> = able.body().deserialize().ok()?;
         let markup = able.iter().any(|able| able == "body-markup");
-        Some(Self {
-            connection,
-            signals,
-            markup,
-        })
+        Some(Self { connection, signals, markup })
     }
 }
 

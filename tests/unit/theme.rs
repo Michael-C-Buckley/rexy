@@ -32,8 +32,5 @@ fn a_configuration_comes_to_its_themes_colours_with_its_own_over_them() {
     assert_eq!(read(unset, named), Some(left));
     // A theme that is not to be found, and a configuration of no colours.
     assert_eq!(read("theme = Gone", named), None);
-    assert_eq!(
-        read("font-size = 13\n# background = #000000\n", named),
-        None
-    );
+    assert_eq!(read("font-size = 13\n# background = #000000\n", named), None);
 }

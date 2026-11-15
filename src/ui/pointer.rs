@@ -83,12 +83,7 @@ impl Pointer<'_> {
         let mut motion = None;
         for event in self.events {
             match event {
-                egui::Event::PointerButton {
-                    pos,
-                    button,
-                    pressed,
-                    modifiers,
-                } => {
+                egui::Event::PointerButton { pos, button, pressed, modifiers } => {
                     // A button Rex has no name for is not the program's.
                     let Some(named) = mouse_button(*button) else {
                         continue;

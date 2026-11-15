@@ -60,12 +60,7 @@ impl Raise {
         let surface = WlSurface::from_id(&connection, surface).ok()?;
         let (globals, queue) = registry_queue_init::<Globals>(&connection).ok()?;
         let activation = globals.bind(&queue.handle(), 1..=1, ()).ok()?;
-        Some(Box::leak(Box::new(Self {
-            connection,
-            activation,
-            surface,
-            _queue: queue,
-        })))
+        Some(Box::leak(Box::new(Self { connection, activation, surface, _queue: queue })))
     }
 
     /// Come to the front, by the leave of a token.

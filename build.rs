@@ -7,9 +7,7 @@ fn main() {
     let folder = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("assets/icons");
     let files = fs::read_dir(&folder).into_iter().flatten().flatten();
     let files = files.map(|file| file.path());
-    let mut icons: Vec<_> = files
-        .filter(|file| file.extension() == Some("svg".as_ref()))
-        .collect();
+    let mut icons: Vec<_> = files.filter(|file| file.extension() == Some("svg".as_ref())).collect();
     icons.sort();
     let row = |icon: &std::path::PathBuf| {
         let name = icon.file_stem().unwrap().to_str().unwrap();
