@@ -19,7 +19,7 @@ Rex Lite is an unofficial client and is not affiliated with Superlogical. It is 
 - **Selection, search and scrollback.** Select by character, word, line or block, find text through a pane's whole history, and jump between shell prompts.
 - **A command palette.** **Ctrl Shift K** finds a session or tab on any server; **Ctrl Shift P** lists every action with its keys.
 - **Rex's own keymap.** Keys come from your home server's `init.lua`, with sequences and modes, and the window can be driven with `rex -C`.
-- **Quick to switch.** The last eight tabs you looked at stay live in the background, so going back to one is instant. A lost connection is retried by itself.
+- **Quick to switch.** The last sixteen tabs you looked at on each server stay live in the background, so going back to one is instant. A lost connection is retried by itself.
 
 ## Install
 
@@ -154,7 +154,7 @@ Rex Lite speaks revision 13 of Rex's control API. A server that is older, or too
 - Each server has one network runtime for control and terminal traffic. Each live pane has its own Ghostty worker thread; parsing never runs on the UI thread.
 - Terminal bytes travel through bounded queues with backpressure and are never dropped. Redraw requests coalesce, and the UI reads the newest immutable frame.
 - Rows that have not changed are shared between frames. The renderer caches shaped text by row and never builds a widget per cell.
-- Workers sleep when idle. A pane that is out of sight keeps reading its output but draws nothing. Only the last eight tabs shown on a server keep their streams; any other is restored from a fresh snapshot when shown.
+- Workers sleep when idle. A pane that is out of sight keeps reading its output but draws nothing. Only the last sixteen tabs shown on a server keep their streams; any other is restored from a fresh snapshot when shown.
 - A snapshot starts with the screen, which is drawn as soon as it arrives, and the history follows. Each pane keeps up to 32 MiB of scrollback, held compressed until it is scrolled to, and up to 128 MiB of pictures per screen.
 - Input that fails to send is reported and never replayed after a reconnection.
 

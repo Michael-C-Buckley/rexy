@@ -43,7 +43,7 @@ const STATUS: &str = "com.superlogical.terminal.program_status";
 const THEME: &str = "com.superlogical.terminal.set_theme";
 const COPIED: &str = "com.superlogical.terminal.clipboard_read";
 /// How many tabs are kept fed at once, the one on show among them.
-const WARM: usize = 8;
+const WARM: usize = 16;
 /// The most a program may copy, and the most of it to ask for at a time.
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
 const COPY_PART_BYTES: usize = 960 * 1024;
