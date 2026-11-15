@@ -68,7 +68,13 @@ fn enter(client: &Client, pane: &str) {
 /// A client of the server, with the keys a window has.
 fn open(endpoint: &str, herald: Herald) -> Client {
     let keymap = Some(rex_lite::ui::commands::request());
-    Client::spawn(vec![endpoint.to_owned()], Arc::new(|| {}), herald, keymap)
+    Client::spawn(
+        vec![endpoint.to_owned()],
+        Arc::new(|| {}),
+        herald,
+        keymap,
+        None,
+    )
 }
 
 /// A terminal has been drawn.

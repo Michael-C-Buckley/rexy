@@ -242,9 +242,23 @@ impl PaneView {
                 CursorShape::Underline if focused => {
                     painter.rect_filled(rect.with_min_y(rect.bottom() - 2.0), 0, color);
                 }
+                // Solid, as Ghostty's is, with what is under it in the colour of
+                // the ground.
                 CursorShape::Block if focused => {
-                    painter.rect_filled(rect, 0, color.gamma_multiply(0.45));
-                    painter.rect_stroke(rect, 0, outline, egui::StrokeKind::Inside);
+                    painter.rect_filled(rect, 0, color);
+                    let column = usize::from(x);
+                    let row = frame.lines.get(usize::from(y));
+                    let under = row.and_then(|row| Some((row, row.cells.get(column)?)));
+                    if let Some((row, cell)) = under {
+                        let font = match row.look(cell).style.bold {
+                            true => style::mono_bold(grid.font_size),
+                            false => FontId::monospace(grid.font_size),
+                        };
+                        let (text, ink) = (row.text(column, column + 1), rgb(frame.bg));
+                        let galley = painter.layout_no_wrap(text.to_owned(), font, ink);
+                        let down = (grid.cell.y - galley.size().y) * 0.5;
+                        painter.galley(rect.min + egui::vec2(0.0, down), galley, ink);
+                    }
                 }
                 // An unfocused pane always shows a hollow cursor.
                 _ => {

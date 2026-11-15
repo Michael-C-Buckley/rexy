@@ -5,5 +5,6 @@ pub mod notify;
 pub mod program;
 mod ssh;
 pub mod terminal;
+pub mod theme;
 pub mod ui;
 mod wire;

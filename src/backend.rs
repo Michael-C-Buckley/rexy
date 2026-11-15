@@ -44,6 +44,7 @@ const TITLE: &str = "com.superlogical.terminal.title";
 const PROCESS: &str = "com.superlogical.terminal.process";
 const STATUS: &str = "com.superlogical.terminal.program_status";
 const FOLDER: &str = "com.superlogical.terminal.pwd";
+const THEME: &str = "com.superlogical.terminal.set_theme";
 const COPIED: &str = "com.superlogical.terminal.clipboard_read";
 /// How many tabs are kept fed at once, the one on show among them.
 const WARM: usize = 8;
@@ -145,12 +146,15 @@ impl Client {
     /// connected. None of its sessions is shown until one is asked for.
     /// What its panes have to say to someone not looking goes to `herald`.
     /// `keymap` is what the server's keymap is asked with: what a window can do
-    /// itself, and by which keys. A client with none asks for no keymap.
+    /// itself, and by which keys. A client with none asks for no keymap. `theme`
+    /// is the colours it gives the terminals it owns, as Rex's `set_theme` takes
+    /// them. One with none leaves each the colours it has.
     pub fn spawn(
         endpoints: Vec<String>,
         wake: Notify,
         herald: Herald,
         keymap: Option<Value>,
+        theme: Option<Value>,
     ) -> Self {
         let (ended, done) = flume::bounded(0);
         let shared = Shared {
@@ -172,7 +176,9 @@ impl Client {
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(run(endpoints, keymap, receiver, worker)),
+                    Ok(runtime) => {
+                        runtime.block_on(run(endpoints, keymap, theme, receiver, worker))
+                    }
                     Err(error) => {
                         worker.status(format!("Cannot start network runtime: {error}"), false)
                     }
@@ -315,11 +321,14 @@ struct Link {
     blocks: HashMap<String, Block>,
     /// What each connection asks the server's keymap with, if this client has keys.
     keymap: Option<Value>,
+    /// The colours this client gives the terminals it owns, if it has any.
+    theme: Option<Value>,
 }
 
 async fn run(
     endpoints: Vec<String>,
     keymap: Option<Value>,
+    theme: Option<Value>,
     mut actions: mpsc::Receiver<(Action, u64)>,
     shared: Shared,
 ) {
@@ -332,6 +341,7 @@ async fn run(
     let near = endpoints.iter().all(socket);
     let mut link = Link {
         keymap,
+        theme,
         ..Link::default()
     };
     // Tries in a row that never connected.
@@ -1135,6 +1145,13 @@ impl<'a> Connection<'a> {
             match self.streams.get(&pane) {
                 Some((_, shown)) => shown.store(on_show, Ordering::Relaxed),
                 None => {
+                    // Its colours are this client's while the terminal is: the
+                    // server takes them up whenever this client comes to own it.
+                    if let Some(theme) = &self.link.theme {
+                        let request =
+                            json!({"session_id": session, "block_id": pane, "args": theme});
+                        let _ = self.rpc.enqueue(THEME, request).await;
+                    }
                     let shown = Arc::new(AtomicBool::new(on_show));
                     let stream = stream_pane(
                         self.target.clone(),
@@ -1963,7 +1980,7 @@ fn shell() -> Value {
 
 /// Read-only connectivity probe used by --probe: no sessions are created and no input is sent.
 pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
-    let client = Client::spawn(vec![endpoint], Arc::new(|| {}), Herald::new().0, None);
+    let client = Client::spawn(vec![endpoint], Arc::new(|| {}), Herald::new().0, None, None);
     let started = std::time::Instant::now();
     loop {
         let view = client.snapshot();

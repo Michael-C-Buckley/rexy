@@ -69,6 +69,7 @@ impl Server {
                 wake,
                 herald,
                 Some(commands::request()),
+                crate::theme::ghostty().cloned(),
             ),
             host,
         }
