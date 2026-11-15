@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use eframe::egui;
 
 const HELP: &str = "\
-rex-lite — a minimal Rex client
+rexy — a minimal Rex client
 
-Usage: rex-lite [--server ENDPOINT]
+Usage: rexy [--server ENDPOINT]
 
   -S, --server  Unix socket, host name, ssh://, ws:// or wss:// Rex endpoint
       --probe   Verify attachment and Ghostty decoding without opening a window
@@ -29,14 +29,14 @@ fn home(named: Option<String>, file: Option<String>) -> Option<String> {
 }
 
 fn default_endpoint() -> String {
-    let file = rex_lite::ui::state_home().map(|state| state.join("rex/home.json"));
+    let file = rexy::ui::state_home().map(|state| state.join("rex/home.json"));
     let file = file.and_then(|file| std::fs::read_to_string(file).ok());
     let chosen = file.is_some();
     if let Some(home) = home(std::env::var("REX_HOME").ok(), file) {
         return home;
     }
     if chosen {
-        eprintln!("Rex's home.json names no home rex-lite can read; opening the local server.");
+        eprintln!("Rex's home.json names no home rexy can read; opening the local server.");
     }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| {
         // SAFETY: geteuid has no arguments and cannot fail.
@@ -63,7 +63,7 @@ fn main() -> eframe::Result {
                 return Ok(());
             }
             "--version" => {
-                println!("rex-lite {}", env!("CARGO_PKG_VERSION"));
+                println!("rexy {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             _ => {
@@ -74,7 +74,7 @@ fn main() -> eframe::Result {
     }
     let endpoint = endpoint.unwrap_or_else(default_endpoint);
     if probe {
-        match rex_lite::backend::probe(endpoint, std::time::Duration::from_secs(12)) {
+        match rexy::backend::probe(endpoint, std::time::Duration::from_secs(12)) {
             Ok(summary) => println!("{summary}"),
             Err(error) => {
                 eprintln!("{error:#}");
@@ -83,27 +83,27 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
-    let remembered = rex_lite::ui::Remembered::load();
+    let remembered = rexy::ui::Remembered::load();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Rex Lite")
+            .with_title("Rexy")
             // The window draws its own frame, in the row its tabs and buttons have.
             .with_decorations(false)
             // Its corners are round, and what lies behind the window shows past them.
             .with_transparent(true)
             .with_inner_size(remembered.kept.window)
-            .with_min_inner_size(rex_lite::ui::LEAST_WINDOW)
-            .with_app_id(rex_lite::notify::APP_ID)
-            .with_icon(rex_lite::ui::icon()),
+            .with_min_inner_size(rexy::ui::LEAST_WINDOW)
+            .with_app_id(rexy::notify::APP_ID)
+            .with_icon(rexy::ui::icon()),
         renderer: eframe::Renderer::Glow,
         // Ctrl+C, X and V belong to terminal programs; the UI maps the clipboard itself.
         clipboard_shortcuts: false,
         ..Default::default()
     };
     eframe::run_native(
-        "Rex Lite",
+        "Rexy",
         options,
-        Box::new(move |cc| Ok(Box::new(rex_lite::ui::App::new(cc, endpoint, remembered)))),
+        Box::new(move |cc| Ok(Box::new(rexy::ui::App::new(cc, endpoint, remembered)))),
     )
 }
 

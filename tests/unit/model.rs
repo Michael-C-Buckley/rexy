@@ -206,8 +206,8 @@ fn a_directory_is_named_shortly_for_a_title() {
     assert_eq!(folder("/home/ada/code"), "~/code");
     assert_eq!(folder("/home/ada/code/x"), "~/code/x");
     // Many levels down, the last two say where.
-    let deep = "/home/ada/work/projects/rex-lite";
-    assert_eq!(folder(deep), "…/projects/rex-lite");
+    let deep = "/home/ada/work/projects/rexy";
+    assert_eq!(folder(deep), "…/projects/rexy");
     assert_eq!(folder("/var/log/nginx"), "…/log/nginx");
     // Home is where the server says it is, and nowhere that only looks like it.
     assert_eq!(folder("/home/adamant"), "/home/adamant");

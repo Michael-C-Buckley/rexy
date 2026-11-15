@@ -529,8 +529,8 @@ impl eframe::App for App {
         if name != self.title {
             self.title = name.to_owned();
             let title = match name {
-                "" => "Rex Lite".into(),
-                name => format!("{name} — Rex Lite"),
+                "" => "Rexy".into(),
+                name => format!("{name} — Rexy"),
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }

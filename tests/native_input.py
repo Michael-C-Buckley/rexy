@@ -18,8 +18,8 @@ parser.add_argument('--session', required=True)
 parser.add_argument('--pane', required=True)
 parser.add_argument('--screenshot')
 args = parser.parse_args()
-if not (args.server.startswith('unix://') and 'rex-lite' in args.server and '/work/' in args.server):
-    parser.error('requires an explicit disposable rex-lite socket under work/')
+if not (args.server.startswith('unix://') and 'rexy' in args.server and '/work/' in args.server):
+    parser.error('requires an explicit disposable rexy socket under work/')
 
 x11 = C.CDLL(ctypes.util.find_library('X11'))
 xtest = C.CDLL(ctypes.util.find_library('Xtst'))
@@ -50,11 +50,11 @@ for i in range(count.value):
     if x11.XFetchName(display, children[i], C.byref(name)) and name.value:
         title = name.value.decode(errors='replace')
         x11.XFree(name)
-        if title.endswith('Rex Lite'):
+        if title.endswith('Rexy'):
             window = children[i]
             break
 x11.XFree(children)
-assert window, 'Rex Lite test window not found'
+assert window, 'Rexy test window not found'
 x11.XSetInputFocus(display, window, 2, 0)
 
 def key(sym, down):

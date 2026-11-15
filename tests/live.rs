@@ -1,5 +1,5 @@
 //! Run only against a disposable server, never the default personal socket.
-use rex_lite::{
+use rexy::{
     backend::Client,
     model::{self, Action, Activity, Edit, Size, Tab, View, Wait},
     notify::Herald,
@@ -65,7 +65,7 @@ fn enter(client: &Client, pane: &str) {
 
 /// A client of the server, with the keys a window has.
 fn open(endpoint: &str, herald: Herald) -> Client {
-    let keymap = Some(rex_lite::ui::commands::request());
+    let keymap = Some(rexy::ui::commands::request());
     Client::spawn(vec![endpoint.to_owned()], Arc::new(|| {}), herald, keymap, None)
 }
 
@@ -76,11 +76,9 @@ fn drawn(view: &View) -> bool {
 
 /// The server to test against, which must be one made for it.
 fn endpoint() -> String {
-    let endpoint = std::env::var("REX_LITE_TEST_SERVER").expect("explicit test endpoint required");
+    let endpoint = std::env::var("REXY_TEST_SERVER").expect("explicit test endpoint required");
     assert!(
-        endpoint.starts_with("unix://")
-            && endpoint.contains("rex-lite")
-            && endpoint.contains("/work/"),
+        endpoint.starts_with("unix://") && endpoint.contains("rexy") && endpoint.contains("/work/"),
         "refusing to mutate a non-test Rex server"
     );
     endpoint
@@ -105,7 +103,7 @@ fn call(endpoint: &str, method: &str, payload: Value) -> Result<Value, String> {
 }
 
 #[test]
-#[ignore = "requires REX_LITE_TEST_SERVER pointing to a disposable Rex server"]
+#[ignore = "requires REXY_TEST_SERVER pointing to a disposable Rex server"]
 fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let endpoint = endpoint();
     let (herald, notes) = Herald::new();
@@ -139,10 +137,8 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         enter(&client, &pane);
     };
     // Split the marker in the command so seeing the typed command cannot satisfy the assertion.
-    run("printf 'rex-lite-%s\\n' verified");
-    wait(&client, "keyboard input and live output", |v| {
-        screen(v, &pane).contains("rex-lite-verified")
-    });
+    run("printf 'rexy-%s\\n' verified");
+    wait(&client, "keyboard input and live output", |v| screen(v, &pane).contains("rexy-verified"));
 
     let paste = Action::Paste { pane: pane.clone(), text: "printf 'paste-%s\\n' verified".into() };
     send(&client, paste);
@@ -184,7 +180,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         v.connected
             && owned(v)
             && frame(v, &pane).is_some_and(|f| !Arc::ptr_eq(f, &old_frame))
-            && screen(v, &pane).contains("rex-lite-verified")
+            && screen(v, &pane).contains("rexy-verified")
     });
     // A shell is known to be where it is without saying so itself, and a split
     // starts where the pane it is made from is.
@@ -463,7 +459,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let clients = || {
         let listed = call("session.list_clients", json!({"session_id": session}));
         let clients = listed["clients"].as_array().unwrap().iter();
-        let ours = clients.filter(|c| c["info"]["name"] == "Rex Lite");
+        let ours = clients.filter(|c| c["info"]["name"] == "Rexy");
         ours.filter(|c| c["info"]["label"] == hostname.trim()).count()
     };
     assert_eq!(clients(), 2);
@@ -510,14 +506,14 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     send(&client, edit(&third.id, None, Edit::Close));
     wait(&client, "that session ended", |v| v.sessions.iter().all(|s| s.name != "Third"));
     // The probe shows the first session as a window would, and sees its terminal.
-    let probed = rex_lite::backend::probe(endpoint, Duration::from_secs(12)).unwrap();
+    let probed = rexy::backend::probe(endpoint, Duration::from_secs(12)).unwrap();
     assert!(probed.contains("1 sessions") && !probed.contains(" 0 decoded"));
 }
 
 /// The keys follow the server's keymap, the server's own actions can be done, and
 /// what other clients ask of this one reaches it and is answered.
 #[test]
-#[ignore = "requires REX_LITE_TEST_SERVER pointing to a disposable Rex server"]
+#[ignore = "requires REXY_TEST_SERVER pointing to a disposable Rex server"]
 fn live_keymap_actions_and_requests() {
     let endpoint = endpoint();
     let call = |method: &str, payload: Value| call(&endpoint, method, payload);
@@ -534,7 +530,7 @@ fn live_keymap_actions_and_requests() {
     // With nothing in the configuration, this client's own keys come back as
     // they were sent: keys are matched by how they are spelled.
     let first = keymap("the server's keymap", &|_| true);
-    let asked = rex_lite::ui::commands::request();
+    let asked = rexy::ui::commands::request();
     let own = list(&asked["defaults"][0]["bindings"]);
     assert!(own.len() > 30 && list(&first["diagnostics"]).is_empty());
     for binding in &own {
@@ -568,7 +564,7 @@ fn live_keymap_actions_and_requests() {
     let pane = shown.current_tab().unwrap().panes[0].id.clone();
     let clients = call("client.list", json!({})).unwrap();
     let me = list(&clients["clients"]).into_iter();
-    let me = me.filter(|c| c["info"]["name"] == "Rex Lite").map(|c| c["client_id"].clone());
+    let me = me.filter(|c| c["info"]["name"] == "Rexy").map(|c| c["client_id"].clone());
     let me: Vec<Value> = me.collect();
     assert_eq!(me.len(), 1);
     let perform = |action: &str, error: Option<&'static str>| {
@@ -601,7 +597,7 @@ fn live_keymap_actions_and_requests() {
     // key rebound, a key freed, a sequence a function answers, an action and a mode.
     let path = first["config"]["path"].as_str().unwrap();
     // Only that of a server made for testing, as `tests/smoke.py` makes one.
-    let disposable = ["/work/rex-lite-live-", "/work/rex-lite-smoke-"];
+    let disposable = ["/work/rexy-live-", "/work/rexy-smoke-"];
     assert!(disposable.iter().any(|made| path.contains(made)), "refusing to write {path}");
     // A second tab, for the configuration to have the server show.
     let shell = json!({"block": {"flavor": "com.superlogical.terminal.shell"}});
@@ -681,14 +677,12 @@ fn live_keymap_actions_and_requests() {
     let queued = wait(&client, "an action asked in turn", |v| !v.asked.is_empty()).asked;
     assert_eq!((queued[0].name.as_str(), &queued[0].call), ("pane.zoom", &None));
     // So is a terminal's own: this one clears what the terminal shows.
-    let typed = |v: &View| screen(v, &pane).contains("rex-lite-typed");
-    let text = "echo rex-lite-typed".into();
+    let typed = |v: &View| screen(v, &pane).contains("rexy-typed");
+    let text = "echo rexy-typed".into();
     send(&client, Action::Text { pane: pane.clone(), text });
     wait(&client, "something typed", typed);
     enter(&client, &pane);
-    wait(&client, "a second line of it", |v| {
-        screen(v, &pane).matches("rex-lite-typed").count() == 2
-    });
+    wait(&client, "a second line of it", |v| screen(v, &pane).matches("rexy-typed").count() == 2);
     send(&client, perform("com.superlogical.terminal.clear"));
     wait(&client, "a terminal cleared", |v| !typed(v));
     // One there is not is said to have failed.

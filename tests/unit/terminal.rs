@@ -248,7 +248,7 @@ fn a_picture_is_never_read_from_a_file_its_program_names() {
     assert_eq!(terminal.is_kitty_image_from_file_allowed().unwrap(), Some(false));
     assert_eq!(terminal.is_kitty_image_from_shared_mem_allowed().unwrap(), Some(false));
     // A file that holds one white pixel, named as the protocol has it: in base64.
-    let file = std::env::temp_dir().join(format!("rex-lite-picture-{}", std::process::id()));
+    let file = std::env::temp_dir().join(format!("rexy-picture-{}", std::process::id()));
     std::fs::write(&file, [255; 3]).unwrap();
     let name = file.to_str().unwrap().as_bytes();
     let mut named = String::new();

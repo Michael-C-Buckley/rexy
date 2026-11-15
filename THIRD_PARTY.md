@@ -1,6 +1,6 @@
 # Third-party notices
 
-Rex Lite is an unofficial client for Rex. It is not affiliated with Superlogical.
+Rexy is an unofficial client for Rex. It is not affiliated with Superlogical.
 
 The Rex terminal metadata parser and parts of color/cell/cursor conversion in `src/terminal.rs` are adapted from [rex-rune](https://github.com/shuv1337/rex-rune), snapshot `e914b1987681d941ddde537b37dd07acbbb146f2`. The names each program icon goes by, in `src/program.rs`, are adapted from its snapshot `db0f86c`. The transport and layout implementation also used that project's interoperability behavior and [rexrs](https://github.com/a10y/rexrs) as protocol references. No Rune UI code is included.
 

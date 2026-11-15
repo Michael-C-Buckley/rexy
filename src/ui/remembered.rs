@@ -110,7 +110,7 @@ pub struct Remembered {
 impl Remembered {
     /// What was remembered before, in the user's state directory.
     pub fn load() -> Self {
-        Self::open(state_home().map(|state| state.join("rex-lite")))
+        Self::open(state_home().map(|state| state.join("rexy")))
     }
 
     /// A file that is missing or damaged is no file: the window starts afresh.

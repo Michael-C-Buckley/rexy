@@ -545,7 +545,7 @@ mod served {
 
     impl Server {
         pub fn at(name: &str) -> Self {
-            let name = format!("rex-lite-test-{name}-{}.sock", std::process::id());
+            let name = format!("rexy-test-{name}-{}.sock", std::process::id());
             let path = std::env::temp_dir().join(name);
             let _ = std::fs::remove_file(&path);
             let listener = UnixListener::bind(&path).unwrap();

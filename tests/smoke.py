@@ -2,7 +2,7 @@
 """Run live and native tests with a private Rex server, Xvfb, and D-Bus session.
 
 Build first: ./scripts/dev build --locked
-Run: python3 tests/smoke.py [--binary target/release/rex-lite] [--screenshot /absolute/path.png]
+Run: python3 tests/smoke.py [--binary target/release/rexy] [--screenshot /absolute/path.png]
 Requires rex, Xvfb, dbus-run-session, import, xclip, libX11, and libXtst.
 """
 import argparse
@@ -16,7 +16,7 @@ import tempfile
 import time
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--binary', default='target/debug/rex-lite')
+parser.add_argument('--binary', default='target/debug/rexy')
 parser.add_argument('--screenshot')
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[1]
@@ -41,7 +41,7 @@ def stop(process):
         os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=3)
 
-with tempfile.TemporaryDirectory(prefix='rex-lite-smoke-', dir=repo / 'work') as directory:
+with tempfile.TemporaryDirectory(prefix='rexy-smoke-', dir=repo / 'work') as directory:
     work = Path(directory)
     config = work / 'init.lua'
     config.write_text('')
@@ -58,11 +58,11 @@ with tempfile.TemporaryDirectory(prefix='rex-lite-smoke-', dir=repo / 'work') as
                     raise RuntimeError('private Rex server did not start')
                 time.sleep(.05)
             cli = ['rex', '-S', endpoint, '--autostart=false']
-            fixture = json.loads(subprocess.check_output(cli + ['new', 'rex-lite smoke',
+            fixture = json.loads(subprocess.check_output(cli + ['new', 'rexy smoke',
                 '--window', 'Terminal', '--shell=none', '--keep-open', '-c', str(repo),
                 '--json', '--', '/bin/sh'], text=True))
             # The window keeps what it remembers here, away from the user's own.
-            env = dict(os.environ, REX_LITE_TEST_SERVER=endpoint, XDG_STATE_HOME=str(work / 'local'))
+            env = dict(os.environ, REXY_TEST_SERVER=endpoint, XDG_STATE_HOME=str(work / 'local'))
             subprocess.run(['./scripts/dev', 'test', '--locked', '--test', 'live', '--',
                 '--ignored', '--nocapture', '--test-threads=1'], cwd=repo, env=env, check=True)
             display_read, display_write = os.pipe()
@@ -97,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix='rex-lite-smoke-', dir=repo / 'work') as
             # This measures an isolated software-rendered window, not the real desktop GPU.
             children = Path(f'/proc/{app.pid}/task/{app.pid}/children').read_text().split()
             for pid in children:
-                if Path(f'/proc/{pid}/comm').read_text().strip() != 'rex-lite':
+                if Path(f'/proc/{pid}/comm').read_text().strip() != 'rexy':
                     continue
                 def ticks():
                     fields = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1].split()

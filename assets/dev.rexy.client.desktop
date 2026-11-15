@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=Rex Lite
+Name=Rexy
 GenericName=Rex Client
 Comment=Your Rex servers, their sessions and their tabs
-Exec=rex-lite
-Icon=dev.rex-lite.client
+Exec=rexy
+Icon=dev.rexy.client
 Terminal=false
 Categories=System;TerminalEmulator;
-StartupWMClass=dev.rex-lite.client
+StartupWMClass=dev.rexy.client
 StartupNotify=true

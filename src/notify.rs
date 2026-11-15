@@ -16,8 +16,8 @@ use tokio::time::{Instant, sleep_until, timeout};
 use zbus::{MatchRule, MessageStream, wire::Variant};
 
 /// What the desktop knows this program as.
-pub const APP_ID: &str = "dev.rex-lite.client";
-const NAME: &str = "Rex Lite";
+pub const APP_ID: &str = "dev.rexy.client";
+const NAME: &str = "Rexy";
 const SERVICE: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
 /// How long a note waits to be sent, for the window to say its pane is being looked

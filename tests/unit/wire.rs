@@ -519,7 +519,7 @@ async fn serve(listener: tokio::net::UnixListener, answer: Message) -> (Value, O
 
 #[tokio::test]
 async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
-    let name = format!("rex-lite-test-{}.sock", std::process::id());
+    let name = format!("rexy-test-{}.sock", std::process::id());
     let path = std::env::temp_dir().join(name);
     let _ = std::fs::remove_file(&path);
     let listener = || tokio::net::UnixListener::bind(&path).unwrap();

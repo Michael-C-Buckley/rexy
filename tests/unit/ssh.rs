@@ -58,7 +58,7 @@ fn the_directory_for_sockets_is_this_users_own() {
     use std::os::unix::fs::PermissionsExt;
     // SAFETY: geteuid has no arguments and cannot fail.
     let user = unsafe { libc::geteuid() };
-    let name = format!("rex-lite-test-{}", std::process::id());
+    let name = format!("rexy-test-{}", std::process::id());
     let root = std::env::temp_dir().join(name);
     let _ = std::fs::remove_dir_all(&root);
     let (own, link, file) = (root.join("own"), root.join("link"), root.join("file"));

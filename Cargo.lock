@@ -2406,7 +2406,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rex-lite"
+name = "rexy"
 version = "0.1.0"
 dependencies = [
  "anyhow",

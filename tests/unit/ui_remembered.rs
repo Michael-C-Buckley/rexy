@@ -7,7 +7,7 @@ fn fresh() -> Kept {
 
 /// A directory of this test's own, never the user's.
 fn directory(test: &str) -> PathBuf {
-    let directory = format!("rex-lite-{test}-{}", std::process::id());
+    let directory = format!("rexy-{test}-{}", std::process::id());
     let directory = std::env::temp_dir().join(directory);
     let _ = std::fs::remove_dir_all(&directory);
     directory

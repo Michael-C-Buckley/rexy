@@ -1,12 +1,12 @@
-# Rex Lite
+# Rexy
 
 A small, fast, native Linux client for [Rex](https://www.superlogical.com/rex), built with Rust, egui and libghostty.
 
-![Rex Lite showing a split tab: an editor, a chart drawn in the terminal and a training log, beside a sidebar of sessions on three servers](assets/screenshot.png)
+![Rexy showing a split tab: an editor, a chart drawn in the terminal and a training log, beside a sidebar of sessions on three servers](assets/screenshot.png)
 
 Every Rex server you use, with its sessions and tabs, in one window: a sidebar that tells you what each agent is doing, split panes, and a Ghostty terminal in each of them. Closing the window leaves your sessions running, and connecting never starts or installs a server.
 
-Rex Lite is an unofficial client and is not affiliated with Superlogical. It is early software for Linux, on Wayland and X11.
+Rexy is an unofficial client and is not affiliated with Superlogical. It is early software for Linux, on Wayland and X11.
 
 ## Features
 
@@ -23,7 +23,7 @@ Rex Lite is an unofficial client and is not affiliated with Superlogical. It is 
 
 ## Install
 
-Rex Lite builds from source. You need:
+Rexy builds from source. You need:
 
 - Rust 1.100 (pinned in `rust-toolchain.toml`)
 - Zig 0.17.x, to build libghostty (pinned in `mise.toml`)
@@ -44,9 +44,9 @@ Program icons are Superlogical's and are not kept in this repository. `./scripts
 To install the binary with a desktop entry and icon:
 
 ```sh
-install -Dm755 target/release/rex-lite ~/.local/bin/rex-lite
-install -Dm644 assets/dev.rex-lite.client.desktop -t ~/.local/share/applications
-install -Dm644 assets/dev.rex-lite.client.svg -t ~/.local/share/icons/hicolor/scalable/apps
+install -Dm755 target/release/rexy ~/.local/bin/rexy
+install -Dm644 assets/dev.rexy.client.desktop -t ~/.local/share/applications
+install -Dm644 assets/dev.rexy.client.svg -t ~/.local/share/icons/hicolor/scalable/apps
 gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 ```
 
@@ -55,15 +55,15 @@ gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 Start your Rex server, then run:
 
 ```sh
-rex-lite
+rexy
 ```
 
 With no arguments the window opens on your Rex home: the server named by `REX_HOME`, or the one chosen with `rex home set`, or else this machine's own server at `$XDG_RUNTIME_DIR/rex/server.sock`. To open another:
 
 ```sh
-rex-lite --server unix:///path/to/server.sock
-rex-lite --server ssh://studio
-rex-lite --server studio.example.ts.net
+rexy --server unix:///path/to/server.sock
+rexy --server ssh://studio
+rexy --server studio.example.ts.net
 ```
 
 `--probe` checks that a server can be reached and its terminals decoded, without opening a window or sending any input.
@@ -135,7 +135,7 @@ With the mouse:
 
 **Programs cannot reach your machine.** A program can copy to the clipboard but never read it. `file` links are never opened, since the terminal may be showing another machine. Pictures are accepted only as pixels sent in the escape itself: the Kitty protocol's file and shared-memory transfers would be read on this machine, and are refused.
 
-**State** is kept in `rex-lite/state.json` under `$XDG_STATE_HOME` or `~/.local/state`: window size, font size, sidebar layout, what is folded or muted, whether remote control is allowed, and the tab last shown on each server.
+**State** is kept in `rexy/state.json` under `$XDG_STATE_HOME` or `~/.local/state`: window size, font size, sidebar layout, what is folded or muted, whether remote control is allowed, and the tab last shown on each server.
 
 **Notifications** need a notification service on the session's D-Bus, as GNOME, KDE and most desktops provide. Without one, nothing is sent and nothing else changes.
 
@@ -147,7 +147,7 @@ With the mouse:
 - Animated pictures
 - Platforms other than Linux
 
-Rex Lite speaks revision 13 of Rex's control API. A server that is older, or too new, is refused with a message that says what each side speaks. Keyboard layouts and IMEs need broader testing.
+Rexy speaks revision 13 of Rex's control API. A server that is older, or too new, is refused with a message that says what each side speaks. Keyboard layouts and IMEs need broader testing.
 
 ## How it works
 
@@ -176,7 +176,7 @@ The end-to-end check starts its own disposable Rex server, Xvfb display and D-Bu
 ```sh
 ./scripts/dev build --locked
 python3 tests/smoke.py                                  # the debug build
-python3 tests/smoke.py --binary target/release/rex-lite
+python3 tests/smoke.py --binary target/release/rexy
 ```
 
 It needs `rex`, `Xvfb`, `dbus-run-session`, `xclip`, ImageMagick's `import` and the X11/XTest libraries. It runs on X11; Wayland is checked by hand.
@@ -184,7 +184,7 @@ It needs `rex`, `Xvfb`, `dbus-run-session`, `xclip`, ImageMagick's `import` and 
 `tests/live.rs` exercises the backend alone against a server you name. It sends input and creates tabs and panes, so point it only at a disposable server, never at your own sessions:
 
 ```sh
-REX_LITE_TEST_SERVER="unix://$PWD/work/smoke/server.sock" \
+REXY_TEST_SERVER="unix://$PWD/work/rexy-live/server.sock" \
   ./scripts/dev test --test live -- --ignored --nocapture --test-threads=1
 ```
 

@@ -485,10 +485,10 @@ impl Control {
             "client": {
                 "kind": "app",
                 "platform": "linux",
-                "name": "Rex Lite",
+                "name": "Rexy",
                 "version": env!("CARGO_PKG_VERSION"),
                 "label": match machine.trim() {
-                    "" => "Rex Lite",
+                    "" => "Rexy",
                     machine => machine,
                 },
             },

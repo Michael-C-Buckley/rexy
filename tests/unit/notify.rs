@@ -3,10 +3,10 @@ use super::*;
 #[test]
 fn a_note_says_where_it_is_from_in_text_fit_for_the_desktop() {
     let (home, notes) = Herald::new();
-    home.say("p1", "w1", "claude", "rex-lite", "Needs approval: Run it?");
+    home.say("p1", "w1", "claude", "rexy", "Needs approval: Run it?");
     let note = notes.try_recv().unwrap();
     assert_eq!((note.pane.as_str(), note.tab.as_str()), ("p1", "w1"));
-    assert_eq!(note.summary, "claude — rex-lite");
+    assert_eq!(note.summary, "claude — rexy");
     assert_eq!(note.body, "Needs approval: Run it?");
     // Another server's notes come out at the same place, and say whose they are.
     home.of("beta").say("p2", "w2", "far", "remote", "Done");

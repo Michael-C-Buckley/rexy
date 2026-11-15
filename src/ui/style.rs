@@ -466,7 +466,7 @@ fn raster(drawing: &str, pixels: usize) -> egui::ColorImage {
 /// by the desktop entry draws the same picture.
 pub fn icon() -> egui::IconData {
     const SIDE: usize = 128;
-    let image = raster(include_str!("../../assets/dev.rex-lite.client.svg"), SIDE);
+    let image = raster(include_str!("../../assets/dev.rexy.client.svg"), SIDE);
     let rgba = image.pixels.iter().flat_map(Color32::to_srgba_unmultiplied);
     egui::IconData { rgba: rgba.collect(), width: SIDE as u32, height: SIDE as u32 }
 }

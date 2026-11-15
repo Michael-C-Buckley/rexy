@@ -142,8 +142,8 @@ fn local_socket() -> Result<PathBuf> {
     // Where there is no runtime directory, the place is everyone's, and each user
     // needs a name there of their own.
     let directory = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(runtime) => PathBuf::from(runtime).join("rex-lite"),
-        None => std::env::temp_dir().join(format!("rex-lite-{user}")),
+        Some(runtime) => PathBuf::from(runtime).join("rexy"),
+        None => std::env::temp_dir().join(format!("rexy-{user}")),
     };
     private(&directory, user)?;
     // A process that was killed leaves its sockets behind. Clear those out.
