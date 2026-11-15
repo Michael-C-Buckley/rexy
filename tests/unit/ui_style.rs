@@ -88,3 +88,23 @@ fn the_icon_is_drawn() {
         (0, 255)
     );
 }
+
+#[test]
+fn the_ground_is_a_dark_terminals_background_a_little_lighter() {
+    let lifted = |value| ground(Color32::from_gray(value)).to_array()[0];
+    assert_eq!((lifted(0), lifted(11)), (14, 24));
+    // Its hue is kept.
+    let navy = ground(Color32::from_rgb(0, 10, 40));
+    assert!(navy.b() > navy.g() && navy.g() > navy.r());
+    // Light ink would be lost around a light terminal.
+    assert_eq!(ground(Color32::WHITE), VIEW);
+}
+
+#[test]
+fn what_lies_over_the_window_is_lighter_than_its_ground_and_of_its_hue() {
+    let brown = Color32::from_rgb(26, 21, 16);
+    let (under, over) = (ground(brown), popover(brown));
+    assert!(over.r() > under.r() && under.r() > brown.r());
+    assert!(over.r() > over.g() && over.g() > over.b());
+    assert_eq!(popover(Color32::WHITE), POPOVER);
+}

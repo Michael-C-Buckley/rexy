@@ -3,7 +3,7 @@ use eframe::egui::{self, Align2, FontId, Key, Margin, Rect, UiBuilder};
 
 use super::{
     App,
-    style::{DIM, POPOVER, SMALL},
+    style::{DIM, SMALL},
 };
 use crate::{model::Pane, terminal::Request};
 
@@ -68,7 +68,7 @@ impl App {
             .hint_text("Find")
             .margin(margin)
             .align(Align2::LEFT_CENTER)
-            .background_color(POPOVER)
+            .background_color(ui.visuals().window_fill)
             .min_size(bar.size());
         let field = ui.new_child(UiBuilder::new().max_rect(bar)).add(field);
         let count = bar.right_center() - egui::vec2(said.size().x + 10.0, said.size().y / 2.0);

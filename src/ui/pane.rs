@@ -1,6 +1,8 @@
 //! One pane of the tab on show: its header, its terminal, and what the
 //! pointer does there.
-use eframe::egui::{self, Align, Align2, FontId, Layout, Rect, Sense, Stroke, UiBuilder};
+use eframe::egui::{
+    self, Align, Align2, CornerRadius, FontId, Layout, Rect, Sense, Stroke, StrokeKind, UiBuilder,
+};
 use serde_json::Value;
 
 use super::{
@@ -11,8 +13,8 @@ use super::{
     pointer::{Pointer, Wheel},
     render::{Grid, rgb},
     style::{
-        ACCENT, BODY, BORDER, DIM, Icon, POPOVER, SMALL, SMALL_BUTTON, TEXT, confirm, fitted,
-        small_button,
+        ACCENT, BODY, BORDER, CARD, CARD_RADIUS, DIM, Icon, Item, SMALL, SMALL_BUTTON, TEXT,
+        confirm, entry, fitted, small_button,
     },
 };
 use crate::{
@@ -22,10 +24,15 @@ use crate::{
 };
 
 const PANE_HEADER: f32 = 28.0;
+/// How far toward its background a pane goes that is not the one typed in, and
+/// one that shows a last screen.
+const AWAY: f32 = 0.2;
+const LAST: f32 = 0.5;
 
 impl App {
-    /// A pane of the tab on show. It may show a last screen: of a connection
-    /// that was lost, or of its own terminal where that alone is fed no more.
+    /// A pane of the tab on show: a card on the window's ground, `rect`, in its
+    /// terminal's own colour. It may show a last screen: of a connection that
+    /// was lost, or of its own terminal where that alone is fed no more.
     pub(super) fn terminal_pane(
         &mut self,
         ui: &mut egui::Ui,
@@ -50,6 +57,9 @@ impl App {
         // Its view is to move through its history.
         let mut scroll = None;
         let mut terminal_rect = rect;
+        let frame = pane.frame.as_ref();
+        let card = frame.map_or(CARD, |frame| rgb(frame.bg));
+        ui.painter().rect_filled(rect, CARD_RADIUS, card);
         // The way back from a pane that fills the tab is where the way to it was.
         let (zoom_icon, zoom) = match window.zoomed {
             true => (Icon::Restore, "Restore Panes"),
@@ -64,27 +74,20 @@ impl App {
             let bar = rect.with_max_y(terminal_rect.top());
             let id = ui.scope_id().with(("header", &pane.id));
             picked = ui.interact(bar, id, Sense::click()).clicked();
-            // The pane with the keyboard is marked along its top.
-            if active {
-                let line = Stroke::new(2.0, ACCENT);
-                ui.painter().hline(bar.x_range(), bar.top() + 1.0, line);
-            }
-            let mut header = rect.shrink2(egui::vec2(4.0, 0.0));
-            // The name sits a little low, toward the terminal it names.
-            header.min.y += 2.0;
-            header.max.y = terminal_rect.top();
+            let mut header = bar.shrink2(egui::vec2(4.0, 0.0));
             let layout = Layout::right_to_left(Align::Center);
             let mut buttons = ui.new_child(UiBuilder::new().max_rect(header).layout(layout));
             buttons.spacing_mut().item_spacing.x = 0.0;
-            // Its buttons show under the pointer. The way back from a pane that
-            // fills the tab shows always, where it would be among them.
-            if !over || ask == Ask::Again {
+            // Its buttons show on the pane with the keyboard, and under the
+            // pointer. The way back from a pane that fills the tab shows always.
+            let offered = over || active;
+            if !offered || ask == Ask::Again {
                 buttons.add_space(SMALL_BUTTON);
             } else {
                 let tip = self.keys.map.tip(title("pane.close"), "pane.close");
                 close = small_button(&mut buttons, Icon::Close, &tip).clicked();
             }
-            if over || window.zoomed {
+            if offered || window.zoomed {
                 let tip = self.keys.map.tip(zoom, "pane.zoom");
                 if small_button(&mut buttons, zoom_icon, &tip).clicked() {
                     self.todo.push(("pane.zoom", Some(pane.id.clone())));
@@ -107,10 +110,21 @@ impl App {
             ui.painter().galley(corner, title, color);
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
-        let frame = pane.frame.as_ref();
-        if let Some(frame) = frame {
-            ui.painter().rect_filled(terminal_rect, 0, rgb(frame.bg));
-        }
+        // Under a header the terminal starts at once; with none, the card keeps
+        // it from its own top edge.
+        let inset = if window.split() { 2.0 } else { 8.0 };
+        let mut within = terminal_rect.shrink2(egui::vec2(12.0, 8.0));
+        within.min.y = terminal_rect.top() + inset;
+        // What dims the terminal, where it is dimmed, keeps to the card's corners.
+        let below = CornerRadius {
+            sw: CARD_RADIUS,
+            se: CARD_RADIUS,
+            ..CornerRadius::ZERO
+        };
+        let corners = match window.split() {
+            true => below,
+            false => CornerRadius::same(CARD_RADIUS),
+        };
         // The pane's worker, which keeps its selection. A lost connection has none.
         let terminal = self.servers[self.current].client.terminal(&pane.id).ok();
         // The selected text it was asked for has come: for the clipboard, or
@@ -121,11 +135,7 @@ impl App {
                 Copied::Selection(text) => egui::OutputCommand::TextSelectionSettled(text),
             });
         }
-        let grid = Grid::new(
-            ui.ctx(),
-            terminal_rect.shrink2(egui::vec2(12.0, 8.0)),
-            self.remembered.kept.font_size,
-        );
+        let grid = Grid::new(ui.ctx(), within, self.remembered.kept.font_size);
         let id = ui.scope_id().with(("terminal", &pane.id));
         let response = ui.interact(terminal_rect, id, Sense::click_and_drag());
         if keyboard {
@@ -254,17 +264,24 @@ impl App {
                 if back.clicked() {
                     scroll = Some(Scroll::Bottom);
                 }
-                ui.painter().rect_filled(pill, size.y / 2.0, POPOVER);
+                ui.painter()
+                    .rect_filled(pill, size.y / 2.0, ui.visuals().window_fill);
                 ui.painter()
                     .galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
             }
             if active && response.has_focus() {
                 compose(ui, grid, frame, &self.keyboard.preedit);
             }
-            // And goes dim, halfway to its background.
-            if !live {
-                let veil = rgb(frame.bg).gamma_multiply(0.5);
-                ui.painter().rect_filled(terminal_rect, 0, veil);
+            // And goes dim, halfway to its background. One of several that is
+            // not the one typed in steps back a little, too.
+            let away = match (live, active || !window.split()) {
+                (false, _) => LAST,
+                (true, false) => AWAY,
+                (true, true) => 0.0,
+            };
+            if away > 0.0 {
+                let veil = rgb(frame.bg).gamma_multiply(away);
+                ui.painter().rect_filled(terminal_rect, corners, veil);
             }
             // Under a connection that stands, nothing else says what is wrong
             // with the one terminal: it is said over its last screen.
@@ -273,7 +290,8 @@ impl App {
                 let said = fitted(ui, &pane.status, font, TEXT, grid.rect.width() - 20.0);
                 let size = said.size() + egui::vec2(20.0, 10.0);
                 let pill = Rect::from_min_size(grid.rect.min, size);
-                ui.painter().rect_filled(pill, size.y / 2.0, POPOVER);
+                ui.painter()
+                    .rect_filled(pill, size.y / 2.0, ui.visuals().window_fill);
                 ui.painter()
                     .galley(pill.min + egui::vec2(10.0, 5.0), said, TEXT);
             }
@@ -286,16 +304,16 @@ impl App {
                 DIM,
             );
         }
-        // One line between neighbours, none around the outside.
-        let line = Stroke::new(1.0, BORDER);
-        if pane.x > 0.0 {
-            ui.painter().vline(rect.left(), rect.y_range(), line);
-        }
-        if pane.y > 0.0 {
-            ui.painter().hline(rect.x_range(), rect.top(), line);
-        }
+        // A line around the card: faint, or in the colour of the one in use where
+        // there are several to tell it from.
+        let line = match active && window.split() {
+            true => Stroke::new(1.0, ACCENT),
+            false => Stroke::new(1.0, BORDER),
+        };
+        ui.painter()
+            .rect_stroke(rect, CARD_RADIUS, line, StrokeKind::Inside);
         if !tracking {
-            asking(&response).show(|ui| {
+            asking(&response, 270.0, |ui| {
                 let entries = [
                     ("Copy selection", "pane.copy"),
                     ("Paste", "pane.paste"),
@@ -310,8 +328,12 @@ impl App {
                     // Each is there to be taken when it can be done to this pane.
                     let plan = self.standing(view).plan(name, &Value::Null, Some(&pane.id));
                     let keys = self.keys.map.shortcut(name);
-                    let entry = egui::Button::new(label).shortcut_text(keys);
-                    if ui.add_enabled(plan.is_ok(), entry).clicked() {
+                    let row = Item {
+                        label,
+                        keys: Some(&keys),
+                        ..Default::default()
+                    };
+                    if entry(ui, plan.is_ok(), row).clicked() {
                         self.todo.push((name, Some(pane.id.clone())));
                         ui.close();
                     }
@@ -384,7 +406,8 @@ fn compose(ui: &egui::Ui, grid: Grid, frame: &Frame, preedit: &str) {
             TEXT,
         );
         let background = Rect::from_min_size(cursor.min, galley.size()).expand(3.0);
-        ui.painter().rect_filled(background, 4, POPOVER);
+        ui.painter()
+            .rect_filled(background, 4, ui.visuals().window_fill);
         ui.painter().galley(cursor.min, galley, TEXT);
     }
 }

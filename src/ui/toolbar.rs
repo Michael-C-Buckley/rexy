@@ -1,12 +1,13 @@
 //! The row along the top that holds the tabs when there is no sidebar, and
 //! the buttons both share.
-use eframe::egui::{self, Align, Layout, Sense, UiBuilder, Vec2};
+use eframe::egui::{self, Align, FontId, Layout, Sense, UiBuilder, Vec2};
 
 use super::{
     App,
     commands::title,
+    frame::{controls, titlebar},
     heard::dot,
-    style::{Icon, Item, TOOLBAR, icon_button, item},
+    style::{BODY, DIM, Icon, Item, TEXT, TOOLBAR, bold, fitted, icon_button, item},
 };
 use crate::model::{Action, View};
 
@@ -65,33 +66,77 @@ impl App {
     /// button, and the tabs of the one on show.
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui, views: &[View]) {
         let view = &views[self.current];
-        let mut bar = bar(ui, TOOLBAR, 6.0);
+        let mut bar = titlebar(ui, TOOLBAR, 8.0);
         let sidebar = "client.sidebar.toggle";
         self.button(&mut bar, view, Icon::Sidebar, "Tabs in a sidebar", sidebar);
         self.switcher(&mut bar, views);
         bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            controls(ui);
+            ui.add_space(8.0);
             self.splits(ui, view);
             self.hidden(ui, view);
-            self.button(ui, view, Icon::Plus, "New tab", "client.tab.new");
-            ui.add_space(4.0);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(4.0);
                 let Some(session) = view.session() else {
                     return;
                 };
-                // The wheel has one way to turn them, whichever way it is turned.
+                // Each is as wide as its name, and the wheel turns them when they
+                // are too many for the row, whichever way it is turned. The row is
+                // not theirs to drag: where no tab is, it is the window's handle.
                 ui.style_mut().always_scroll_the_only_direction = true;
+                let wheel = egui::scroll_area::ScrollSource {
+                    drag: egui::scroll_area::DragScroll::Never,
+                    ..Default::default()
+                };
+                // Room is kept at the end for the button that makes another.
+                let room = (ui.available_width() - 40.0).max(0.0);
                 egui::ScrollArea::horizontal()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .scroll_source(wheel)
+                    .max_width(room)
                     .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let count = session.windows.len().max(1) as f32;
-                        let width = (ui.available_width() - 4.0 * (count - 1.0)) / count;
-                        let size = Vec2::new(width.clamp(120.0, 220.0), 30.0);
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let size = Vec2::new(220.0, 28.0);
                         let shown = view.selected_window.as_deref();
                         self.tabs(ui, self.current, session, shown, size);
                     });
+                self.button(ui, view, Icon::Plus, "New tab", "client.tab.new");
             });
+        });
+    }
+
+    /// With the sidebar, the row over the terminals names the tab on show and
+    /// what is at the keyboard in it, and holds the buttons the sidebar has no
+    /// room for.
+    pub(super) fn header(&mut self, ui: &mut egui::Ui, view: &View) {
+        let mut bar = titlebar(ui, TOOLBAR, 8.0);
+        bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            controls(ui);
+            ui.add_space(8.0);
+            self.splits(ui, view);
+            self.hidden(ui, view);
+            // The names are drawn, not laid out: nothing of them takes the pointer
+            // from the handle they lie on.
+            let room = ui
+                .available_rect_before_wrap()
+                .shrink2(egui::vec2(4.0, 0.0));
+            let Some(tab) = view.current_window() else {
+                return;
+            };
+            let name = fitted(ui, tab.name(), bold(BODY), TEXT, room.width());
+            let at = room.left_center() - egui::vec2(0.0, name.size().y / 2.0);
+            let after = name.size().x + 10.0;
+            ui.painter().galley(at, name, TEXT);
+            // A tab that was given a name has more to say: what is running where
+            // the keyboard is.
+            let focused = self.focused.as_deref().and_then(|id| view.pane(id));
+            let title = focused.map(|pane| pane.title.as_str());
+            if let Some(title) = title.filter(|title| *title != tab.name()) {
+                let font = FontId::proportional(BODY);
+                let title = fitted(ui, title, font, DIM, room.width() - after);
+                let at = at + egui::vec2(after, 0.0);
+                ui.painter().galley(at, title, DIM);
+            }
         });
     }
 }

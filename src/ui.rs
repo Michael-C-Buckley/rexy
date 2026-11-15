@@ -4,6 +4,7 @@ mod borders;
 mod close;
 pub mod commands;
 mod find;
+mod frame;
 mod heard;
 mod input;
 mod keymap;
@@ -25,9 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui::{
-    self, Align, Align2, FontId, Key, Layout, Margin, Rect, RichText, Sense, UiBuilder, Vec2,
-};
+use eframe::egui::{self, Align2, FontId, Key, Margin, Rect, RichText, Sense, Vec2};
 
 use crate::{
     backend::Client,
@@ -44,7 +43,7 @@ pub use remembered::{LEAST_WINDOW, Remembered, state_home};
 use render::{PaneView, rgb};
 use rows::Rename;
 pub use style::icon;
-use style::{BODY, DIM, HOVER, POPOVER, RED, SMALL, TEXT, VIEW, fitted, suggested};
+use style::{BODY, DIM, GUTTER, POPOVER, RED, TEXT, VIEW, fitted, suggested};
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
 /// The least and the most the keys take it to.
@@ -264,37 +263,55 @@ impl App {
         });
     }
 
-    /// A lost connection says so above its last screen, in plain words and with
-    /// a way to try again. What the connection itself had to say comes under them.
-    fn lost(&mut self, ui: &mut egui::Ui, view: &View) {
-        let size = Vec2::new(ui.available_width(), 48.0);
-        let (banner, response) = ui.allocate_exact_size(size, Sense::hover());
-        ui.painter().rect_filled(banner, 0, HOVER);
-        let mut text = banner.shrink2(egui::vec2(12.0, 0.0));
-        let layout = Layout::right_to_left(Align::Center);
-        let mut row = ui.new_child(UiBuilder::new().max_rect(text).layout(layout));
-        let again = row.button("Reconnect");
-        if again.clicked() {
+    /// A lost connection says so over its last screen, in plain words and with a
+    /// way to try again. What the connection itself had to say comes after them,
+    /// and in full under the pointer.
+    fn lost(&mut self, ctx: &egui::Context, view: &View, within: Rect) {
+        let frame = egui::Frame::new()
+            .fill(ctx.global_style().visuals.window_fill)
+            .stroke(ctx.global_style().visuals.window_stroke)
+            .corner_radius(10)
+            .inner_margin(Margin {
+                left: 14,
+                right: 6,
+                top: 6,
+                bottom: 6,
+            })
+            .shadow(ctx.global_style().visuals.popup_shadow);
+        let area = egui::Area::new(egui::Id::unique("lost"))
+            .order(egui::Order::Middle)
+            .constrain_to(within)
+            .anchor(Align2::CENTER_TOP, egui::vec2(0.0, 12.0));
+        let server = self.servers[self.current].label().to_owned();
+        let mut again = false;
+        area.show(ctx, |ui| {
+            frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let (mark, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
+                    ui.painter().circle_filled(mark.center(), 3.5, RED);
+                    let room = (within.width() - 220.0).clamp(80.0, 560.0);
+                    let said = format!("Lost the connection to {server}.");
+                    let said = fitted(ui, &said, FontId::proportional(BODY), TEXT, room);
+                    let room = room - said.size().x;
+                    let said = ui.add(egui::Label::new(said).selectable(false));
+                    // Why, without saying over again that it is lost.
+                    let why = view.status.strip_prefix("Disconnected: ");
+                    let why = why.unwrap_or(&view.status);
+                    if room > 60.0 && !why.is_empty() {
+                        let font = FontId::proportional(BODY);
+                        let why = fitted(ui, why, font, DIM, room);
+                        ui.add(egui::Label::new(why).selectable(false));
+                    }
+                    said.on_hover_text(&view.status);
+                    let button = egui::Button::new("Reconnect").min_size(Vec2::new(0.0, 26.0));
+                    again = ui.add(button).clicked();
+                });
+            });
+        });
+        if again {
             self.send(Action::Reconnect);
         }
-        text.max.x = again.rect.left() - 12.0;
-        // Room for a mark ahead of the words.
-        text.min.x += 14.0;
-        let server = self.servers[self.current].label();
-        let said = format!("Disconnected from {server}. This is its last screen.");
-        let said = fitted(ui, &said, FontId::proportional(BODY), TEXT, text.width());
-        let font = FontId::proportional(SMALL);
-        let why = fitted(ui, &view.status, font, DIM, text.width());
-        let line = said.size().y;
-        let top = banner.center().y - (line + why.size().y) / 2.0;
-        let mark = egui::pos2(text.left() - 10.0, top + line / 2.0);
-        ui.painter().circle_filled(mark, 3.5, RED);
-        ui.painter()
-            .galley(egui::pos2(text.left(), top), said, TEXT);
-        let under = egui::pos2(text.left(), top + line);
-        ui.painter().galley(under, why, DIM);
-        // In full, where there was not the room.
-        response.on_hover_text(&view.status);
     }
 }
 
@@ -365,48 +382,70 @@ impl eframe::App for App {
             ctx.copy_text(text);
         }
         self.shortcuts(&ctx, view);
+        // The window's ground goes by the terminals on it.
+        let terminal = panes.iter().find_map(|p| p.frame.as_ref());
+        let terminal = terminal.map(|frame| rgb(frame.bg));
+        let ground = terminal.map_or(VIEW, style::ground);
+        // So does what is laid over it: menus, notes and the palette.
+        let popover = terminal.map_or(POPOVER, style::popover);
+        if ctx.global_style().visuals.window_fill != popover {
+            ctx.all_styles_mut(|style| style.visuals.window_fill = popover);
+        }
         // With the sidebar, tabs are listed in it. Without, they run along the top.
         let sidebar = self.remembered.kept.sidebar;
         if sidebar {
-            self.sidebar(root_ui, &views);
+            self.sidebar(root_ui, &views, ground);
         }
-        let terminal = panes.iter().find_map(|p| p.frame.as_ref());
-        let ground = terminal.map_or(VIEW, |frame| style::ground(rgb(frame.bg)));
         // The panel's work, and the space it has for terminals.
         let shown = egui::CentralPanel::no_frame()
             .frame(egui::Frame::new().fill(ground))
             .show(root_ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                if !sidebar {
-                    self.toolbar(ui, &views);
+                match sidebar {
+                    true => self.header(ui, view),
+                    false => self.toolbar(ui, &views),
                 }
                 let Some(window) = window.filter(|window| !window.panes.is_empty()) else {
                     let area = ui.available_rect_before_wrap();
                     self.empty(ui, view);
                     return area;
                 };
+                // The terminals are cards on the window's ground, a gutter apart
+                // and a gutter from its edges: but for the row above them, and the
+                // sidebar, which keep their own distance. Each card gives up half
+                // a gutter all round, so the space they share reaches half a
+                // gutter past where the outermost of them end.
+                let mut within = ui.available_rect_before_wrap();
+                within.max -= Vec2::splat(GUTTER);
+                if !sidebar {
+                    within.min.x += GUTTER;
+                }
+                let area = within.expand(GUTTER / 2.0);
                 // Healthy needs no words.
                 if !view.connected {
-                    self.lost(ui, view);
+                    self.lost(ui.ctx(), view, within);
                 }
-                let area = ui.available_rect_before_wrap();
                 for pane in panes {
                     let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
                     let size = area.size() * egui::vec2(pane.width, pane.height);
-                    let rect = Rect::from_min_size(min, size);
+                    let rect = Rect::from_min_size(min, size).shrink(GUTTER / 2.0);
                     self.terminal_pane(ui, view, window, pane, rect);
                 }
                 if view.connected {
                     self.borders(ui, window, area);
                 }
-                area
+                within
             });
         if sidebar {
             self.edge(root_ui);
         }
+        frame::edges(root_ui);
         self.answer(&ctx, &views);
         self.palette(&ctx, &views);
-        self.toast.show(&ctx, shown.inner);
+        // Under what a lost connection says there, where it says it.
+        let lost = !view.connected && window.is_some_and(|tab| !tab.panes.is_empty());
+        self.toast
+            .show(&ctx, shown.inner, if lost { 60.0 } else { 12.0 });
         // One more drawing when the wait to be asked again to close is over, and
         // none until then.
         if let Some(left) = self.closing.lapse(Instant::now()) {
@@ -468,9 +507,9 @@ impl Toast {
         self.0 = Some((message, Instant::now() + Self::TIME));
     }
 
-    /// Show it at the head of the space the terminals have: at the foot is the
-    /// line being typed, more often than not. A click sends it away.
-    fn show(&mut self, ctx: &egui::Context, within: Rect) {
+    /// Show it `down` from the head of the space the terminals have: at the foot
+    /// is the line being typed, more often than not. A click sends it away.
+    fn show(&mut self, ctx: &egui::Context, within: Rect, down: f32) {
         let Some((message, until)) = &self.0 else {
             return;
         };
@@ -481,14 +520,14 @@ impl Toast {
         }
         ctx.request_repaint_after(left);
         let frame = egui::Frame::new()
-            .fill(POPOVER)
+            .fill(ctx.global_style().visuals.window_fill)
             .corner_radius(12)
             .inner_margin(Margin::symmetric(16, 10))
             .shadow(ctx.global_style().visuals.popup_shadow);
         let area = egui::Area::new(egui::Id::unique("toast"))
             .order(egui::Order::Foreground)
             .constrain_to(within)
-            .anchor(Align2::CENTER_TOP, egui::vec2(0.0, 12.0));
+            .anchor(Align2::CENTER_TOP, egui::vec2(0.0, down));
         let shown = area.show(ctx, |ui| {
             frame.show(ui, |ui| {
                 ui.set_max_width((within.width() - 64.0).clamp(120.0, 520.0));

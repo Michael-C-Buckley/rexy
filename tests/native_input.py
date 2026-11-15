@@ -108,7 +108,8 @@ def expect(label, predicate):
         time.sleep(.1)
     raise AssertionError(label + ': ' + capture())
 
-# The terminal fills the window to the right of the 240 px sidebar.
+# The terminal is to the right of the 240 px sidebar, under the 40 px row that is
+# the window's handle.
 click(400, 140)
 chord(ord('c'), ctrl=True)
 nonce = str(time.monotonic_ns())[-8:]
@@ -127,7 +128,7 @@ expect('native Ctrl+C interrupts', lambda text: f'interrupt-{nonce}' in text)
 type_text("printf '\\033[3J\\033[2J\\033[HCLIP%s\\n' BOARD")
 chord(RETURN)
 expect('clipboard fixture', lambda text: text.strip().startswith('CLIPBOARD'))
-click(290, 18, twice=True)
+click(290, 58, twice=True)
 chord(ord('c'), ctrl=True, shift=True)
 deadline = time.monotonic() + 5
 while clipboard() != 'CLIPBOARD':

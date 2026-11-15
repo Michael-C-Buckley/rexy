@@ -5,7 +5,8 @@ use eframe::egui::{
 
 use super::{
     App,
-    style::{DIM, Icon, SIDEBAR, SMALL, TOOLBAR, bold, icon_button},
+    frame::titlebar,
+    style::{BODY, DIM, Icon, SMALL, TOOLBAR, bold, icon_button},
     toolbar::bar,
 };
 use crate::model::{Action, View};
@@ -16,10 +17,16 @@ const SIDEBAR_RANGE: [f32; 2] = [180.0, 480.0];
 
 impl App {
     /// Every server, each with its sessions beneath it, and under each session its tabs.
-    pub(super) fn sidebar(&mut self, root_ui: &mut egui::Ui, views: &[View]) {
+    /// It lies on `ground`, the window's own.
+    pub(super) fn sidebar(
+        &mut self,
+        root_ui: &mut egui::Ui,
+        views: &[View],
+        ground: egui::Color32,
+    ) {
         let rows = egui::Frame::new().inner_margin(Margin {
             top: 0,
-            ..Margin::same(6)
+            ..Margin::same(8)
         });
         // No wider than leaves the terminal half the window, however it was left.
         let [least, most] = SIDEBAR_RANGE;
@@ -30,24 +37,21 @@ impl App {
             .exact_size(*width)
             .resizable(false)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(SIDEBAR))
+            .frame(egui::Frame::new().fill(ground))
             .show(root_ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                // What the toolbar holds when the tabs run along the top.
-                let mut top = bar(ui, TOOLBAR, 6.0);
+                // The button that puts the tabs along the top, where the toolbar
+                // has it then.
+                let mut top = titlebar(ui, TOOLBAR, 8.0);
                 let (tip, toggle) = ("Tabs along the top", "client.sidebar.toggle");
                 self.button(&mut top, &views[self.current], Icon::Sidebar, tip, toggle);
-                top.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    self.splits(ui, &views[self.current]);
-                    self.hidden(ui, &views[self.current]);
-                });
                 let list = egui::ScrollArea::vertical().auto_shrink(false);
                 list.show(ui, |ui| {
                     rows.show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.spacing_mut().item_spacing.y = 1.0;
                         for (server, view) in views.iter().enumerate() {
                             if server > 0 {
-                                ui.add_space(12.0);
+                                ui.add_space(14.0);
                             }
                             self.server(ui, server, view);
                         }
@@ -103,8 +107,9 @@ impl App {
             self.session(ui, server, &view.sessions, index, shown);
             // The tab on show, if it is one of this session's.
             let shown = view.selected_window.as_deref().filter(|_| shown);
-            let size = Vec2::new(ui.available_width(), 32.0);
+            let size = Vec2::new(ui.available_width(), 30.0);
             self.tabs(ui, server, session, shown, size);
+            ui.add_space(6.0);
             let space = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
             sessions.push((&session.id, space));
         }
@@ -125,7 +130,7 @@ impl App {
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(12.0);
                 let label = RichText::new(self.servers[server].label());
-                ui.add(egui::Label::new(label.font(bold(SMALL))).truncate());
+                ui.add(egui::Label::new(label.font(bold(BODY))).truncate());
             });
         });
         create

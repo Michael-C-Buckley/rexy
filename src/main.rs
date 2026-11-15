@@ -89,6 +89,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Rex Lite")
+            // The window draws its own frame, in the row its tabs and buttons have.
+            .with_decorations(false)
             .with_inner_size(remembered.kept.window)
             .with_min_inner_size(rex_lite::ui::LEAST_WINDOW)
             .with_app_id(rex_lite::notify::APP_ID)

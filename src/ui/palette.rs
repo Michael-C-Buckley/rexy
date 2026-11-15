@@ -1,13 +1,13 @@
 //! One list to find things in by name: every session, the tabs of the one on
 //! show, and what can be done just now.
-use eframe::egui::{self, Color32, FontId, Key, Modifiers, Popup, RectAlign, Vec2};
+use eframe::egui::{self, Color32, Key, Modifiers, Popup, RectAlign, Stroke, Vec2};
 use serde_json::Value;
 
 use super::{
     App,
     commands::{COMMANDS, Deed},
     heard::dot,
-    style::{BODY, DIM, Icon, Item, TEXT, item},
+    style::{BODY, BORDER, DIM, Icon, Item, SMALL, TEXT, bold, item},
 };
 use crate::{
     model::{Action, View},
@@ -56,11 +56,13 @@ impl App {
             sessions.filter(move |session| Some(&session.id) != shown)
         });
         let elsewhere = elsewhere.map(|session| session.activity()).max();
-        let font = FontId::proportional(BODY);
-        let text = ui.painter().layout_no_wrap(name.to_owned(), font, TEXT);
-        let size = Vec2::new((text.size().x + 54.0).min(240.0), 30.0);
+        let text = ui
+            .painter()
+            .layout_no_wrap(name.to_owned(), bold(BODY), TEXT);
+        let size = Vec2::new((text.size().x + 54.0).min(240.0), 28.0);
         let button = Item {
             menu: true,
+            strong: true,
             mark: dot(elsewhere.unwrap_or_default()),
             label: name,
             ..Default::default()
@@ -105,6 +107,8 @@ impl App {
         }
         // A name that finds no session offers to make one.
         let new = named.clone().filter(|_| rows.is_empty());
+        // What comes after the sessions is headed by what it is.
+        let mut heads = vec![(rows.len(), "Tabs")];
         if let Some(session) = &view.selected_session {
             for tab in view.windows().iter().filter(|tab| found(&[tab.name()])) {
                 let (session, window) = (session.clone(), tab.id.clone());
@@ -113,6 +117,7 @@ impl App {
                 rows.push(row(tab.name(), icon, mark, show));
             }
         }
+        heads.push((rows.len(), "Commands"));
         // All that can be done just now, but to put this list away.
         for (name, title, _) in COMMANDS.iter().filter(|c| found(&[c.1, c.0])) {
             let plan = self.standing(view).plan(name, &Value::Null, None);
@@ -132,12 +137,12 @@ impl App {
         }));
 
         let mut picked = None;
-        let top = ctx.content_rect().center_top() + egui::vec2(0.0, 48.0);
+        let top = ctx.content_rect().center_top() + egui::vec2(0.0, 56.0);
         let popup = Popup::new(id(), ctx.clone(), top, egui::LayerId::background())
             .open_memory(None)
             .align(RectAlign::BOTTOM)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .width(420.0);
+            .width(520.0);
         popup.show(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             // The arrows walk the list while what is typed goes to the field.
@@ -149,11 +154,17 @@ impl App {
                     i.key_pressed(Key::Enter),
                 )
             });
+            // The field is the head of the list, with a line under it and none
+            // around it: nothing else here could be taking what is typed.
             let field = egui::TextEdit::singleline(&mut self.filter)
                 .hint_text("Find or create…")
-                .margin(egui::vec2(10.0, 8.0))
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
                 .desired_width(f32::INFINITY);
             let field = ui.add(field);
+            let rule = field.rect.bottom() + 3.0;
+            let line = Stroke::new(1.0, BORDER);
+            ui.painter().hline(ui.max_rect().x_range(), rule, line);
+            ui.add_space(6.0);
             // The keyboard is its own while it is open, wherever a click lands.
             if !field.has_focus() {
                 field.request_focus();
@@ -171,8 +182,8 @@ impl App {
                 let entry = Item {
                     selected: index == at,
                     icon: row.icon,
-                    mark: row.mark.or(keys.map(|_| (Icon::Dot, DIM))),
-                    word: keys,
+                    mark: row.mark,
+                    keys,
                     label: &row.label,
                     ..Default::default()
                 };
@@ -199,8 +210,18 @@ impl App {
                         row(ui, index, entry);
                     }
                 }
-                ui.add_space(6.0);
                 for (index, entry) in listed {
+                    // A head with nothing found under it is not shown.
+                    let head = heads.iter().rev().find(|head| head.0 <= index);
+                    if let Some((_, head)) = head.filter(|head| head.0 == index) {
+                        ui.add_space(8.0);
+                        let head = egui::RichText::new(*head).font(bold(SMALL)).color(DIM);
+                        ui.horizontal(|ui| {
+                            ui.add_space(12.0);
+                            ui.add(egui::Label::new(head).selectable(false));
+                        });
+                        ui.add_space(2.0);
+                    }
                     row(ui, index, entry);
                 }
             });

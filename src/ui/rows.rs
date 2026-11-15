@@ -1,15 +1,14 @@
 //! The rows of sessions and tabs, in the sidebar or along the top: showing,
 //! renaming, moving and closing them.
 use eframe::egui::{
-    self, Align, Align2, DragAndDrop, Key, PointerButton, Pos2, Rect, Sense, Stroke, UiBuilder,
-    Vec2,
+    self, Align2, DragAndDrop, Key, PointerButton, Pos2, Rect, Sense, Stroke, UiBuilder, Vec2,
 };
 
 use super::{
     App,
     close::{Ask, CLOSE, asking, closer},
     heard::dot,
-    style::{ACCENT, DIM, Icon, Item, item},
+    style::{ACCENT, DIM, Icon, Item, entry, item},
 };
 use crate::model::{self, Action, Edit, Session, Window};
 
@@ -207,6 +206,17 @@ impl App {
             window: Some(window.id.clone()),
         };
         let id = self.row(&target);
+        // Along the top a tab is as wide as its name, up to the size given: its
+        // icon and the room for its mark or its button come to as much again as
+        // the row's own edges.
+        let size = match across {
+            true => {
+                let font = egui::FontId::proportional(super::style::BODY);
+                let name = ui.painter().layout_no_wrap(window.name().into(), font, DIM);
+                Vec2::new((name.size().x + 70.0).clamp(96.0, size.x), size.y)
+            }
+            false => size,
+        };
         if let Some(field) = self.renaming(ui, &target, id, size) {
             return field;
         }
@@ -222,7 +232,6 @@ impl App {
             id: Some(id),
             icon: Some(window.program()),
             selected,
-            align: if across { Align::Center } else { Align::LEFT },
             mark: if muted {
                 Some((Icon::Muted, DIM))
             } else {
@@ -351,7 +360,7 @@ fn menu(
     ask: Ask,
 ) -> Option<Choice> {
     let mut picked = response.double_clicked().then_some(Choice::Rename);
-    asking(response).show(|ui| {
+    asking(response, 200.0, |ui| {
         let mute = |muted| if muted { "Unmute Tab" } else { "Mute Tab" };
         let entries = [
             Some(("Rename", true, Choice::Rename)),
@@ -369,7 +378,11 @@ fn menu(
             )),
         ];
         for (label, enabled, choice) in entries.into_iter().flatten() {
-            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+            let row = Item {
+                label,
+                ..Default::default()
+            };
+            if entry(ui, enabled, row).clicked() {
                 picked = Some(choice);
                 ui.close();
             }

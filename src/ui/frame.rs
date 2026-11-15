@@ -1,0 +1,114 @@
+//! The window's own frame, in place of the desktop's: its top row moves it, its
+//! edges size it, and three buttons in that row put it away, spread it over the
+//! screen and close it.
+use eframe::egui::{
+    self, Align, CursorIcon, Layout, PointerButton, Rect, ResizeDirection, Sense, Stroke,
+    StrokeKind, UiBuilder, Vec2, ViewportCommand,
+};
+
+use super::style::{BORDER, Icon, round_button};
+
+/// How near an edge of the window the pointer sizes it, and how near a corner.
+const EDGE: f32 = 5.0;
+const CORNER: f32 = 10.0;
+
+/// Whether the window fills its screen, with or without the desktop's own bars.
+fn spread(ctx: &egui::Context) -> bool {
+    ctx.input(|i| {
+        let window = i.viewport();
+        window.maximized == Some(true) || window.fullscreen == Some(true)
+    })
+}
+
+/// A row of controls along the top of the window. Where none of them is under
+/// the pointer it is the window's handle: a drag moves the window, and two
+/// clicks spread it over the screen or bring it back. The controls are laid
+/// out after it, and so have the pointer first.
+pub fn titlebar(ui: &mut egui::Ui, height: f32, inset: f32) -> egui::Ui {
+    let size = Vec2::new(ui.available_width(), height);
+    let (rect, handle) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let ctx = ui.ctx();
+    if handle.double_clicked() {
+        ctx.send_viewport_cmd(ViewportCommand::Maximized(!spread(ctx)));
+    } else if handle.drag_started_by(PointerButton::Primary) {
+        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+    }
+    let rect = rect.shrink2(egui::vec2(inset, 0.0));
+    let layout = Layout::left_to_right(Align::Center);
+    let mut bar = ui.new_child(UiBuilder::new().max_rect(rect).layout(layout));
+    bar.spacing_mut().item_spacing.x = 2.0;
+    bar
+}
+
+/// The window's buttons, for a row laid out from the right.
+pub fn controls(ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if round_button(ui, Icon::Close, "Close").clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+        let (spread, tip) = match spread(&ctx) {
+            true => (true, "Restore"),
+            false => (false, "Maximize"),
+        };
+        if round_button(ui, Icon::Maximize, tip).clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(!spread));
+        }
+        if round_button(ui, Icon::Minimize, "Minimize").clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+        }
+    });
+}
+
+/// The window's edges and corners, which drag to size it, and a line around it
+/// to part it from what lies behind. A window that fills its screen has neither.
+/// They are asked for last of all, to have the pointer before anything they lie over.
+pub fn edges(ui: &egui::Ui) {
+    let ctx = ui.ctx();
+    if spread(ctx) {
+        return;
+    }
+    let window = ctx.content_rect();
+    let line = Stroke::new(1.0, BORDER);
+    ui.painter()
+        .rect_stroke(window, 0, line, StrokeKind::Inside);
+    use ResizeDirection::*;
+    // The corners come after the sides they lie over.
+    let (x, y) = (window.x_range(), window.y_range());
+    let (left, right) = (window.left(), window.right());
+    let (top, bottom) = (window.top(), window.bottom());
+    let handles = [
+        (North, Rect::from_x_y_ranges(x, top..=top + EDGE)),
+        (South, Rect::from_x_y_ranges(x, bottom - EDGE..=bottom)),
+        (West, Rect::from_x_y_ranges(left..=left + EDGE, y)),
+        (East, Rect::from_x_y_ranges(right - EDGE..=right, y)),
+        (NorthWest, corner(window.left_top(), [1.0, 1.0])),
+        (NorthEast, corner(window.right_top(), [-1.0, 1.0])),
+        (SouthWest, corner(window.left_bottom(), [1.0, -1.0])),
+        (SouthEast, corner(window.right_bottom(), [-1.0, -1.0])),
+    ];
+    for (direction, rect) in handles {
+        let id = egui::Id::unique(("window edge", direction as u8));
+        let handle = ui.interact(rect, id, Sense::click_and_drag());
+        if handle.hovered() || handle.dragged() {
+            ctx.set_cursor_icon(match direction {
+                North | South => CursorIcon::ResizeVertical,
+                East | West => CursorIcon::ResizeHorizontal,
+                NorthWest | SouthEast => CursorIcon::ResizeNwSe,
+                NorthEast | SouthWest => CursorIcon::ResizeNeSw,
+            });
+        }
+        // The desktop sizes the window from the press on: it is not for waiting
+        // to see whether the pointer moves.
+        let pressed = ui.input(|i| i.pointer.primary_pressed());
+        if pressed && handle.is_pointer_button_down_on() {
+            ctx.send_viewport_cmd(ViewportCommand::BeginResize(direction));
+        }
+    }
+}
+
+/// The square a corner's handle takes, inward from the corner itself.
+fn corner(at: egui::Pos2, inward: [f32; 2]) -> Rect {
+    Rect::from_two_pos(at, at + CORNER * Vec2::from(inward))
+}

@@ -6,18 +6,23 @@ use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Pos2, Rect, Sense, Stroke,
     StrokeKind, Vec2,
     emath::GuiRounding,
+    epaint::FontColorTransferFunction,
     epaint::text::{FontTweak, VariationCoords},
     text::{LayoutJob, TextWrapping},
 };
 
-/// The ground where no terminal lends its own.
-pub const VIEW: Color32 = Color32::from_rgb(0x1d, 0x1d, 0x20);
-pub const SIDEBAR: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x32);
-pub const POPOVER: Color32 = Color32::from_rgb(0x36, 0x36, 0x3a);
+/// The window's ground where no terminal lends its own, and a card that has
+/// no terminal to take its ground from.
+pub const VIEW: Color32 = Color32::from_rgb(0x16, 0x16, 0x19);
+pub const CARD: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0d);
+pub const POPOVER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
 pub const TEXT: Color32 = Color32::WHITE;
-pub const DIM: Color32 = white(140);
-pub const BORDER: Color32 = white(24);
-pub const ACCENT: Color32 = Color32::from_rgb(0x35, 0x84, 0xe4);
+pub const DIM: Color32 = white(150);
+pub const BORDER: Color32 = white(16);
+/// What marks the one in use: light enough to be a line or a dot on the ground.
+pub const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x9c, 0xf5);
+/// Darker, to carry white text.
+const ACCENT_FILL: Color32 = Color32::from_rgb(0x35, 0x84, 0xe4);
 /// Something is waiting for the user.
 pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x2e);
 /// Something has failed.
@@ -31,7 +36,7 @@ pub const PRESSED: Color32 = white(46);
 /// Fills of rows, which lie many together: faint under the pointer, so that the
 /// one selected is plain among them.
 const OVER: Color32 = white(12);
-const SELECTED: Color32 = white(44);
+const SELECTED: Color32 = white(26);
 /// The fill of what ends programs if pressed. Darker than `RED`, to carry white text.
 pub const DANGER: Color32 = Color32::from_rgb(0xc0, 0x1c, 0x28);
 
@@ -40,10 +45,13 @@ const fn white(alpha: u8) -> Color32 {
     Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha)
 }
 
-pub const TOOLBAR: f32 = 44.0;
-pub const BODY: f32 = 14.5;
-pub const SMALL: f32 = 12.5;
-const RADIUS: u8 = 6;
+pub const TOOLBAR: f32 = 40.0;
+pub const BODY: f32 = 13.5;
+pub const SMALL: f32 = 12.0;
+const RADIUS: u8 = 7;
+/// A card's corners, and the space between two cards and around them all.
+pub const CARD_RADIUS: u8 = 9;
+pub const GUTTER: f32 = 6.0;
 /// The space to each side of the word in a button that asks.
 const PILL: f32 = 8.0;
 pub const SMALL_BUTTON: f32 = 24.0;
@@ -58,15 +66,25 @@ pub fn mono_bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("mono-bold".into()))
 }
 
-/// What surrounds a dark terminal takes its background, so the two read as one surface.
-/// Its light ink would be lost on a light background, which stays the terminal's alone.
+/// What surrounds a dark terminal is its background, a little lighter, so that
+/// the terminal lies on it as a card of the same hue. The light ink that is
+/// written there would be lost around a light terminal, which gets the plain ground.
 pub fn ground(terminal: Color32) -> Color32 {
-    let [r, g, b, _] = terminal.to_array().map(u32::from);
-    if (r * 299 + g * 587 + b * 114) / 1000 < 64 {
-        terminal
-    } else {
-        VIEW
-    }
+    lifted(terminal, 55).unwrap_or(VIEW)
+}
+
+/// What is laid over the window, a menu or a note, is of the same hue again and
+/// lighter than the ground, to stand off it.
+pub fn popover(terminal: Color32) -> Color32 {
+    lifted(terminal, 115).unwrap_or(POPOVER)
+}
+
+/// A dark colour brought so many thousandths of the way to white, and no light one.
+fn lifted(color: Color32, by: u32) -> Option<Color32> {
+    let [r, g, b, _] = color.to_array().map(u32::from);
+    let lift = |channel: u32| (channel + (255 - channel) * by / 1000) as u8;
+    ((r * 299 + g * 587 + b * 114) / 1000 < 64)
+        .then(|| Color32::from_rgb(lift(r), lift(g), lift(b)))
 }
 
 pub fn apply(ctx: &egui::Context) {
@@ -100,8 +118,12 @@ pub fn apply(ctx: &egui::Context) {
         style.visuals = egui::Visuals::dark();
         let visuals = &mut style.visuals;
         visuals.panel_fill = Color32::TRANSPARENT;
+        // Light text on a dark ground is drawn heavier than its outlines by
+        // default, which makes a regular weight read as a bold one. This keeps
+        // it nearer what the font's designer drew.
+        visuals.text_options.color_transfer_function = FontColorTransferFunction::Gamma(0.72);
         visuals.window_fill = POPOVER;
-        visuals.window_stroke = Stroke::NONE;
+        visuals.window_stroke = Stroke::new(1.0, white(20));
         visuals.window_corner_radius = 12.into();
         visuals.menu_corner_radius = 10.into();
         visuals.popup_shadow = egui::Shadow {
@@ -112,7 +134,7 @@ pub fn apply(ctx: &egui::Context) {
         };
         visuals.extreme_bg_color = ACTIVE;
         visuals.selection.bg_fill = ACCENT.gamma_multiply(0.5);
-        visuals.selection.stroke = Stroke::new(2.0, ACCENT.gamma_multiply(0.7));
+        visuals.selection.stroke = Stroke::new(1.0, ACCENT.gamma_multiply(0.8));
         visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
         let states = [
@@ -165,6 +187,9 @@ pub enum Icon {
     Dot,
     /// A dot that has been silenced.
     Muted,
+    /// The window's own: out of the way, and over the whole screen or back.
+    Minimize,
+    Maximize,
 }
 
 impl Icon {
@@ -233,6 +258,11 @@ impl Icon {
             Icon::Muted => {
                 painter.circle_stroke(center, 3.5, stroke);
                 line([-5.0, 5.0], [5.0, -5.0]);
+            }
+            Icon::Minimize => line([-4.0, 3.5], [4.0, 3.5]),
+            Icon::Maximize => {
+                let rect = Rect::from_center_size(center, Vec2::splat(9.0));
+                painter.rect_stroke(rect, 2, stroke, StrokeKind::Inside);
             }
             Icon::Retry => {
                 // Most of a circle, clockwise, ending in an arrowhead on the right.
@@ -331,6 +361,22 @@ fn paint_button(ui: &egui::Ui, rect: Rect, response: &egui::Response, icon: Icon
     icon.paint(ui.painter(), rect.center(), color);
 }
 
+/// One of the window's own buttons: round, and always there to be seen.
+pub fn round_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(SMALL_BUTTON), Sense::click());
+    let fill = if response.is_pointer_button_down_on() {
+        PRESSED
+    } else if response.hovered() {
+        white(38)
+    } else {
+        white(20)
+    };
+    ui.painter()
+        .circle_filled(rect.center(), SMALL_BUTTON / 2.0, fill);
+    icon.paint(ui.painter(), rect.center(), white(205));
+    response.on_hover_text(tip)
+}
+
 /// Text on one line, which ends in an ellipsis if it is too long for `width`.
 pub fn fitted(
     ui: &egui::Ui,
@@ -374,11 +420,16 @@ pub struct Item<'a> {
     pub caption: bool,
     /// It opens a list.
     pub menu: bool,
+    /// Its name is in bold.
+    pub strong: bool,
     /// A mark at its trailing edge.
     pub mark: Option<(Icon, Color32)>,
     /// What the mark means, to say in its place and its colour. Only a row whose
     /// label starts at its edge has the room.
     pub word: Option<&'a str>,
+    /// The keys that do what the row does, each on a key of its own at the
+    /// trailing edge, joined as Rex writes them: `Ctrl+Shift+D`.
+    pub keys: Option<&'a str>,
     /// Small buttons that take the mark's place while the pointer is on the row.
     pub buttons: &'a [(Icon, &'a str)],
     /// The last of them was pressed, and asks with this word to be pressed again.
@@ -387,6 +438,8 @@ pub struct Item<'a> {
     pub tip: &'a str,
     /// It can be dragged to another place among its like.
     pub movable: bool,
+    /// It waits to be chosen a second time, to close what may be busy.
+    pub danger: bool,
 }
 
 /// Draw a row. Returns its response, and which of its buttons was pressed.
@@ -408,7 +461,10 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     // While anything is dragged, only it is lit, and no row offers its buttons.
     let dragging = ui.ctx().dragged_id().is_some();
     let over = response.dragged() || (!dragging && ui.rect_contains_pointer(rect));
+    // One that cannot be taken now does not answer the pointer.
+    let over = over && ui.is_enabled();
     let (fill, color) = match (item.selected, over, item.caption) {
+        _ if item.danger => (DANGER, TEXT),
         (true, ..) => (SELECTED, TEXT),
         (_, true, _) => (OVER, TEXT),
         (_, _, true) => (Color32::TRANSPARENT, DIM),
@@ -421,10 +477,25 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         let font = FontId::proportional(SMALL);
         ui.painter().layout_no_wrap(word.to_owned(), font, color)
     });
+    let keys = item.keys.map_or_else(Vec::new, |keys| {
+        let mut keys: Vec<_> = keys.split('+').filter(|key| !key.is_empty()).collect();
+        // The plus key itself, which is also what joins the others.
+        if item.keys.is_some_and(|keys| keys.ends_with('+')) {
+            keys.push("+");
+        }
+        let font = FontId::proportional(11.0);
+        let key = |key: &str| {
+            ui.painter()
+                .layout_no_wrap(key.to_owned(), font.clone(), white(205))
+        };
+        keys.into_iter().map(key).collect()
+    });
+    let key = |name: &Arc<egui::Galley>| egui::vec2(name.size().x + 12.0, 18.0);
     let marks = f32::from(u8::from(item.mark.is_some()) + u8::from(item.menu));
     let marks = word
         .as_ref()
         .map_or(14.0 * marks, |word| word.size().x + 8.0);
+    let marks = marks + keys.iter().map(|name| key(name).x + 4.0).sum::<f32>();
     // The button that asks is where the last one was, and goes by its name: the
     // pointer is on it already.
     let last = item.buttons.len().checked_sub(1);
@@ -440,8 +511,11 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     text.max.x = rect.right() - room;
     let lead = if item.icon.is_some() { ICON } else { 0.0 };
     // A name too long for its row ends in an ellipsis.
-    let size = if item.caption { SMALL } else { BODY };
-    let font = FontId::proportional(size);
+    let font = match (item.caption, item.strong) {
+        (true, _) => bold(SMALL),
+        (_, true) => bold(BODY),
+        _ => FontId::proportional(BODY),
+    };
     let label = fitted(ui, item.label, font, color, text.width() - lead);
     let cut = label.elided;
     let needs = label.size() + egui::vec2(lead, 0.0);
@@ -455,7 +529,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let place = anchor.align_size_within_rect(needs, text);
     if let Some(program) = item.icon {
         let left = egui::pos2(place.left(), rect.center().y);
-        let ink = if item.selected { TEXT } else { DIM };
+        let ink = if item.selected { ACCENT } else { DIM };
         tile(ui.painter(), program, left, ink);
     }
     ui.painter()
@@ -490,6 +564,15 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         } else if let Some((mark, color)) = item.mark {
             mark.paint(ui.painter(), center, color);
         }
+        let mut right = rect.right() - 10.0;
+        for name in keys.into_iter().rev() {
+            let size = key(&name);
+            let cap = Rect::from_min_size(egui::pos2(right - size.x, rect.center().y - 9.0), size);
+            ui.painter().rect_filled(cap, 5, white(22));
+            let at = cap.center() - name.size() / 2.0;
+            ui.painter().galley(at, name, TEXT);
+            right -= size.x + 4.0;
+        }
     }
     let response = if cut || !item.tip.is_empty() {
         response.on_hover_ui(|ui| {
@@ -506,9 +589,16 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     (response, pressed)
 }
 
+/// An entry of a menu: a row as wide as the menu, with the keys that do the same
+/// at its far edge. One that cannot be taken now is faint.
+pub fn entry(ui: &mut egui::Ui, enabled: bool, row: Item<'_>) -> egui::Response {
+    let size = Vec2::new(ui.available_width(), 30.0);
+    ui.add_enabled_ui(enabled, |ui| item(ui, size, row).0).inner
+}
+
 /// The one prominent action of a page or dialog.
 pub fn suggested(label: &str) -> egui::Button<'_> {
-    egui::Button::new(egui::RichText::new(label).font(bold(BODY)).color(TEXT)).fill(ACCENT)
+    egui::Button::new(egui::RichText::new(label).font(bold(BODY)).color(TEXT)).fill(ACCENT_FILL)
 }
 
 #[cfg(test)]

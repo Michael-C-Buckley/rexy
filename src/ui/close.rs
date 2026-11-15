@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Rect};
 
-use super::{App, style::DANGER};
+use super::{
+    App,
+    style::{Item, entry},
+};
 use crate::model::Action;
 
 /// What a button says that has been pressed to close something busy, and asks to
@@ -114,11 +117,16 @@ impl App {
     }
 }
 
-/// The menu of whatever was clicked with the other button. A click in it leaves
-/// it open: its entries close it, but for one that asks to be chosen twice.
-pub fn asking(response: &egui::Response) -> egui::Popup<'_> {
+/// The menu of whatever was clicked with the other button, so wide. A click in
+/// it leaves it open: its entries close it, but for one that asks to be chosen twice.
+pub fn asking(response: &egui::Response, width: f32, entries: impl FnOnce(&mut egui::Ui)) {
     egui::Popup::context_menu(response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(width)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            entries(ui);
+        });
 }
 
 /// The entry of a menu that closes something, set apart at its foot. True when
@@ -126,12 +134,12 @@ pub fn asking(response: &egui::Response) -> egui::Popup<'_> {
 /// chosen again.
 pub fn closer(ui: &mut egui::Ui, label: &str, ask: Ask) -> bool {
     ui.separator();
-    let entry = egui::Button::new(label);
-    let entry = match ask {
-        Ask::Again => entry.fill(DANGER),
-        _ => entry,
+    let row = Item {
+        label,
+        danger: ask == Ask::Again,
+        ..Default::default()
     };
-    let chosen = ui.add(entry).clicked();
+    let chosen = entry(ui, true, row).clicked();
     if chosen && ask != Ask::First {
         ui.close();
     }
