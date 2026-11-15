@@ -168,10 +168,12 @@ impl App {
         // Under the session's name, what the tab says or the tab's own.
         let told = lone.map(|tab| self.lines(ui.ctx(), tab, &session.name, tab.name()));
         let (said, under, word, tip) = told.unwrap_or_default();
+        let behind = lone.map(Tab::behind).unwrap_or_default();
         let row = Item {
             id: Some(id),
             caption: lone.is_none(),
             icon: lone.map(Tab::program),
+            behind: &behind,
             under: &under,
             selected: (lone.is_some() || folded) && shown,
             mark: match muted {
@@ -318,9 +320,11 @@ impl App {
         let selected = shown == Some(&tab.id);
         let spared = tab.idle();
         let ask = self.closing.ask(id, spared);
+        let behind = tab.behind();
         let row = Item {
             id: Some(id),
             icon: Some(tab.program()),
+            behind: &behind,
             selected,
             mark: if muted { Some((Icon::Muted, DIM)) } else { dot(ui.ctx(), said) },
             under: &under,

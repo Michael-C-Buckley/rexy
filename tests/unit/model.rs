@@ -57,6 +57,25 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
     assert_eq!(line("", ""), "");
 }
 
+#[test]
+fn the_panes_behind_the_one_in_front_are_all_the_others_shown_or_not() {
+    let runs = |id: &str, program: &str| Pane {
+        program: Program::named([program]).unwrap(),
+        ..pane(id, [0.0; 4])
+    };
+    let names = |tab: &Tab| tab.behind().into_iter().map(Program::name).collect::<Vec<_>>();
+    let mut split = Tab {
+        panes: vec![runs("a", "nvim"), runs("b", "python")],
+        hidden: vec![runs("c", "git")],
+        ..tab("w")
+    };
+    // In front is the pane with the keyboard, or the first where none has it.
+    assert_eq!((split.program().name(), names(&split)), ("neovim", vec!["python", "git"]));
+    split.focus = Some("b".into());
+    assert_eq!((split.program().name(), names(&split)), ("python", vec!["neovim", "git"]));
+    assert!(tab("lone").behind().is_empty());
+}
+
 fn tab(id: &str) -> Tab {
     Tab { id: id.into(), ..Tab::default() }
 }

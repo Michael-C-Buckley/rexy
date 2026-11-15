@@ -111,7 +111,7 @@ impl App {
             // title too long for the room left ends in an ellipsis.
             let color = if active { TEXT } else { DIM };
             let lead = header.left_center() + egui::vec2(8.0, 0.0);
-            badge(ui.painter(), pane.program, lead, TILE, DIM, said);
+            badge(ui.painter(), pane.program, &[], lead, TILE, DIM, said);
             let font = FontId::proportional(SMALL);
             let title = fitted(ui, &pane.title, font, color, header.width() - 16.0 - ICON);
             let corner = lead + egui::vec2(ICON, -title.size().y / 2.0);

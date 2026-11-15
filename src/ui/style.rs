@@ -406,16 +406,39 @@ fn tile(painter: &egui::Painter, program: Program, left: Pos2, side: f32, ink: C
 }
 
 /// A program's icon with, on its corner, a dot in the colour of what the program
-/// has to say, if it has anything: the two are then read as one.
+/// has to say, if it has anything: the two are then read as one. The icons of
+/// those `behind` it, the other panes of its tab, show past its top and its
+/// left, as a stack of three at most.
 pub fn badge(
     painter: &egui::Painter,
     program: Program,
+    behind: &[Program],
     left: Pos2,
     side: f32,
     ink: Color32,
     dot: Option<Color32>,
 ) {
-    tile(painter, program, left, side, ink);
+    // Only what has an icon stacks: a prompt drawn in lines stands alone.
+    let drawn = |program: &&Program| program.drawing().is_some();
+    let behind: Vec<_> = behind.iter().filter(drawn).take(2).collect();
+    let behind = if program.drawing().is_some() { behind } else { Vec::new() };
+    // Each stands a step up and to the left of the one before it, into the
+    // row's own margin: the icon in front is where a lone one would be, and
+    // as large.
+    let step = side * 0.14;
+    let top = left - egui::vec2(0.0, side / 2.0);
+    let layers = behind.len();
+    for (back, program) in behind.into_iter().rev().chain([&program]).enumerate() {
+        let corner = top - Vec2::splat(step * (layers - back) as f32);
+        if back > 0 {
+            // A dark rim parts it from the one behind: the tile's own shape,
+            // which is wider than it is tall, and a little more.
+            let middle = corner + Vec2::splat(side / 2.0);
+            let rim = Rect::from_center_size(middle, side * egui::vec2(0.976, 0.76));
+            painter.rect_filled(rim.expand(1.5), side * 0.2 + 1.5, Color32::from_black_alpha(170));
+        }
+        tile(painter, *program, corner + egui::vec2(0.0, side / 2.0), side, ink);
+    }
     if let Some(color) = dot {
         // A dark rim parts it from the icon, whatever that is drawn in.
         let at = left + egui::vec2(side - 2.0, side / 2.0 - 4.0);
@@ -547,6 +570,8 @@ pub struct Item<'a> {
     pub id: Option<egui::Id>,
     /// The icon of its program, ahead of the label.
     pub icon: Option<Program>,
+    /// The programs of the other panes it stands for, stacked behind that icon.
+    pub behind: &'a [Program],
     pub selected: bool,
     /// A lesser row that heads the rows beneath it.
     pub caption: bool,
@@ -652,7 +677,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         let left = egui::pos2(place.left(), rect.center().y);
         let ink = if item.selected { tints(ui.ctx()).accent } else { DIM };
         let dot = item.mark.filter(|_| docked).map(|(_, color)| color);
-        badge(ui.painter(), program, left, side, ink, dot);
+        badge(ui.painter(), program, item.behind, left, side, ink, dot);
     }
     let name = place.min + egui::vec2(lead, 0.0);
     // The second line starts under the name and has the row to its far edge.

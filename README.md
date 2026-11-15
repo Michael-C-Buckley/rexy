@@ -11,7 +11,7 @@ Rex Lite is an unofficial client and is not affiliated with Superlogical. It is 
 ## Features
 
 - **Every server in one sidebar.** Your home server and every host it knows of, each with its sessions and tabs, reached over a Unix socket, SSH or WebSocket. Fold away a server or a session you are not using, and it keeps a dot for the most pressing thing inside. Prefer tabs along the top? **Ctrl Shift B**.
-- **See what your agents are doing.** Each tab shows its program's icon, a status dot and a line in words: *Working*, *Needs approval*, *Question*, *Done*, *Error*, with progress or how long it has been that way. An activity view lists everything at work on every server under **Needs you**, **Done**, **Working** and **Idle**.
+- **See what your agents are doing.** Each tab shows its program's icon, stacked on those of its other panes if it is split, a status dot and a line in words: *Working*, *Needs approval*, *Question*, *Done*, *Error*, with progress or how long it has been that way. An activity view lists everything at work on every server under **Needs you**, **Done**, **Working** and **Idle**.
 - **Notifications that take you there.** What a tab reports while you are not looking at it becomes a desktop notification; clicking it shows the pane and focuses it. Any tab can be muted.
 - **Splits.** Split a pane in any direction, move it, drag or key its borders, balance the tab, or zoom one pane to fill it.
 - **A real terminal.** libghostty does the emulation, so programs behave as they do in Ghostty: Kitty graphics, hyperlinks, synchronized output, shell prompt marks, clipboard copies, IME input. Box-drawing characters are drawn as shapes, so frames have no gaps.

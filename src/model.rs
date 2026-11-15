@@ -288,6 +288,13 @@ impl Tab {
         self.front().map(|pane| pane.program).unwrap_or_default()
     }
 
+    /// The programs of its other panes, on show or not, which stand behind that one.
+    pub fn behind(&self) -> Vec<Program> {
+        let front = self.front().map(|pane| &pane.id);
+        let others = self.every().filter(|pane| Some(&pane.id) != front);
+        others.map(|pane| pane.program).collect()
+    }
+
     /// Whether it holds more panes than one, on show or not.
     pub fn split(&self) -> bool {
         self.zoomed || self.panes.len() > 1
