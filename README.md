@@ -10,14 +10,14 @@ Rex Lite is an unofficial client and is not affiliated with Superlogical. It is 
 
 ## Features
 
-- **Every server in one sidebar.** Your home server and every host it knows of, each with its sessions and tabs, reached over a Unix socket, SSH or WebSocket. Fold away a server or a session you are not using, and it keeps a dot for the most pressing thing inside. Prefer tabs along the top? **Ctrl Shift B**.
-- **See what your agents are doing.** Each tab shows its program's icon, stacked on those of its other panes if it is split, a status dot and a line in words: *Working*, *Needs approval*, *Question*, *Done*, *Error*, with progress or how long it has been that way. An activity view lists everything at work on every server under **Needs you**, **Done**, **Working** and **Idle**.
-- **Notifications that take you there.** What a tab reports while you are not looking at it becomes a desktop notification; clicking it shows the pane and focuses it. Any tab can be muted.
-- **Splits.** Split a pane in any direction, move it, drag or key its borders, balance the tab, or zoom one pane to fill it. Drag a pane by its header into another tab of its session, or give it a tab of its own.
-- **A real terminal.** libghostty does the emulation, so programs behave as they do in Ghostty: Kitty graphics, hyperlinks, synchronized output, shell prompt marks, clipboard copies, IME input. Box-drawing characters are drawn as shapes, so frames have no gaps.
-- **Your Ghostty colours.** If Ghostty's configuration is on the machine, terminals take its theme, and the window is tinted to match.
+- **Every server in one sidebar.** Your home server and every host it knows of, with their sessions and tabs, over a Unix socket, SSH or WebSocket. Fold away what you are not using, or put the tabs along the top instead.
+- **See what your agents are doing.** Each tab shows the icons of its programs, a status dot and a line in words: *Working*, *Needs approval*, *Question*, *Done*, *Error*, with progress or how long it has been that way. An activity view lists every pane on every server under **Needs you**, **Done**, **Working** and **Idle**.
+- **Notifications that take you there.** What a tab reports while you are not looking at it becomes a desktop notification, and clicking it shows the pane. Any tab can be muted.
+- **Splits.** Split a pane in any direction, resize with the mouse or the keys, balance the tab, or zoom one pane to fill it. Move a pane within its tab, into another tab of its session, or out to a tab of its own.
+- **A real terminal.** libghostty does the emulation, so programs behave as they do in Ghostty: Kitty graphics, hyperlinks, synchronized output, shell prompt marks, clipboard copies, IME input.
+- **Your Ghostty colours.** Terminals take the theme from Ghostty's configuration, if it is on the machine, and the window is tinted to match.
 - **Selection, search and scrollback.** Select by character, word, line or block, find text through a pane's whole history, and jump between shell prompts.
-- **A command palette.** **Ctrl Shift K** finds a session or tab on any server; **Ctrl Shift P** lists every action with its keys.
+- **A command palette.** **Ctrl Shift K** finds a session or tab on any server, and **Ctrl Shift P** lists every action with its keys.
 - **Rex's own keymap.** Keys come from your home server's `init.lua`, with sequences and modes, and the window can be driven with `rex -C`.
 - **Quick to switch.** The last sixteen tabs you looked at on each server stay live in the background, so going back to one is instant. A lost connection is retried by itself.
 
@@ -119,8 +119,8 @@ With the mouse:
 - **Shift** overrides a program's mouse capture.
 - Hold **Ctrl** over a link and click to open it.
 - Drag the line between two panes to resize them; double-click it to even them out.
-- Drag a pane's header onto a tab to move the pane there, or onto its session's name to give it a tab of its own. **Move Pane to New Tab**, in the pane's menu and the palette, does the same. A tab with a single pane joins another when you drop it on the middle of that tab; dropped between two tabs, it moves there.
-- Click a server's heading to fold its sessions away, and a session's heading, anywhere but its name, to fold its tabs.
+- Drag a pane's header onto a tab to move the pane there, or onto its session's name to give it a tab of its own, as **Move Pane to New Tab** in the pane's menu does. A tab with one pane joins another tab when dropped on its middle.
+- Click a server's heading to fold its sessions away, or a session's heading, anywhere but its name, to fold its tabs.
 - Right-click a session, tab or pane for its menu. Double-click a name to rename it, and drag a session or tab to reorder it.
 
 ## Good to know
@@ -129,13 +129,13 @@ With the mouse:
 
 **Panes are sized by their owner.** The window takes the panes of a tab when you show it, so they fit this window. Another client that shows the tab later takes them in turn, and they are this window's again when you click or type in one.
 
-**Closing asks only when it matters.** A pane, tab or session with nothing running but shells at their prompts closes at once. Otherwise the `×` turns into **Close?** and a second click confirms.
+**Closing asks only when it matters.** A pane or tab with nothing running but shells at their prompts closes at once. Anything busier, and any session with several tabs, turns its `×` into **Close?** and waits for a second click.
 
 **Remote control is off by default.** `rex -C <client> do pane.zoom` and the like work only after you choose **Allow Remote Control** in the palette. With it on, any client of the server can type into a pane, paste your clipboard or close things. Asking the window to show a session is always allowed.
 
 **Programs cannot reach your machine.** A program can copy to the clipboard but never read it. `file` links are never opened, since the terminal may be showing another machine. Pictures are accepted only as pixels sent in the escape itself: the Kitty protocol's file and shared-memory transfers would be read on this machine, and are refused.
 
-**State.** Window size, font size, sidebar layout, what is folded, muted tabs and the tab last shown on each server are kept in `rex-lite/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
+**State** is kept in `rex-lite/state.json` under `$XDG_STATE_HOME` or `~/.local/state`: window size, font size, sidebar layout, what is folded or muted, whether remote control is allowed, and the tab last shown on each server.
 
 **Notifications** need a notification service on the session's D-Bus, as GNOME, KDE and most desktops provide. Without one, nothing is sent and nothing else changes.
 
