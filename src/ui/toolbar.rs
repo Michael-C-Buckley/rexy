@@ -14,7 +14,7 @@ use super::{
         item,
     },
 };
-use crate::model::{Action, View, Window};
+use crate::model::{Action, Tab, View};
 
 impl App {
     /// The buttons that make another terminal: in a tab of its own, or beside
@@ -31,11 +31,11 @@ impl App {
     /// behind a zoomed one, or in a floating layer that was put away. Picking one
     /// brings it out. With none, there is no button.
     pub(super) fn hidden(&mut self, ui: &mut egui::Ui, view: &View) {
-        let hidden = view.current_window().map_or(&[][..], |tab| &tab.hidden);
+        let hidden = view.current_tab().map_or(&[][..], |tab| &tab.hidden);
         if hidden.is_empty() {
             return;
         }
-        let button = icon_button(ui, Icon::Behind, "Panes out of sight");
+        let button = icon_button(ui, Icon::Behind, "Hidden panes");
         // It wears the most pressing thing any of them has to say.
         worn(ui, &button, hidden.iter().map(|pane| pane.activity).max());
         let mut picked = None;
@@ -94,7 +94,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
                         let size = Vec2::new(220.0, 28.0);
-                        let shown = view.selected_window.as_deref();
+                        let shown = view.selected_tab.as_deref();
                         self.tabs(ui, self.current, session, shown, size);
                     });
                 self.makers(ui, view);
@@ -117,21 +117,21 @@ impl App {
             self.hidden(ui, view);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 self.makers(ui, view);
-                let (session, tab) = (view.session(), view.current_window());
+                let (session, tab) = (view.session(), view.current_tab());
                 let focused = self.focused.as_deref().and_then(|id| view.pane(id));
                 let title = focused.map(|pane| pane.title.as_str());
                 let plain = FontId::proportional(BODY);
                 // The session and its tab, as the sidebar's rows go by, while it
                 // has none of them.
-                let named = session.filter(|_| self.agents).map(|session| Target {
+                let named = session.filter(|_| self.activity).map(|session| Target {
                     server: self.current,
                     session: session.id.clone(),
-                    window: None,
+                    tab: None,
                 });
                 let tabbed = named
                     .clone()
                     .zip(tab)
-                    .map(|(named, tab)| Target { window: Some(tab.id.clone()), ..named });
+                    .map(|(named, tab)| Target { tab: Some(tab.id.clone()), ..named });
                 // The tab was asked to close, and asks again after the names, on
                 // a button so wide.
                 let asked = tabbed.clone();
@@ -149,14 +149,9 @@ impl App {
                         None,
                     ),
                     (session.map(|session| session.name.as_str()), &bold(BODY), TEXT, named),
-                    (tab.map(Window::name), &plain, DIM, tabbed),
+                    (tab.map(Tab::name), &plain, DIM, tabbed),
                     // A tab that was given a name has this to add.
-                    (
-                        title.filter(|title| Some(*title) != tab.map(Window::name)),
-                        &plain,
-                        DIM,
-                        None,
-                    ),
+                    (title.filter(|title| Some(*title) != tab.map(Tab::name)), &plain, DIM, None),
                 ];
                 // They are drawn, not laid out: nothing of them takes the pointer
                 // from the handle they lie on. But one being renamed gives its
@@ -194,7 +189,7 @@ impl App {
                     let asks = confirm(ui, edge, id.with("over"), CLOSE_TAB);
                     self.wait(ui, asks.rect, &asks, Ask::Again);
                     if asks.clicked() {
-                        self.shut(target, tab.is_some_and(Window::idle), true);
+                        self.shut(target, tab.is_some_and(Tab::idle), true);
                     }
                 }
             });

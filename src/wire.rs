@@ -601,13 +601,11 @@ pub enum Event {
 pub enum News {
     /// Its title.
     Title(String),
-    /// The program in its foreground, by the name `program` gives it, and its process.
-    Program { program: Option<Program>, pid: Option<u64> },
+    /// What is in its foreground.
+    Program(Running),
     /// What its programs say they are doing: each record of it that has changed, by
     /// its name and whole, or `None` for one that is no more.
     Status(Vec<(String, Option<Value>)>),
-    /// The directory its shell is in.
-    Folder(String),
     /// How far along a program in it says it is, in hundredths, or that it no
     /// longer says.
     Progress(Option<u8>),
@@ -620,12 +618,30 @@ pub enum News {
     Notice { title: String, body: String },
 }
 
-/// The icon of a process, if any of its names has one. The most telling come first:
-/// the script it runs, what it was started as, and its executable, which may be a
-/// file named for its version.
-pub fn program(process: &Value) -> Option<Program> {
+/// The process in a terminal's foreground, as far as the server says.
+#[derive(Debug, Default, PartialEq)]
+pub struct Running {
+    pub pid: Option<u64>,
+    /// Its icon, if any of its names has one.
+    pub program: Option<Program>,
+    /// What it goes by, and the directory it is in.
+    pub name: String,
+    pub folder: Option<String>,
+}
+
+/// A process by its names. The most telling come first: the script it runs, what
+/// it was started as, and its executable, which may be a file named for its
+/// version. The first is what it goes by, without the directories that lead to it.
+pub fn running(process: &Value) -> Running {
     let named = ["script", "argv0", "name"].map(|key| process[key].as_str());
-    Program::named(named.into_iter().flatten())
+    let named = named.into_iter().flatten();
+    let last = |path: &str| path.rsplit('/').next().unwrap_or(path).trim_start_matches('-').into();
+    Running {
+        pid: process["pid"].as_u64(),
+        program: Program::named(named.clone()),
+        name: named.clone().next().map(last).unwrap_or_default(),
+        folder: process["cwd"].as_str().map(str::to_owned),
+    }
 }
 
 /// The process a terminal started, if that is a shell. While it is also the one in
@@ -689,10 +705,7 @@ fn news(name: &str, fields: &Value) -> Option<News> {
     let text = |value: &Value| value.as_str().map(str::to_owned);
     Some(match name {
         "title_changed" => News::Title(text(&fields["title"])?),
-        "process_changed" => News::Program {
-            program: program(&fields["foreground"]),
-            pid: fields["foreground"]["pid"].as_u64(),
-        },
+        "process_changed" => News::Program(running(&fields["foreground"])),
         "program_status_changed" => {
             News::Status(vec![(text(&fields["id"])?, Some(fields["record"].clone()))])
         }
@@ -700,7 +713,6 @@ fn news(name: &str, fields: &Value) -> Option<News> {
             let ids = fields["ids"].as_array()?.iter();
             News::Status(ids.filter_map(|id| Some((text(id)?, None))).collect())
         }
-        "pwd_changed" => News::Folder(text(&fields["pwd"])?),
         // Work with no end in sight has nothing to count.
         "progress_report" => News::Progress(match fields["state"].as_str()? {
             "set" | "pause" | "error" => percent(&fields["progress"]),

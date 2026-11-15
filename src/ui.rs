@@ -33,7 +33,7 @@ use eframe::egui::{self, Align2, FontId, Key, Margin, Rect, RichText, Sense, Vec
 
 use crate::{
     backend::Client,
-    model::{Action, Host, View, Window},
+    model::{Action, Host, Tab, View},
     notify::{Desktop, Herald},
 };
 use close::Closing;
@@ -116,15 +116,19 @@ pub struct App {
     /// Where the panes of the tab on show are on their way to.
     motion: motion::Motion,
     /// The sidebar lists what is at work, in place of the sessions.
-    agents: bool,
+    activity: bool,
     /// Where the servers' connections send what their panes have to say, and what
     /// passes it on to the desktop.
     herald: Herald,
     desktop: Desktop,
     /// What is typed in the palette, and which of its rows Enter would take, once
-    /// it has shown any.
+    /// it has shown any. Until something is typed it lists what it was opened
+    /// for: what can be done, if `commands`, and else the sessions and the tabs.
     filter: String,
     cursor: Option<usize>,
+    commands: bool,
+    /// The session on show and the one shown before it, each with its server.
+    visited: [Option<(usize, String)>; 2],
     closing: Closing,
     /// The tab on show that its list was last scrolled to, and in which list. It
     /// is scrolled to once, and the list is the user's to scroll after that.
@@ -162,11 +166,13 @@ impl App {
             title: String::new(),
             heard: HashMap::new(),
             motion: motion::Motion::default(),
-            agents: false,
+            activity: false,
             herald,
             desktop,
             filter: String::new(),
             cursor: None,
+            commands: false,
+            visited: [None, None],
             closing: Closing::default(),
             followed: None,
         }
@@ -185,10 +191,10 @@ impl App {
     /// Show a pane of a server's, whatever tab it is in and whatever hides it
     /// there. False if the server has no such pane.
     fn reveal(&mut self, server: usize, pane: &str) -> bool {
-        let Some((session, window)) = self.servers[server].client.place(pane) else {
+        let Some((session, tab)) = self.servers[server].client.place(pane) else {
             return false;
         };
-        self.open(server, Action::SelectWindow { session, window });
+        self.open(server, Action::SelectTab { session, tab });
         let pane = pane.to_owned();
         self.tell(server, Action::Reveal { pane });
         true
@@ -249,7 +255,7 @@ impl App {
             if view.connected {
                 // A session outlives its last tab.
                 let (heading, label, new) = match &view.selected_session {
-                    Some(session) => ("No Tabs", "New Tab", Action::CreateWindow(session.clone())),
+                    Some(session) => ("No Tabs", "New Tab", Action::CreateTab(session.clone())),
                     None => ("No Terminals", "New Session", Action::CreateSession(None)),
                 };
                 ui.heading(heading);
@@ -262,7 +268,7 @@ impl App {
                 return;
             }
             ui.heading("Not Connected");
-            ui.add(egui::Label::new(RichText::new(&view.status).color(DIM)).wrap());
+            ui.add(egui::Label::new(RichText::new(view.trouble()).color(DIM)).wrap());
             // Home's address is the one typed here. Another server's comes from home.
             if self.current == 0 {
                 ui.add_space(12.0);
@@ -304,23 +310,20 @@ impl App {
             frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    let (mark, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
-                    let failed = style::tints(ui.ctx()).failed;
-                    ui.painter().circle_filled(mark.center(), 3.5, failed);
+                    mark(ui);
                     let room = (within.width() - 220.0).clamp(80.0, 560.0);
                     let said = format!("Lost the connection to {server}.");
                     let said = fitted(ui, &said, FontId::proportional(BODY), TEXT, room);
                     let room = room - said.size().x;
                     let said = ui.add(egui::Label::new(said).selectable(false));
-                    // Why, without saying over again that it is lost.
-                    let why = view.status.strip_prefix("Disconnected: ");
-                    let why = why.unwrap_or(&view.status);
+                    // Whether it is being tried again, and why it was lost.
+                    let why = view.trouble();
                     if room > 60.0 && !why.is_empty() {
                         let font = FontId::proportional(BODY);
-                        let why = fitted(ui, why, font, DIM, room);
+                        let why = fitted(ui, &why, font, DIM, room);
                         ui.add(egui::Label::new(why).selectable(false));
                     }
-                    said.on_hover_text(&view.status);
+                    said.on_hover_text(why);
                     let button = egui::Button::new("Reconnect").min_size(Vec2::new(0.0, 26.0));
                     again = ui.add(button).clicked();
                 });
@@ -374,8 +377,12 @@ impl eframe::App for App {
         let made = views[self.current].made.take();
         let copied = views[self.current].copied.take();
         let view = &views[self.current];
-        let window = view.current_window();
-        let panes = window.map_or(&[][..], |w| &w.panes);
+        let here = view.selected_session.clone().map(|session| (self.current, session));
+        if here.is_some() && here != self.visited[0] {
+            self.visited = [here, self.visited[0].take()];
+        }
+        let tab = view.current_tab();
+        let panes = tab.map_or(&[][..], |w| &w.panes);
         // A pane this window has just made or brought out takes the keyboard. One
         // made from elsewhere does not: that would take it from under the user's hands.
         if made.is_some() {
@@ -384,7 +391,7 @@ impl eframe::App for App {
         // Focus stays with a pane while it is on screen, and otherwise goes where the
         // server has it.
         if !panes.iter().any(|p| Some(&p.id) == self.focused.as_ref()) {
-            self.focused = window.and_then(Window::front).map(|p| p.id.clone());
+            self.focused = tab.and_then(Tab::front).map(|p| p.id.clone());
         }
         self.window_focus(&ctx);
         // Whether this frame's keys were pressed for something other than a terminal.
@@ -417,7 +424,7 @@ impl eframe::App for App {
                 true => self.header(ui, view),
                 false => self.toolbar(ui, &views),
             }
-            let Some(window) = window.filter(|window| !window.panes.is_empty()) else {
+            let Some(tab) = tab.filter(|tab| !tab.panes.is_empty()) else {
                 let area = ui.available_rect_before_wrap();
                 self.empty(ui, view);
                 return area;
@@ -446,16 +453,16 @@ impl eframe::App for App {
             let belong: Vec<_> = belong.collect();
             // What the pointer has hold of, such as a border, goes where it does.
             let held = ui.input(|i| i.pointer.any_down());
-            let shown = self.motion.place(ui.ctx(), &window.id, &belong, held);
+            let shown = self.motion.place(ui.ctx(), &tab.id, &belong, held);
             let card = |part: Rect| {
                 let [min, max] = [part.min, part.max].map(|at| area.lerp_inside(at.to_vec2()));
                 Rect::from_min_max(min, max).shrink(GUTTER / 2.0)
             };
             for ((pane, (_, rest)), shown) in panes.iter().zip(&belong).zip(shown) {
-                self.terminal_pane(ui, view, window, pane, card(shown), card(*rest));
+                self.terminal_pane(ui, view, tab, pane, card(shown), card(*rest));
             }
             if view.connected {
-                self.borders(ui, window, area);
+                self.borders(ui, tab, area);
             }
             within
         });
@@ -467,7 +474,7 @@ impl eframe::App for App {
         self.palette(&ctx, &views);
         self.hints(&ctx, shown.inner);
         // Under what a lost connection says there, where it says it.
-        let lost = !view.connected && window.is_some_and(|tab| !tab.panes.is_empty());
+        let lost = !view.connected && tab.is_some_and(|tab| !tab.panes.is_empty());
         self.toast.show(&ctx, shown.inner, if lost { 60.0 } else { 12.0 });
         // One more drawing when the wait to be asked again to close is over, and
         // none until then.
@@ -501,7 +508,7 @@ impl eframe::App for App {
         // A tab that has closed needs no remembering. Which those are is known only
         // with every server heard from.
         if views.iter().all(|view| view.connected) {
-            let tabs = || views.iter().flat_map(View::tabs);
+            let tabs = || views.iter().flat_map(View::every_tab);
             let open = |tab: &str| tabs().any(|(_, open)| open.id == tab);
             self.remembered.kept.muted.retain(|tab| open(tab));
         }
@@ -519,21 +526,34 @@ impl eframe::App for App {
     }
 }
 
-/// Trouble is said once, briefly, over the terminals.
+/// The dot that marks trouble, ahead of the words for it.
+fn mark(ui: &mut egui::Ui) {
+    let (dot, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
+    ui.painter().circle_filled(dot.center(), 3.5, style::tints(ui.ctx()).failed);
+}
+
+/// What there is to say is said once, briefly, over the terminals: the words,
+/// until when, and whether they tell of trouble, which is marked as such.
 #[derive(Default)]
-struct Toast(Option<(String, Instant)>);
+struct Toast(Option<(String, Instant, bool)>);
 
 impl Toast {
     const TIME: Duration = Duration::from_secs(5);
 
+    /// Say that something went wrong.
     fn say(&mut self, message: String) {
-        self.0 = Some((message, Instant::now() + Self::TIME));
+        self.0 = Some((message, Instant::now() + Self::TIME, true));
+    }
+
+    /// Say something that is no trouble.
+    fn note(&mut self, message: String) {
+        self.0 = Some((message, Instant::now() + Self::TIME, false));
     }
 
     /// Show it `down` from the head of the space the terminals have: at the foot
     /// is the line being typed, more often than not. A click sends it away.
     fn show(&mut self, ctx: &egui::Context, within: Rect, down: f32) {
-        let Some((message, until)) = &self.0 else {
+        let Some((message, until, trouble)) = &self.0 else {
             return;
         };
         let left = until.saturating_duration_since(Instant::now());
@@ -554,8 +574,14 @@ impl Toast {
         let shown = area.show(ctx, |ui| {
             frame.show(ui, |ui| {
                 ui.set_max_width((within.width() - 64.0).clamp(120.0, 520.0));
-                // Its words are not for selecting: that would take the click.
-                ui.add(egui::Label::new(message).selectable(false));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if *trouble {
+                        mark(ui);
+                    }
+                    // Its words are not for selecting: that would take the click.
+                    ui.add(egui::Label::new(message).selectable(false).wrap());
+                });
             });
         });
         if shown.response.clicked() {

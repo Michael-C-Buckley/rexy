@@ -21,6 +21,7 @@ use libghostty_vt::{
     screen::{CellContentTag, CellWide, Screen},
     snapshot,
     style::{Style, StyleColor},
+    terminal::{CompressionActivity, CompressionMode, CompressionResult},
 };
 use serde_json::Value;
 use std::{
@@ -28,7 +29,10 @@ use std::{
     collections::HashMap,
     io::{self, Read},
     rc::Rc,
-    sync::{Arc, Mutex, Once, RwLock},
+    sync::{
+        Arc, Mutex, Once, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -48,6 +52,8 @@ const PICTURE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_LINK_BYTES: usize = 2048;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 const RENDER_HOLD_LIMIT: Duration = Duration::from_secs(1);
+/// How long a terminal is left quiet before the history written to it is packed.
+const QUIET: Duration = Duration::from_secs(2);
 
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
@@ -153,8 +159,10 @@ pub struct Frame {
     pub alternate_scroll: bool,
     /// Distance in rows from the active terminal, zero when following output.
     /// Scrolled back, it is as of this frame: history that grows under a view
-    /// it leaves as it was draws no new one.
+    /// it leaves as it was draws no new one. So is `history`, the rows there
+    /// are above the screen in all.
     pub scroll_offset: usize,
+    pub history: usize,
     /// What is selected of each row, as columns from one up to another. Empty
     /// when nothing is selected anywhere, in view or out of it.
     pub selected: Vec<Option<(u16, u16)>>,
@@ -204,6 +212,9 @@ struct Shared {
     asks: Mutex<Vec<Request>>,
     copied: Mutex<Vec<Copied>>,
     repaint: Notify,
+    /// Its pane is on show. One that is not draws nothing but its first frame:
+    /// what it would draw meanwhile nobody sees.
+    shown: AtomicBool,
 }
 
 /// Dropping the last handle disconnects the bounded queue and wakes the worker,
@@ -215,7 +226,7 @@ pub struct TerminalHandle {
 }
 
 impl TerminalHandle {
-    pub fn new(nonce: u64, repaint: Notify) -> Result<Self> {
+    pub fn new(nonce: u64, repaint: Notify, shown: bool) -> Result<Self> {
         // Ghostty decodes no PNG of its own, and is told how once, for every
         // terminal, before the first of them has a worker.
         static PNG: Once = Once::new();
@@ -232,6 +243,7 @@ impl TerminalHandle {
             asks: Mutex::default(),
             copied: Mutex::default(),
             repaint,
+            shown: AtomicBool::new(shown),
         });
         let worker_shared = shared.clone();
         thread::Builder::new()
@@ -277,6 +289,14 @@ impl TerminalHandle {
     pub fn ask(&self, request: Request) {
         self.shared.asks.lock().unwrap().push(request);
         self.wake();
+    }
+
+    /// Say whether its pane is on show. One that comes on show draws what it has
+    /// come to meanwhile.
+    pub fn show(&self, shown: bool) {
+        if !self.shared.shown.swap(shown, Ordering::Relaxed) && shown {
+            self.wake();
+        }
     }
 
     /// The selected text handed back since this was last asked.
@@ -401,8 +421,14 @@ impl ApcParser {
 
 /// Restore a terminal from a snapshot. Ghostty checks the envelope and every
 /// record as it streams in, and reads no further than the snapshot's end. It
-/// bounds each record but not their sum, which is cut short here.
-fn restore(input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt::Error> {
+/// bounds each record but not their sum, which is cut short here. A snapshot
+/// begins with the screen, and the terminal is `seen` as soon as that is read:
+/// its history follows, and the pixels of its pictures, which may be most of the
+/// snapshot and long in coming. With the terminal, whether any of that came.
+fn restore(
+    input: impl Read,
+    seen: impl FnOnce(&Terminal<'static, 'static>) -> Result<()>,
+) -> Result<(Terminal<'static, 'static>, bool)> {
     let mut input = input.take(MAX_SNAPSHOT_BYTES);
     let mut decoder = snapshot::Decoder::new(&mut input)?;
     decoder.set_max_continuation_bytes(MAX_APC_BYTES)?;
@@ -410,7 +436,14 @@ fn restore(input: impl Read) -> Result<Terminal<'static, 'static>, libghostty_vt
     // History is kept compressed, a page at a time as it arrives. A page opens
     // again when it is scrolled to.
     decoder.set_compress_history_enabled(true)?;
-    decoder.decode()
+    let mut restoring = decoder.ready()?;
+    configure(restoring.terminal_mut())?;
+    seen(restoring.terminal())?;
+    let mut more = false;
+    while restoring.next()?.is_some() {
+        more = true;
+    }
+    Ok((restoring.into_terminal(), more))
 }
 
 fn configure(terminal: &mut Terminal) -> Result<()> {
@@ -431,17 +464,28 @@ fn configure(terminal: &mut Terminal) -> Result<()> {
 
 fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u64) -> Result<()> {
     let mut input = Input { receiver, bytes: Vec::new(), offset: 0 };
-    // The snapshot streams through bounded chunks on this worker, but the first
-    // frame waits for the whole of it to validate.
-    let mut terminal = match restore(&mut input) {
-        Ok(terminal) => terminal,
-        Err(_) if input.receiver.is_disconnected() => return Ok(()),
-        Err(error) => return Err(error).context("restoring terminal snapshot"),
-    };
-    configure(&mut terminal)?;
     // The terminal calls back in the middle of a write, so the renderer is shared
     // with that callback and never borrowed across a write or a resize.
     let renderer = Rc::new(RefCell::new(Renderer::new()?));
+    // The snapshot streams through bounded chunks on this worker, and the first
+    // frame is drawn of its screen, whether or not the pane is on show: a pane
+    // has a screen from then on.
+    let seen = |terminal: &Terminal<'static, 'static>| {
+        renderer.borrow_mut().publish(terminal, shared).map(drop)
+    };
+    let (mut terminal, more) = match restore(&mut input, seen) {
+        Ok(restored) => restored,
+        Err(_) if input.receiver.is_disconnected() => return Ok(()),
+        Err(error) => return Err(error.context("restoring terminal snapshot")),
+    };
+    // What came after the screen may show on it: the pixels of a picture, of
+    // which Ghostty marks nothing, and the rest of a word cut off at its top.
+    if more {
+        renderer.borrow_mut().pictured = None;
+    }
+    // A frame is owed whatever a program holds back: that one, and what the
+    // user has scrolled to, selected or found.
+    let mut owed = more;
     // A snapshot can be taken inside a hold, of whose beginning nothing will tell.
     renderer.borrow_mut().held = terminal.mode(Mode::SYNC_OUTPUT)?.then(Instant::now);
     terminal.on_render_hold({
@@ -458,6 +502,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
             // comes too soon after another waits for its hold to end. A failure
             // here shows again when the worker next draws.
             if held
+                && shared.shown.load(Ordering::Relaxed)
                 && renderer.caught.elapsed() >= FRAME_INTERVAL
                 && renderer.publish(terminal, &shared).unwrap_or(false)
             {
@@ -467,12 +512,16 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
     })?;
     let mut parser = ApcParser::new(nonce);
     let (mut selecting, mut finding) = (Selecting::new()?, Finding::default());
-    // A frame is owed whatever a program holds back: the first after a restore,
-    // and what the user has scrolled to, selected or found.
-    let mut owed = true;
     // The terminal has been written to since text was last looked for in it.
     let mut wrote = false;
+    // When it was last written to, and what Ghostty called its history when
+    // that was last packed.
+    let (mut written, mut packed) = (Instant::now(), None);
+    let mut shown = shared.shown.load(Ordering::Relaxed);
     loop {
+        // A pane that comes on show is owed what its terminal has come to.
+        let hidden = !shared.shown.load(Ordering::Relaxed);
+        owed |= !hidden && !std::mem::replace(&mut shown, !hidden);
         owed |= request::heed(shared, &mut terminal, &mut selecting, &mut finding)?;
         owed |= selecting.tick(&terminal)?;
         let looking = finding.work(&mut terminal, std::mem::take(&mut wrote))?;
@@ -491,6 +540,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
             // published, until more input.
             match renderer.held {
                 Some(since) if !owed => Some(since + RENDER_HOLD_LIMIT - now),
+                _ if hidden => None,
                 _ if now < due => Some(due - now),
                 _ => {
                     renderer.publish(&terminal, shared)?;
@@ -504,6 +554,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
         let wait = match wait {
             _ if looking => Some(Duration::ZERO),
             _ if selecting.scrolling => Some(wait.unwrap_or(FRAME_INTERVAL).min(FRAME_INTERVAL)),
+            None => pack(&mut terminal, &mut packed, written.elapsed())?,
             _ => wait,
         };
         let Some(command) = input.next(wait) else {
@@ -512,7 +563,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
         let Command::Bytes(bytes) = command else {
             continue;
         };
-        wrote = true;
+        (wrote, written) = (true, Instant::now());
         for part in parser.feed(&bytes)? {
             match part {
                 Part::Output(bytes) => {
@@ -524,6 +575,27 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
             }
         }
     }
+}
+
+/// Pack the history a terminal has been written since it was last `packed`, once
+/// it has been `quiet` a while with nothing else to do: only what a snapshot
+/// brings comes packed. A step at a time, each of them short, and this says how
+/// long to wait for input before the next. None when there is no more to pack,
+/// until Ghostty calls its history something else.
+fn pack(
+    terminal: &mut Terminal,
+    packed: &mut Option<CompressionActivity>,
+    quiet: Duration,
+) -> Result<Option<Duration>> {
+    if *packed == Some(terminal.compression_activity()?) {
+        return Ok(None);
+    }
+    if quiet >= QUIET
+        && terminal.compress(CompressionMode::Incremental)? != CompressionResult::Pending
+    {
+        *packed = Some(terminal.compression_activity()?);
+    }
+    Ok(Some(QUIET.saturating_sub(quiet)))
 }
 
 fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
@@ -917,6 +989,7 @@ impl Renderer {
             fg,
             bg,
             scroll_offset,
+            history: scrollbar.total.saturating_sub(scrollbar.len) as usize,
             mouse_tracking,
             alternate_screen,
             alternate_scroll,

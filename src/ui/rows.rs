@@ -8,31 +8,31 @@ use super::{
     App,
     close::{Ask, CLOSE, CLOSE_TAB, asking, closer},
     heard::dot,
-    style::{DIM, Icon, Item, ROW, entry, item, tints},
+    style::{BODY, DIM, Icon, Item, ROW, SMALL, entry, item, tints},
 };
-use crate::model::{self, Action, Activity, Edit, Session, Window};
+use crate::model::{self, Action, Activity, Edit, Session, Tab};
 
-/// A session or, with `window`, one of its tabs.
+/// A session or, with `tab`, one of its tabs.
 #[derive(Clone, PartialEq)]
 pub(super) struct Target {
     pub(super) server: usize,
     pub(super) session: String,
-    pub(super) window: Option<String>,
+    pub(super) tab: Option<String>,
 }
 
 impl Target {
     /// The action that shows it.
     fn select(&self) -> Action {
         let session = self.session.clone();
-        match self.window.clone() {
-            Some(window) => Action::SelectWindow { session, window },
+        match self.tab.clone() {
+            Some(tab) => Action::SelectTab { session, tab },
             None => Action::SelectSession(session),
         }
     }
 
     /// The action that changes it.
     pub(super) fn edit(self, edit: Edit) -> Action {
-        Action::Edit { session: self.session, window: self.window, edit }
+        Action::Edit { session: self.session, tab: self.tab, edit }
     }
 }
 
@@ -62,7 +62,7 @@ impl App {
     /// rows come and go around it.
     pub(super) fn row(&self, target: &Target) -> egui::Id {
         let host = &self.servers[target.server].host.label;
-        egui::Id::unique(("row", host, &target.session, &target.window))
+        egui::Id::unique(("row", host, &target.session, &target.tab))
     }
 
     /// A session's tabs, down the sidebar or along the top. `shown` is the one on show.
@@ -74,11 +74,11 @@ impl App {
         shown: Option<&str>,
         size: Vec2,
     ) {
-        let windows = session.windows.iter().enumerate();
-        let tabs: Vec<_> = windows
-            .map(|(index, window)| (&window.id, self.tab(ui, server, session, shown, index, size)))
+        let rows = session.tabs.iter().enumerate();
+        let rows: Vec<_> = rows
+            .map(|(index, held)| (&held.id, self.tab(ui, server, session, shown, index, size)))
             .collect();
-        self.reorder(ui, server, &tabs);
+        self.reorder(ui, server, &rows);
     }
 
     /// While one of these rows is dragged, mark where among them it would land, and
@@ -88,7 +88,7 @@ impl App {
         let Some(drag) = DragAndDrop::payload::<Target>(ui.ctx()) else {
             return;
         };
-        let id = drag.window.as_ref().unwrap_or(&drag.session);
+        let id = drag.tab.as_ref().unwrap_or(&drag.session);
         let from = rows.iter().position(|(row, _)| *row == id);
         let from = from.filter(|_| drag.server == server);
         let (Some(from), Some(pointer)) = (from, ui.input(|i| i.pointer.latest_pos())) else {
@@ -131,8 +131,8 @@ impl App {
         shown: bool,
     ) {
         let session = &sessions[index];
-        let target = Target { server, session: session.id.clone(), window: None };
-        let lone = match session.windows.as_slice() {
+        let target = Target { server, session: session.id.clone(), tab: None };
+        let lone = match session.tabs.as_slice() {
             [tab] => Some(tab),
             _ => None,
         };
@@ -143,13 +143,16 @@ impl App {
             return;
         }
         // Its one tab has no row of its own for the field that renames it.
-        let tab = lone.map(|tab| Target { window: Some(tab.id.clone()), ..target.clone() });
+        let tab = lone.map(|tab| Target { tab: Some(tab.id.clone()), ..target.clone() });
         if let Some(tab) = &tab
             && self.renaming(ui, tab, self.row(tab), size).is_some()
         {
             return;
         }
-        let spared = session.windows.iter().all(Window::idle);
+        // Closing it loses nothing if it is one tab at most, with nothing in
+        // it but shells at their prompts. Several tabs are not closed by one
+        // press of a button that stands beside the one for a new tab.
+        let spared = session.tabs.len() <= 1 && session.tabs.iter().all(Tab::idle);
         let ask = self.closing.ask(id, spared);
         // Its one tab, asked to close by a command, asks again here: by its own
         // name, and of itself, for the session outlives it.
@@ -163,7 +166,7 @@ impl App {
         let row = Item {
             id: Some(id),
             caption: lone.is_none(),
-            icon: lone.map(Window::program),
+            icon: lone.map(Tab::program),
             under: &under,
             selected: lone.is_some() && shown,
             mark: match muted {
@@ -195,15 +198,15 @@ impl App {
         let labels = ["Move Up", "Move Down", "Close Session"];
         let at = |index: usize| sessions.get(index).map(|s| s.id.clone());
         match (button, menu(&response, labels, muted, index, at, ask)) {
-            (Some(0), _) => self.open(server, Action::CreateWindow(session.id.clone())),
+            (Some(0), _) => self.open(server, Action::CreateTab(session.id.clone())),
             // The tab that asked, and not the session with it. Otherwise this
             // ends every program in the session.
             (Some(_), _) => self.shut(asked.cloned().unwrap_or(target), spared, true),
             (None, Some(Choice::Edit(Edit::Close))) => self.shut(target, spared, true),
             // Only a tab is muted.
             (None, Some(Choice::Mute)) => {
-                if let Some((tab, window)) = tab.zip(lone) {
-                    self.choose(tab, window.name(), Choice::Mute);
+                if let Some((target, lone)) = tab.zip(lone) {
+                    self.choose(target, lone.name(), Choice::Mute);
                 }
             }
             (None, Some(choice)) => self.choose(target, &session.name, choice),
@@ -242,43 +245,50 @@ impl App {
         size: Vec2,
     ) -> Rect {
         let across = ui.layout().is_horizontal();
-        let window = &session.windows[index];
-        let target =
-            Target { server, session: session.id.clone(), window: Some(window.id.clone()) };
+        let tab = &session.tabs[index];
+        let target = Target { server, session: session.id.clone(), tab: Some(tab.id.clone()) };
         let id = self.row(&target);
+        let muted = self.remembered.kept.muted.contains(&tab.id);
+        // Along the top a tab has one line. Down the sidebar it says under its
+        // name what it does, or its terminal's title where it has another name.
+        let (said, under, mut word, tip) = match across {
+            true => {
+                let (said, word, tip) = speaks(tab);
+                (said, String::new(), word.filter(|_| !muted), tip)
+            }
+            false => {
+                let title = tab.top().map_or("", |pane| &pane.title);
+                self.lines(ui.ctx(), tab, tab.name(), title)
+            }
+        };
         // Along the top a tab is as wide as its name, up to the size given: its
         // icon and the room for its mark or its button come to as much again as
-        // the row's own edges.
+        // the row's own edges. What it says in words stands after the name
+        // where both fit, and where they do not the name stays: its dot says
+        // as much in colour, and the pointer is told the rest.
         let size = match across {
             true => {
-                let font = egui::FontId::proportional(super::style::BODY);
-                let name = ui.painter().layout_no_wrap(window.name().into(), font, DIM);
-                Vec2::new((name.size().x + 70.0).clamp(96.0, size.x), size.y)
+                let wide = |text: &str, size| {
+                    let font = egui::FontId::proportional(size);
+                    ui.painter().layout_no_wrap(text.into(), font, DIM).size().x
+                };
+                let name = wide(tab.name(), BODY) + 70.0;
+                let both = word.as_deref().map(|word| name + wide(word, SMALL));
+                word = word.filter(|_| both.is_some_and(|both| both <= size.x));
+                let width = both.filter(|_| word.is_some()).unwrap_or(name);
+                Vec2::new(width.clamp(96.0, size.x), size.y)
             }
             false => size,
         };
         if let Some(field) = self.renaming(ui, &target, id, size) {
             return field;
         }
-        let muted = self.remembered.kept.muted.contains(&window.id);
-        // Along the top a tab has one line. Down the sidebar it says under its
-        // name what it does, or its terminal's title where it has another name.
-        let (said, under, word, tip) = match across {
-            true => {
-                let (said, word, tip) = speaks(window);
-                (said, String::new(), word, tip)
-            }
-            false => {
-                let title = window.top().map_or("", |pane| &pane.title);
-                self.lines(ui.ctx(), window, window.name(), title)
-            }
-        };
-        let selected = shown == Some(&window.id);
-        let spared = window.idle();
+        let selected = shown == Some(&tab.id);
+        let spared = tab.idle();
         let ask = self.closing.ask(id, spared);
         let row = Item {
             id: Some(id),
-            icon: Some(window.program()),
+            icon: Some(tab.program()),
             selected,
             mark: if muted { Some((Icon::Muted, DIM)) } else { dot(ui.ctx(), said) },
             under: &under,
@@ -287,7 +297,7 @@ impl App {
             confirm: (ask == Ask::Again).then_some(CLOSE),
             tip: &tip,
             movable: true,
-            label: window.name(),
+            label: tab.name(),
             // Down the sidebar it stands in from the session's name over it.
             inset: if across { 0.0 } else { 10.0 },
             ..Default::default()
@@ -304,13 +314,15 @@ impl App {
         } else {
             ["Move Up", "Move Down", "Close Tab"]
         };
-        let at = |index: usize| session.windows.get(index).map(|w| w.id.clone());
+        let at = |index: usize| session.tabs.get(index).map(|w| w.id.clone());
         match (button, menu(&response, labels, Some(muted), index, at, ask)) {
             (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
                 self.shut(target, spared, true);
             }
-            // The field opens on the name it goes by, given or not.
-            (None, Some(choice)) => self.choose(target, window.name(), choice),
+            // The field opens on the name it was given, if it was given one.
+            (None, Some(choice)) => {
+                self.choose(target, tab.label.as_deref().unwrap_or_default(), choice);
+            }
             (None, None) => {}
         }
         response.rect
@@ -324,7 +336,7 @@ impl App {
     fn lines(
         &self,
         ctx: &egui::Context,
-        tab: &Window,
+        tab: &Tab,
         name: &str,
         title: &str,
     ) -> (Activity, String, Option<String>, String) {
@@ -352,7 +364,7 @@ impl App {
                 });
             }
             Choice::Mute => {
-                let tab = target.window.as_deref().unwrap_or_default();
+                let tab = target.tab.as_deref().unwrap_or_default();
                 let muted = &mut self.remembered.kept.muted;
                 if !muted.remove(tab) {
                     muted.insert(tab.to_owned());
@@ -423,7 +435,7 @@ impl App {
 /// What a tab has to say on its row: the most pressing thing any of its panes
 /// does, the word for that or how far along it is, and all of it in full, for a
 /// row with no room for it, with what its program adds.
-fn speaks(tab: &Window) -> (Activity, Option<String>, String) {
+fn speaks(tab: &Tab) -> (Activity, Option<String>, String) {
     let Some(top) = tab.top() else {
         return Default::default();
     };

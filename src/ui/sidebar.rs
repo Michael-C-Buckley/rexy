@@ -41,8 +41,8 @@ impl App {
                 top.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     self.watch(ui, views);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        let palette = "client.palette.toggle";
-                        let tip = "Find a session, a tab or something to do";
+                        let palette = "session.switch";
+                        let tip = "Search sessions and tabs";
                         let field = search(ui, &self.keys.map.shortcut(palette));
                         if field.on_hover_text(tip).clicked() {
                             self.todo.push((palette, None));
@@ -53,7 +53,7 @@ impl App {
                 list.show(ui, |ui| {
                     rows.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 4.0;
-                        if self.agents {
+                        if self.activity {
                             return self.agents(ui, views);
                         }
                         for (server, view) in views.iter().enumerate() {
@@ -103,9 +103,9 @@ impl App {
                 // On as many as three lines, broken between words. In full under
                 // the pointer, if that was not enough.
                 let font = FontId::proportional(SMALL);
-                let mut status = LayoutJob::simple(view.status.clone(), font, DIM, 0.0);
+                let mut status = LayoutJob::simple(view.trouble(), font, DIM, 0.0);
                 status.wrap.max_rows = 3;
-                ui.add(egui::Label::new(status).wrap()).on_hover_text(&view.status);
+                ui.add(egui::Label::new(status).wrap()).on_hover_text(view.trouble());
             });
         }
         let mut sessions = Vec::new();
@@ -116,9 +116,9 @@ impl App {
             self.session(ui, server, &view.sessions, index, shown);
             // A session's one tab is the session's own row. Several are listed
             // under its name.
-            if session.windows.len() != 1 {
+            if session.tabs.len() != 1 {
                 // The tab on show, if it is one of this session's.
-                let shown = view.selected_window.as_deref().filter(|_| shown);
+                let shown = view.selected_tab.as_deref().filter(|_| shown);
                 let size = Vec2::new(ui.available_width(), ROW);
                 self.tabs(ui, server, session, shown, size);
                 ui.add_space(6.0);

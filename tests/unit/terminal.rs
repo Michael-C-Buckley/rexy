@@ -10,6 +10,11 @@ pub(crate) fn render(terminal: &Terminal<'static, '_>) -> Arc<Frame> {
     Renderer::new().unwrap().frame(terminal).unwrap().unwrap()
 }
 
+/// A terminal restored from a snapshot, of which nothing is drawn on the way.
+pub(crate) fn restore(input: impl Read) -> Result<Terminal<'static, 'static>> {
+    Ok(super::restore(input, |_| Ok(()))?.0)
+}
+
 pub(crate) fn encode(terminal: &mut Terminal) -> Vec<u8> {
     let mut bytes = Vec::new();
     terminal.encode_snapshot(&mut bytes).unwrap();
@@ -36,7 +41,7 @@ pub(crate) fn worker(bytes: Vec<u8>) -> (TerminalHandle, flume::Receiver<Instant
     let notify = move || {
         let _ = wake.send(Instant::now());
     };
-    let handle = TerminalHandle::new(7, Arc::new(notify)).unwrap();
+    let handle = TerminalHandle::new(7, Arc::new(notify), true).unwrap();
     write(&handle, &bytes);
     (handle, wakes)
 }
@@ -109,6 +114,65 @@ fn restored_history_is_compressed_and_opens_when_scrolled_to() {
     assert!(usage.compression_supported && usage.primary_compressed_pages > 0);
     restored.scroll_viewport(ScrollViewport::Top);
     assert_eq!(row(&render(&restored), 0), "line 0");
+}
+
+#[test]
+fn a_screen_is_drawn_before_its_history_has_come() {
+    let mut original = terminal(20, 3);
+    configure(&mut original).unwrap();
+    for line in 0..10_000 {
+        original.vt_write(format!("line {line}\r\n").as_bytes());
+    }
+    original.vt_write(b"now");
+    let mut bytes = encode(&mut original);
+    let rest = bytes.split_off(bytes.len() - 64);
+    // All but the end of the snapshot: the screen is drawn of what has come.
+    let (handle, wakes) = worker(bytes);
+    until(&wakes, || handle.latest().is_some());
+    assert_eq!(row(&handle.latest().unwrap(), 2), "now");
+    // Its history is there once the rest has, and what is written after it.
+    write(&handle, &rest);
+    write(&handle, b" then");
+    until(&wakes, || row(&handle.latest().unwrap(), 2) == "now then");
+    handle.ask(Request::Scroll(Scroll::Lines(i32::MIN)));
+    until(&wakes, || top(&handle) == "line 0");
+}
+
+#[test]
+fn a_pane_out_of_sight_draws_its_first_frame_and_then_only_once_it_is_on_show() {
+    let (wake, wakes) = flume::unbounded();
+    let notify = move || _ = wake.send(Instant::now());
+    let handle = TerminalHandle::new(7, Arc::new(notify), false).unwrap();
+    write(&handle, &encode(&mut terminal(20, 3)));
+    until(&wakes, || handle.latest().is_some());
+    write(&handle, b"unseen");
+    assert!(wakes.recv_timeout(QUIET).is_err());
+    assert_eq!(top(&handle), "");
+    handle.show(true);
+    until(&wakes, || top(&handle) == "unseen");
+}
+
+#[test]
+fn history_written_to_a_terminal_is_packed_once_it_is_quiet() {
+    let mut terminal = terminal(20, 3);
+    configure(&mut terminal).unwrap();
+    for line in 0..20_000 {
+        terminal.vt_write(format!("line {line}\r\n").as_bytes());
+    }
+    let packed = |terminal: &Terminal| terminal.memory_usage().unwrap().primary_compressed_pages;
+    assert_eq!(packed(&terminal), 0);
+    // Not while it is being written to.
+    let mut done = None;
+    let wait = pack(&mut terminal, &mut done, Duration::ZERO).unwrap();
+    assert_eq!((wait, packed(&terminal)), (Some(super::QUIET), 0));
+    // Then a step at a time, to the end, and no more until more is written.
+    while pack(&mut terminal, &mut done, super::QUIET).unwrap().is_some() {}
+    assert!(packed(&terminal) > 0);
+    terminal.scroll_viewport(ScrollViewport::Top);
+    assert_eq!(row(&render(&terminal), 0), "line 0");
+    terminal.scroll_viewport(ScrollViewport::Bottom);
+    terminal.vt_write(b"more\r\n");
+    assert!(pack(&mut terminal, &mut done, Duration::ZERO).unwrap().is_some());
 }
 
 /// A terminal that knows the size of its cells, without which no picture has
@@ -213,6 +277,7 @@ fn dropping_last_handle_stops_worker_waiting_for_snapshot_bytes() {
             Arc::new(move || {
                 let _ = &signal;
             }),
+            true,
         )
         .unwrap();
         if !prefix.is_empty() {

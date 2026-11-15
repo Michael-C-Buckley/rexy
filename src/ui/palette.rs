@@ -64,7 +64,7 @@ impl App {
             ..Default::default()
         };
         if item(ui, size, button).0.clicked() {
-            self.todo.push(("client.palette.toggle", None));
+            self.todo.push(("session.switch", None));
         }
     }
 
@@ -78,6 +78,9 @@ impl App {
         let typed = self.filter.trim().to_owned();
         let named = (!typed.is_empty()).then(|| typed.clone());
         let found = |words: &[&str]| found(&typed, words);
+        // With nothing typed it lists what it was opened for. What is typed is
+        // looked for in all of it.
+        let (places, deeds) = (named.is_some() || !self.commands, named.is_some() || self.commands);
         let row = |label: &str, icon, mark, pick| Row {
             label: label.to_owned(),
             icon,
@@ -89,12 +92,20 @@ impl App {
             keys: map.shortcut(name),
             ..row(label, None, None, Pick::Do(name.to_owned()))
         };
-        // The sessions of each server come under its name, and so first.
-        let (mut rows, mut under, mut shown) = (Vec::new(), Vec::new(), 0);
+        // The sessions of each server come under its name, and so first. The
+        // one shown before this one is picked out, so that Enter goes back to
+        // it, or failing that the one on show.
+        let (mut rows, mut under, mut shown, mut back) = (Vec::new(), Vec::new(), 0, None);
         for (server, view) in views.iter().enumerate() {
-            for session in view.sessions.iter().filter(|s| found(&[&s.name])) {
+            for session in view.sessions.iter().filter(|s| places && found(&[&s.name])) {
                 if server == current && Some(&session.id) == view.selected_session.as_ref() {
                     shown = rows.len();
+                }
+                if self.visited[1]
+                    .as_ref()
+                    .is_some_and(|(at, id)| (*at, id) == (server, &session.id))
+                {
+                    back = Some(rows.len());
                 }
                 let show = Pick::Show(server, Action::SelectSession(session.id.clone()));
                 rows.push(row(&session.name, None, dot(ctx, session.activity()), show));
@@ -105,35 +116,39 @@ impl App {
         let new = named.clone().filter(|_| rows.is_empty());
         // What comes after the sessions is headed by what it is.
         let mut heads = vec![(rows.len(), "Tabs")];
-        if let Some(session) = &view.selected_session {
-            for tab in view.windows().iter().filter(|tab| found(&[tab.name()])) {
-                let (session, window) = (session.clone(), tab.id.clone());
-                let show = Pick::Show(current, Action::SelectWindow { session, window });
+        if let Some(session) = view.selected_session.as_ref().filter(|_| places) {
+            for tab in view.tabs().iter().filter(|tab| found(&[tab.name()])) {
+                let to = Action::SelectTab { session: session.clone(), tab: tab.id.clone() };
+                let show = Pick::Show(current, to);
                 let (icon, mark) = (Some(tab.program()), dot(ctx, tab.says().0));
                 rows.push(row(tab.name(), icon, mark, show));
             }
         }
         heads.push((rows.len(), "Commands"));
         // All that can be done just now, but to put this list away.
-        for (name, title, _) in COMMANDS.iter().filter(|c| found(&[c.1, c.0])) {
+        for (name, title, _) in COMMANDS.iter().filter(|c| deeds && found(&[c.1, c.0])) {
             let plan = self.standing(view).plan(name, &Value::Null, None);
-            if plan.is_ok_and(|deed| !matches!(deed, Deed::Palette)) {
+            if plan.is_ok_and(|deed| !matches!(deed, Deed::Palette(_))) {
                 let remote = self.remembered.kept.remote;
                 rows.push(command(label(name, title, remote), name));
             }
         }
         // And those of the server's own actions that are for showing.
-        let served = map.served.iter().filter(|served| !served.1.is_empty());
+        let served = map.served.iter().filter(|served| deeds && !served.1.is_empty());
         for (name, title, _) in served.filter(|served| found(&[&served.1, &served.0])) {
             rows.push(command(title, name));
         }
         rows.extend(new.map(|name| {
-            let label = format!("New Session “{name}”");
+            // On the server on show, which is said where there are others.
+            let label = match self.servers.len() {
+                1 => format!("New Session “{name}”"),
+                _ => format!("New Session “{name}” on {}", self.servers[current].label()),
+            };
             let make = Pick::Show(current, Action::CreateSession(Some(name)));
             row(&label, None, None, make)
         }));
 
-        let mut picked = None;
+        let (mut picked, mut pointed) = (None, None);
         let top = ctx.content_rect().center_top() + egui::vec2(0.0, 56.0);
         let popup = Popup::new(id(), ctx.clone(), top, egui::LayerId::background())
             .open_memory(None)
@@ -151,7 +166,10 @@ impl App {
             // The field is the head of the list, with a line under it and none
             // around it: nothing else here could be taking what is typed.
             let field = egui::TextEdit::singleline(&mut self.filter)
-                .hint_text("Find or create…")
+                .hint_text(match self.commands {
+                    true => "Search commands…",
+                    false => "Search sessions and tabs, or name a new session…",
+                })
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
                 .desired_width(f32::INFINITY);
             let field = ui.add(field);
@@ -163,11 +181,14 @@ impl App {
             if !field.has_focus() {
                 field.request_focus();
             }
-            // It opens at the session on show, and what is typed starts it afresh.
+            // What is typed starts it afresh.
             if field.changed() {
                 self.cursor = Some(0);
             }
-            let at = self.cursor.unwrap_or(shown).saturating_add_signed(step);
+            // It opens from the top, whatever it was scrolled to when last open.
+            let fresh = self.cursor.is_none();
+            let moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO);
+            let at = self.cursor.unwrap_or(back.unwrap_or(shown)).saturating_add_signed(step);
             let at = at.min(rows.len().saturating_sub(1));
             self.cursor = Some(at);
             let mut row = |ui: &mut egui::Ui, index: usize, row: &Row| {
@@ -182,8 +203,13 @@ impl App {
                     ..Default::default()
                 };
                 let (response, _) = item(ui, Vec2::new(ui.available_width(), 32.0), entry);
-                if index == at && step != 0 {
+                if index == at && (step != 0 || fresh) {
                     response.scroll_to_me(None);
+                }
+                // The pointer picks out the row it moves onto, as the arrows do:
+                // one row is lit, and Enter takes that one.
+                if moved && response.hovered() {
+                    pointed = Some(index);
                 }
                 if response.clicked() || (index == at && enter) {
                     picked = Some(index);
@@ -191,12 +217,17 @@ impl App {
             };
             // No taller than the window has room for beneath it.
             let room = ui.ctx().content_rect().height() - 140.0;
-            let list = egui::ScrollArea::vertical().max_height(room.clamp(96.0, 420.0));
+            // And no shorter than what it lists, where that is less.
+            let room = room.clamp(96.0, 420.0);
+            let mut list = egui::ScrollArea::vertical().max_height(room).min_scrolled_height(room);
+            if fresh {
+                list = list.vertical_scroll_offset(0.0);
+            }
             list.show(ui, |ui| {
                 let mut listed = rows.iter().enumerate().peekable();
                 for (server, view) in views.iter().enumerate() {
                     // A session made on a server takes the name typed, too.
-                    if self.heading(ui, server, view) {
+                    if places && self.heading(ui, server, view) {
                         self.open(server, Action::CreateSession(named.clone()));
                         Popup::close_id(ui.ctx(), id());
                     }
@@ -214,6 +245,7 @@ impl App {
                 }
             });
         });
+        self.cursor = pointed.or(self.cursor);
         let Some(row) = picked.map(|picked| rows.swap_remove(picked)) else {
             return;
         };

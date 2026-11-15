@@ -7,8 +7,8 @@
 //! each answer is dealt with when it comes.
 use crate::{
     model::{
-        self, Action, Activity, Border, Direction, Division, Edit, Host, Pane, Session, View, Wait,
-        Window,
+        self, Action, Activity, Border, Direction, Division, Edit, Host, Pane, Session, Tab, View,
+        Wait,
     },
     notify::Herald,
     program::Program,
@@ -43,7 +43,6 @@ const TERMINAL: &str = "com.superlogical.terminal";
 const TITLE: &str = "com.superlogical.terminal.title";
 const PROCESS: &str = "com.superlogical.terminal.process";
 const STATUS: &str = "com.superlogical.terminal.program_status";
-const FOLDER: &str = "com.superlogical.terminal.pwd";
 const THEME: &str = "com.superlogical.terminal.set_theme";
 const COPIED: &str = "com.superlogical.terminal.clipboard_read";
 /// How many tabs are kept fed at once, the one on show among them.
@@ -87,6 +86,8 @@ impl State {
     fn rest(&mut self, pane: &str) {
         let terminal = self.terminals.remove(pane);
         let drawn = terminal.filter(|terminal| terminal.latest().is_some());
+        // Its last screen is what it came to, though its pane was out of sight.
+        drawn.iter().for_each(|terminal| terminal.show(true));
         let kept = self.last.entry(pane.into()).or_default();
         if drawn.is_some() {
             *kept = drawn;
@@ -112,6 +113,7 @@ impl Shared {
         self.change(|s| {
             s.view.status = message.into();
             s.view.connected = connected;
+            s.view.retrying = false;
         });
     }
     fn fail(&self, error: String) {
@@ -217,26 +219,24 @@ impl Client {
         }
         // The session and the tab this asks to be shown, where it says which.
         let shown = match &action {
-            Action::SelectSession(session) | Action::CreateWindow(session) => {
+            Action::SelectSession(session) | Action::CreateTab(session) => {
                 Some((session.clone(), None))
             }
-            Action::SelectWindow { session, window } => {
-                Some((session.clone(), Some(window.clone())))
-            }
+            Action::SelectTab { session, tab } => Some((session.clone(), Some(tab.clone()))),
             _ => None,
         };
-        let making = matches!(action, Action::CreateSession(_) | Action::CreateWindow(_));
+        let making = matches!(action, Action::CreateSession(_) | Action::CreateTab(_));
         self.actions.try_send(action).map_err(|e| format!("Input not sent: {e}"))?;
         if shown.is_some() || making {
             state.awaited = making;
         }
         // Show it at once. The server is told, and need not answer for that.
         let view = &mut state.view;
-        if let Some((id, window)) = shown
+        if let Some((id, tab)) = shown
             && view.sessions.iter().any(|session| session.id == id)
         {
-            if window.is_some() || view.selected_session.as_ref() != Some(&id) {
-                view.selected_window = window;
+            if tab.is_some() || view.selected_session.as_ref() != Some(&id) {
+                view.selected_tab = tab;
             }
             view.selected_session = Some(id);
             view.settle();
@@ -258,7 +258,7 @@ impl Client {
         let mut state = self.shared.lock();
         state.awaited = false;
         state.view.selected_session = None;
-        state.view.selected_window = None;
+        state.view.selected_tab = None;
         // Even with nothing on show: it may be in a session still, to be left.
         if state.view.connected {
             let _ = self.actions.try_send(Action::Leave);
@@ -344,10 +344,10 @@ async fn run(
                 pane.owner = false;
             }
             s.view.connected = false;
-            s.view.status = match (result, delay) {
-                (Ok(()), _) => "Reconnecting…".into(),
-                (Err(error), Some(_)) => format!("Disconnected: {error:#} · retrying"),
-                (Err(error), None) => format!("Disconnected: {error:#}"),
+            s.view.retrying = result.is_err() && delay.is_some();
+            s.view.status = match result {
+                Ok(()) => "Reconnecting…".into(),
+                Err(error) => format!("{error:#}"),
             };
         });
         while actions.try_recv().is_ok() {} // Commands belong to the failed connection.
@@ -490,8 +490,7 @@ enum Reply {
     Performed(Option<(String, String)>),
     /// The view of that session as the server left it.
     Moved(String, String),
-    /// A terminal's title, its processes, what its programs report and the
-    /// directory it is in, in a list.
+    /// A terminal's title, its processes and what its programs report, in a list.
     /// `known` says an earlier connection knew the terminal.
     Learned {
         block: String,
@@ -556,10 +555,10 @@ struct Connection<'a> {
     /// that came before the answers, which may be older than it, to be taken in
     /// after them.
     asking: HashMap<String, Option<Vec<News>>>,
-    /// The hash of the host list held.
-    hosts: String,
-    /// The hash of the configuration that the keymap held came of.
-    keys: String,
+    /// The hash of the host list held, and of the configuration that the keymap
+    /// held came of.
+    hosts_hash: String,
+    keymap_hash: String,
     /// The session that a request to join or to leave is on its way for.
     joining: Option<String>,
     /// A session this client has made, or a tab of a session: shown once it is
@@ -595,9 +594,13 @@ struct Block {
     /// what is in its foreground. Where they are one, the shell is at its prompt.
     shell: Option<u64>,
     foreground: Option<u64>,
-    /// That shell's name, and the directory it is in, if the server says.
+    /// That shell's name.
     prompt: String,
+    /// What is in its foreground goes by this, and is in this directory, as far
+    /// as the server can tell. `home` is the directory its user starts in.
+    running: String,
     folder: String,
+    home: String,
     /// How far along a program in it says it is, by the terminal's own means.
     progress: Option<u8>,
     /// What its programs report of themselves, each record by its name. The
@@ -620,11 +623,21 @@ impl Block {
         Some(model::line(word, message))
     }
 
+    /// Take in what is now in its foreground. A process whose directory cannot
+    /// be read, as another user's cannot, leaves the one last known.
+    fn run(&mut self, running: wire::Running) {
+        (self.process, self.foreground, self.running) =
+            (running.program, running.pid, running.name);
+        if let Some(folder) = running.folder {
+            self.folder = folder;
+        }
+    }
+
     /// Take in news of it.
     fn note(&mut self, news: News) {
         match news {
             News::Title(title) => self.title = title,
-            News::Program { program, pid } => (self.process, self.foreground) = (program, pid),
+            News::Program(running) => self.run(running),
             News::Status(records) => {
                 for (id, record) in records {
                     match record {
@@ -633,7 +646,6 @@ impl Block {
                     };
                 }
             }
-            News::Folder(folder) => self.folder = folder,
             News::Progress(progress) => self.progress = progress,
             // News of a moment, which changes nothing that is kept.
             News::Copied { .. } | News::Bell | News::Notice { .. } => {}
@@ -702,8 +714,8 @@ impl<'a> Connection<'a> {
             replies: FuturesUnordered::new(),
             views,
             asking: HashMap::new(),
-            hosts: String::new(),
-            keys: String::new(),
+            hosts_hash: String::new(),
+            keymap_hash: String::new(),
             joining: None,
             making: None,
             made: None,
@@ -748,7 +760,7 @@ impl<'a> Connection<'a> {
 
     /// Ask it several things, to be answered together: by a list, with nothing in
     /// the place of what it would not say.
-    async fn ask_all(&mut self, reply: Reply, requests: [(&str, Value); 4]) {
+    async fn ask_all(&mut self, reply: Reply, requests: [(&str, Value); 3]) {
         let mut responses = Vec::new();
         for (method, payload) in requests {
             let Ok(response) = self.rpc.enqueue(method, payload).await else {
@@ -784,7 +796,7 @@ impl<'a> Connection<'a> {
             return;
         }
         let mut terminals = Vec::new();
-        let windows = parse_windows(view, &self.client_id, &mut terminals);
+        let tabs = parse_tabs(view, &self.client_id, &mut terminals);
         // Terminals that have left it are forgotten, and those not seen before on
         // this connection asked about: news of them may have been missed. There is
         // no asking all of it at once, nor of several terminals.
@@ -796,7 +808,7 @@ impl<'a> Connection<'a> {
             self.link.blocks.entry(id.clone()).or_default().session = session.into();
             if !self.asking.contains_key(&id) {
                 let request = json!({"session_id": session, "block_id": id, "args": {}});
-                let asked = [TITLE, PROCESS, STATUS, FOLDER];
+                let asked = [TITLE, PROCESS, STATUS];
                 let asked = asked.map(|method| (method, request.clone()));
                 self.asking.insert(id.clone(), Some(Vec::new()));
                 let reply = Reply::Learned { block: id, known };
@@ -807,7 +819,7 @@ impl<'a> Connection<'a> {
             if let Some(held) = s.view.sessions.iter_mut().find(|held| held.id == session) {
                 held.name = label(view["label"].as_str(), "Untitled");
                 held.active = view["active_window_id"].as_str().map(str::to_owned);
-                held.windows = windows;
+                held.tabs = tabs;
             }
             fill(&mut s.view.sessions, &self.link.blocks);
         });
@@ -818,13 +830,13 @@ impl<'a> Connection<'a> {
         match event {
             Event::Viewed { session, revision } => return self.want(&session, revision).await,
             Event::Hosts { hash } => {
-                if hash != self.hosts {
+                if hash != self.hosts_hash {
                     self.ask(Reply::Hosts, "hosts.list", json!({})).await;
                 }
                 return;
             }
             Event::Keymap { hash } => {
-                if hash != self.keys {
+                if hash != self.keymap_hash {
                     self.ask_keymap().await;
                 }
                 return;
@@ -893,11 +905,11 @@ impl<'a> Connection<'a> {
                     })
                 });
                 let hosts = hosts.collect();
-                self.hosts = listed["hash"].as_str().unwrap_or_default().into();
+                self.hosts_hash = listed["hash"].as_str().unwrap_or_default().into();
                 return self.shared.change(|s| s.view.hosts = hosts);
             }
             (Reply::Keymap, Ok(keymap)) => {
-                self.keys = keymap["config"]["hash"].as_str().unwrap_or_default().into();
+                self.keymap_hash = keymap["config"]["hash"].as_str().unwrap_or_default().into();
                 return self.shared.change(|s| s.view.keymap = Some(Arc::new(keymap)));
             }
             // This client's own keys go on as they are.
@@ -939,17 +951,16 @@ impl<'a> Connection<'a> {
                     return;
                 };
                 let said = answer.unwrap_or_default();
-                let [title, process, status, folder] = [0, 1, 2, 3].map(|at| &said[at]);
+                let [title, process, status] = [0, 1, 2].map(|at| &said[at]);
                 let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
                 // How a terminal stood when first seen is not news. How one that the
                 // last connection knew has changed since that was lost is.
                 return self.note(&block, known, |terminal| {
                     terminal.title = text(&title["title"]);
-                    terminal.process = wire::program(&process["foreground"]);
                     terminal.shell = wire::shell(&process["child"]);
                     terminal.prompt = text(&process["child"]["name"]);
-                    terminal.folder = text(&folder["pwd"]);
-                    terminal.foreground = process["foreground"]["pid"].as_u64();
+                    terminal.home = text(&process["home"]);
+                    terminal.run(wire::running(&process["foreground"]));
                     let records = items(&status["records"]);
                     terminal.records =
                         records.map(|record| (text(&record["id"]), record.clone())).collect();
@@ -1036,18 +1047,19 @@ impl<'a> Connection<'a> {
             let State { view, awaited, .. } = &mut *state;
             let listed = |(session, tab): &mut (String, Option<String>)| {
                 let has = |held: &Session| {
-                    tab.as_ref().is_none_or(|tab| held.windows.iter().any(|w| &w.id == tab))
+                    tab.as_ref().is_none_or(|tab| held.tabs.iter().any(|w| &w.id == tab))
                 };
                 view.sessions.iter().any(|held| held.id == *session && has(held))
             };
             if let Some((session, tab)) = self.making.take_if(listed)
                 && *awaited
             {
-                (view.selected_session, view.selected_window) = (Some(session), tab);
+                (view.selected_session, view.selected_tab) = (Some(session), tab);
             }
             view.settle();
-            let seen =
-                |id: &String| view.tabs().any(|(_, tab)| tab.panes.iter().any(|p| &p.id == id));
+            let seen = |id: &String| {
+                view.every_tab().any(|(_, tab)| tab.panes.iter().any(|p| &p.id == id))
+            };
             if let Some(made) = self.made.take_if(|made| seen(made)) {
                 view.made = Some(made);
             }
@@ -1097,7 +1109,7 @@ impl<'a> Connection<'a> {
             let mut state = self.shared.lock();
             let view = &state.view;
             // Only a session this connection has joined can be streamed.
-            let tab = view.current_window().map(|tab| tab.id.clone());
+            let tab = view.current_tab().map(|tab| tab.id.clone());
             let shown = view.selected_session.clone().zip(tab);
             let shown = shown.filter(|(session, _)| self.joined(session));
             if let Some(shown) = &shown {
@@ -1107,16 +1119,15 @@ impl<'a> Connection<'a> {
             // A tab that has closed is kept no more, nor one of a session left.
             let attached = &self.link.attached;
             let open = |session: &String, tab: &String| {
-                let there =
-                    |(held, window): (&Session, &Window)| held.id == *session && window.id == *tab;
-                attached.contains(session) && view.tabs().any(there)
+                let there = |(held, open): (&Session, &Tab)| held.id == *session && open.id == *tab;
+                attached.contains(session) && view.every_tab().any(there)
             };
             self.warm.retain(|(session, tab)| open(session, tab));
             self.warm.truncate(WARM);
             // Each terminal of theirs, with its session, whether it is on show,
             // and whether it is this client's.
             let mut kept = HashMap::new();
-            for (session, tab) in view.tabs() {
+            for (session, tab) in view.every_tab() {
                 let held = (session.id.clone(), tab.id.clone());
                 if self.warm.contains(&held) {
                     let on_show = shown.as_ref() == Some(&held);
@@ -1158,7 +1169,12 @@ impl<'a> Connection<'a> {
         let mut others = Vec::new();
         for (pane, (session, on_show, owner)) in kept {
             match self.streams.get(&pane) {
-                Some((_, shown)) => shown.store(on_show, Ordering::Relaxed),
+                Some((_, shown)) => {
+                    shown.store(on_show, Ordering::Relaxed);
+                    if let Some(terminal) = self.shared.terminal(&pane) {
+                        terminal.show(on_show);
+                    }
+                }
                 None => {
                     // Its colours are this client's while the terminal is: the
                     // server takes them up whenever this client comes to own it.
@@ -1234,9 +1250,10 @@ impl<'a> Connection<'a> {
     /// else that goes on here, which does not wait for it. A later copy takes the
     /// place of one still being asked for.
     fn copied(&mut self, pane: String, text: Option<String>, id: u64) {
-        let shown = |(_, shown): &(JoinHandle<()>, Arc<AtomicBool>)| shown.load(Ordering::Relaxed);
-        let shown = |_: &&Block| self.streams.get(&pane).is_some_and(shown);
-        let Some(block) = self.link.blocks.get(&pane).filter(shown) else {
+        let on_show =
+            |(_, shown): &(JoinHandle<()>, Arc<AtomicBool>)| shown.load(Ordering::Relaxed);
+        let on_show = self.streams.get(&pane).is_some_and(on_show);
+        let Some(block) = self.link.blocks.get(&pane).filter(|_| on_show) else {
             return;
         };
         let (rpc, shared, session) = (self.rpc.clone(), self.shared.clone(), block.session.clone());
@@ -1275,7 +1292,7 @@ impl<'a> Connection<'a> {
     async fn agree(&mut self) -> Option<(String, String)> {
         let (session, tab, agreed) = {
             let state = self.shared.lock();
-            let (session, tab) = (state.view.session()?, state.view.selected_window.clone()?);
+            let (session, tab) = (state.view.session()?, state.view.selected_tab.clone()?);
             (session.id.clone(), tab.clone(), session.active.as_ref() == Some(&tab))
         };
         if !agreed && self.joined(&session) {
@@ -1284,6 +1301,21 @@ impl<'a> Connection<'a> {
             self.ask(reply, "session.focus_window", request).await;
         }
         Some((session, tab))
+    }
+
+    /// A new shell, as a layout asks for one. It starts in the directory that
+    /// the pane it is made `from` is in, where the server knows that, and in
+    /// this client's colours: it need not start in others and then change.
+    fn shell(&self, from: Option<&str>) -> Value {
+        let mut options = json!({});
+        let block = from.and_then(|pane| self.link.blocks.get(pane));
+        if let Some(block) = block.filter(|block| !block.folder.is_empty()) {
+            options["cwd"] = json!(block.folder);
+        }
+        if let Some(theme) = &self.link.theme {
+            options["theme"] = theme.clone();
+        }
+        json!({"block": {"flavor": "com.superlogical.terminal.shell", "options": options}})
     }
 
     /// The session that holds a pane, which is the one to name in asking anything
@@ -1305,22 +1337,33 @@ impl<'a> Connection<'a> {
                 return Ok(());
             }
             Action::CreateSession(name) => {
-                let mut payload = json!({"initial_windows": [{"layout": shell()}]});
+                let mut payload = json!({"initial_windows": [{"layout": self.shell(None)}]});
                 if let Some(name) = name {
                     payload["label"] = json!(name);
                 }
                 (String::new(), "session.create", payload, None)
             }
-            Action::SelectWindow { session, window } => {
-                let payload = json!({"window_id": window});
+            Action::SelectTab { session, tab } => {
+                let payload = json!({"window_id": tab});
                 (session, "session.focus_window", payload, None)
             }
-            Action::CreateWindow(session) => {
-                let payload = json!({"layout": shell(), "focus": true});
+            Action::CreateTab(session) => {
+                // It starts where the pane with the keyboard is, in the tab of that
+                // session that this window shows, or else the server.
+                let from = {
+                    let state = self.shared.lock();
+                    let held = state.view.sessions.iter().find(|held| held.id == session);
+                    let tabs = || held.into_iter().flat_map(|held| &held.tabs);
+                    let tab = |id: Option<&String>| tabs().find(|tab| Some(&tab.id) == id);
+                    let shown = tab(state.view.selected_tab.as_ref());
+                    let shown = shown.or_else(|| tab(held?.active.as_ref()));
+                    shown.and_then(Tab::front).map(|pane| pane.id.clone())
+                };
+                let payload = json!({"layout": self.shell(from.as_deref()), "focus": true});
                 (session, "session.new_window", payload, None)
             }
-            Action::Edit { session, window, edit } => {
-                let (method, mut payload) = match (edit, window.is_some()) {
+            Action::Edit { session, tab, edit } => {
+                let (method, mut payload) = match (edit, tab.is_some()) {
                     (Edit::Rename(name), true) => {
                         ("session.set_window_label", json!({"label": name}))
                     }
@@ -1334,23 +1377,30 @@ impl<'a> Connection<'a> {
                     (Edit::Close, true) => ("session.close_window", json!({})),
                     (Edit::Close, false) => ("session.destroy", json!({})),
                 };
-                if let Some(window) = window {
-                    payload["window_id"] = json!(window);
+                if let Some(tab) = tab {
+                    payload["window_id"] = json!(tab);
                 }
                 (session, method, payload, None)
             }
             Action::Split { pane, direction } => {
+                let (direction, side) = match direction {
+                    Direction::Left => ("horizontal", "before"),
+                    Direction::Right => ("horizontal", "after"),
+                    Direction::Up => ("vertical", "before"),
+                    Direction::Down => ("vertical", "after"),
+                };
                 let payload = json!({
                     "anchor_id": pane,
-                    "direction": match direction {
-                        Direction::Right => "horizontal",
-                        Direction::Down => "vertical",
-                    },
-                    "side": "after",
-                    "layout": shell(),
+                    "direction": direction,
+                    "side": side,
+                    "layout": self.shell(Some(&pane)),
                     "focus": true,
                 });
                 (self.session(&pane)?, "session.new_split", payload, None)
+            }
+            Action::Swap { pane, with } => {
+                let payload = json!({"block_id": pane, "other_block_id": with});
+                (self.session(&pane)?, "session.swap_blocks", payload, None)
             }
             Action::Divide(borders) => {
                 let request = |border: &Division| {
@@ -1572,7 +1622,7 @@ async fn copy(rpc: &Rpc, session: &str, pane: &str, id: u64) -> Result<String> {
 
 /// Keep one pane's terminal fed for as long as its tab is kept so, restoring a
 /// fresh snapshot whenever its stream fails: soon at first, and seldom if it
-/// keeps failing. Only while it is `shown` does what it draws wake the window.
+/// keeps failing. Only while it is `shown` does it draw, and wake the window.
 async fn stream_pane(
     target: wire::Target,
     rpc: Rpc,
@@ -1631,14 +1681,14 @@ async fn stream(
     // stops while its terminal is quiet would otherwise go unnoticed here, and
     // its pane take no input, until the next output came.
     let (wake, drawn) = (shared.wake.clone(), Arc::new(tokio::sync::Notify::new()));
-    let (said, shown) = (drawn.clone(), shown.clone());
+    let (said, seen) = (drawn.clone(), shown.clone());
     let repaint = move || {
-        if shown.load(Ordering::Relaxed) {
+        if seen.load(Ordering::Relaxed) {
             wake.notify();
         }
         said.notify_one();
     };
-    let terminal = TerminalHandle::new(nonce, Arc::new(repaint))?;
+    let terminal = TerminalHandle::new(nonce, Arc::new(repaint), shown.load(Ordering::Relaxed))?;
     shared.change(|s| {
         s.terminals.insert(pane.into(), terminal.clone());
         s.last.remove(pane);
@@ -1750,13 +1800,13 @@ fn layout(node: &Value, panes: &mut Vec<(String, [f32; 4])>, borders: &mut Vec<B
 }
 
 /// The tabs of a view. The panes of them that are terminals are named in `terminals`.
-fn parse_windows(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> Vec<Window> {
+fn parse_tabs(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> Vec<Tab> {
     items(&view["windows"])
-        .filter_map(|window| {
-            let id: String = window["window_id"].as_str()?.into();
-            let zoom = window["zoomed_block_id"].as_str();
+        .filter_map(|tab| {
+            let id: String = tab["window_id"].as_str()?.into();
+            let zoom = tab["zoomed_block_id"].as_str();
             let (mut panes, mut hidden, mut borders) = (Vec::new(), Vec::new(), Vec::new());
-            for layer in items(&window["layers"]) {
+            for layer in items(&tab["layers"]) {
                 let (mut placed, mut split) = (Vec::new(), Vec::new());
                 layout(&layer["layout"], &mut placed, &mut split);
                 // Only the layer that fills the tab has borders to drag, while its
@@ -1808,13 +1858,13 @@ fn parse_windows(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> 
                 }
             }
             // A tab nobody named is labelled by the server with the end of its ID.
-            let label = window["label"].as_str().filter(|label| {
+            let label = tab["label"].as_str().filter(|label| {
                 let unnamed = label.strip_prefix("Window ");
                 !label.is_empty() && !unnamed.is_some_and(|tail| id.ends_with(tail))
             });
-            Some(Window {
+            Some(Tab {
                 label: label.map(str::to_owned),
-                focus: window["focused_block_id"].as_str().map(str::to_owned),
+                focus: tab["focused_block_id"].as_str().map(str::to_owned),
                 zoomed: zoom.is_some(),
                 id,
                 panes,
@@ -1859,18 +1909,21 @@ fn reported<'a>(
 
 /// Give every pane what is known of its terminal.
 fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
-    let windows = sessions.iter_mut().flat_map(|s| &mut s.windows);
-    for pane in windows.flat_map(Window::every_mut) {
+    let tabs = sessions.iter_mut().flat_map(|s| &mut s.tabs);
+    for pane in tabs.flat_map(Tab::every_mut) {
         if let Some(block) = blocks.get(&pane.id) {
             pane.idle = block.shell.is_some() && block.shell == block.foreground;
             // At its shell's prompt it goes by the shell and where that is: the
             // title a prompt sets tells who is at what machine first, and at
-            // length. One with no title goes by its label.
+            // length. A program that gives itself no title goes by its own name,
+            // and a terminal of which nothing is known by its label.
             if pane.idle && !block.folder.is_empty() {
-                let named = format!("{} {}", block.prompt, model::folder(&block.folder));
-                named.trim_start().clone_into(&mut pane.title);
+                let folder = model::folder(&block.folder, &block.home);
+                format!("{} {folder}", block.prompt).trim_start().clone_into(&mut pane.title);
             } else if !block.title.is_empty() {
                 pane.title.clone_from(&block.title);
+            } else if !block.running.is_empty() {
+                pane.title.clone_from(&block.running);
             } else {
                 pane.title.clone_from(&pane.label);
             }
@@ -1962,10 +2015,6 @@ fn unshifted(key: &str, code: &str, shift: bool) -> u32 {
     unshifted.map_or(0, u32::from)
 }
 
-fn shell() -> Value {
-    json!({"block": {"flavor": "com.superlogical.terminal.shell"}})
-}
-
 /// The connectivity probe that `--probe` runs. It makes no session and sends no
 /// input, but it is a client like any other: it joins the first session, as a
 /// window does, and asks there for the panes that no other client has.
@@ -1980,11 +2029,11 @@ pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
             continue;
         }
         let frames = view.panes().filter(|p| p.frame.is_some()).count();
-        if view.connected && (view.windows().is_empty() || frames > 0) {
+        if view.connected && (view.tabs().is_empty() || frames > 0) {
             return Ok(format!(
                 "Connected; {} sessions, {} tabs, {} decoded terminal frames",
                 view.sessions.len(),
-                view.windows().len(),
+                view.tabs().len(),
                 frames
             ));
         }
@@ -1997,7 +2046,7 @@ pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
         ensure!(
             started.elapsed() < timeout,
             "Probe timed out: {} · {}",
-            view.status,
+            view.trouble(),
             pane_statuses
         );
         std::thread::sleep(Duration::from_millis(25));

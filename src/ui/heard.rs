@@ -35,9 +35,9 @@ impl App {
         let news = self.herald.news();
         let mut open = 0;
         for (server, view) in views.iter_mut().enumerate() {
-            let shown = view.current_window().map(|tab| tab.id.clone());
+            let shown = view.current_tab().map(|tab| tab.id.clone());
             let shown = shown.filter(|_| watching && server == self.current);
-            let tabs = view.sessions.iter_mut().flat_map(|s| &mut s.windows);
+            let tabs = view.sessions.iter_mut().flat_map(|s| &mut s.tabs);
             for tab in tabs {
                 let shown = shown.as_ref() == Some(&tab.id);
                 let muted = self.remembered.kept.muted.contains(&tab.id);

@@ -44,3 +44,12 @@ fn a_touchpad_moves_as_far_as_it_says_and_keeps_what_is_left() {
     let parts = [0.5, 0.5].map(|by| steps(Wheel::History, Line, by, &mut rest));
     assert_eq!((parts, rest), ([-1, -2], 0.0));
 }
+
+#[test]
+fn only_the_buttons_rex_names_are_a_programs() {
+    use egui::PointerButton::{Extra1, Extra2, Middle, Primary, Secondary};
+    let named = [Primary, Secondary, Middle].map(mouse_button);
+    assert_eq!(named, [Some("left"), Some("right"), Some("middle")]);
+    // Those at a mouse's side are no left click.
+    assert_eq!([Extra1, Extra2].map(mouse_button), [None, None]);
+}

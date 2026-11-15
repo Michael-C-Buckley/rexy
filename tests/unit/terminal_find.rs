@@ -55,6 +55,23 @@ fn text_is_found_through_all_of_history_and_its_matches_walked() {
 }
 
 #[test]
+fn a_match_is_shown_clear_of_the_field_that_looks_for_it() {
+    let mut terminal = terminal(20, 12);
+    for line in 0..100 {
+        terminal.vt_write(format!("line {line}\r\n").as_bytes());
+    }
+    let mut finding = Finding::default();
+    let shown = |terminal: &Terminal<'static, '_>| {
+        render(terminal).selected.iter().position(Option::is_some)
+    };
+    find(&mut finding, &mut terminal, "line 50");
+    assert_eq!(shown(&terminal), Some(4));
+    // With no history above it to show, it stays where it is.
+    find(&mut finding, &mut terminal, "line 0");
+    assert_eq!(shown(&terminal), Some(0));
+}
+
+#[test]
 fn a_worker_finds_as_asked_and_says_how_many_in_its_frames() {
     let mut server = terminal(20, 3);
     for line in 0..500 {

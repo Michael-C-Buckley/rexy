@@ -4,7 +4,9 @@
 use anyhow::Result;
 use libghostty_vt::{
     Terminal,
+    point::Space,
     search::{Search, Status},
+    terminal::ScrollViewport,
 };
 use std::time::{Duration, Instant};
 
@@ -72,10 +74,24 @@ impl Finding {
             true => search.select_next(terminal)?,
             false => search.select_prev(terminal)?,
         };
-        if found {
-            let matches = search.snapshot(terminal)?;
-            let found = matches.selected_match()?;
-            matches.terminal().set_selection(found.as_ref())?;
+        if !found {
+            return Ok(());
+        }
+        let matches = search.snapshot(terminal)?;
+        let found = matches.selected_match()?;
+        matches.terminal().set_selection(found.as_ref())?;
+        let at = match &found {
+            Some(found) => {
+                matches.terminal().point_from_grid_ref(&found.start(), Space::Viewport)?
+            }
+            None => None,
+        };
+        // Ghostty brings it into view at the top, where the field that looks for
+        // it lies over the end of the row. It is shown a third of the way down
+        // instead, where there is history above it to show.
+        let rows = terminal.rows()?;
+        if at.is_some_and(|at| at.y < 2) && rows > 6 {
+            terminal.scroll_viewport(ScrollViewport::Delta(-(rows as isize / 3)));
         }
         Ok(())
     }

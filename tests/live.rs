@@ -1,7 +1,7 @@
 //! Run only against a disposable server, never the default personal socket.
 use rex_lite::{
     backend::Client,
-    model::{self, Action, Activity, Direction, Edit, Size, View, Wait, Window},
+    model::{self, Action, Activity, Direction, Edit, Size, Tab, View, Wait},
     notify::Herald,
     terminal::Frame,
 };
@@ -36,8 +36,8 @@ fn screen(view: &View, pane: &str) -> String {
     frame(view, pane).map(|frame| frame.text()).unwrap_or_default()
 }
 
-fn find<'a>(view: &'a View, id: &str) -> Option<&'a Window> {
-    view.windows().iter().find(|window| window.id == id)
+fn find<'a>(view: &'a View, id: &str) -> Option<&'a Tab> {
+    view.tabs().iter().find(|window| window.id == id)
 }
 
 fn send(client: &Client, action: Action) {
@@ -113,13 +113,13 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // A connection comes with every session's tabs, and with no session shown
     // unasked. A window asks for the first, of the server it shows.
     let listed = wait(&client, "a connection", |v| v.connected);
-    assert!(listed.sessions.iter().all(|s| !s.windows.is_empty()));
-    assert!(listed.selected_session.is_none() && listed.windows().is_empty());
+    assert!(listed.sessions.iter().all(|s| !s.tabs.is_empty()));
+    assert!(listed.selected_session.is_none() && listed.tabs().is_empty());
     send(&client, listed.unshown().unwrap());
     let initial = wait(&client, "initial Ghostty snapshot", drawn);
     let session = initial.selected_session.clone().unwrap();
-    let window = initial.selected_window.clone().unwrap();
-    let pane = initial.current_window().unwrap().panes[0].id.clone();
+    let window = initial.selected_tab.clone().unwrap();
+    let pane = initial.current_tab().unwrap().panes[0].id.clone();
     // The pane was made by a client that has left the server. Shown here, it
     // becomes this client's without being touched.
     let owned = |v: &View| v.pane(&pane).is_some_and(|p| p.owner);
@@ -186,6 +186,11 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
             && frame(v, &pane).is_some_and(|f| !Arc::ptr_eq(f, &old_frame))
             && screen(v, &pane).contains("rex-lite-verified")
     });
+    // A shell is known to be where it is without saying so itself, and a split
+    // starts where the pane it is made from is.
+    let at_tmp = |v: &View, pane: &str| v.pane(pane).is_some_and(|p| p.title.ends_with(" /tmp"));
+    run("cd /tmp");
+    wait(&client, "a shell's directory", |v| at_tmp(v, &pane));
     let split = Action::Split { pane: pane.clone(), direction: Direction::Right };
     send(&client, split);
     let split = wait(&client, "split layout and streams", |v| {
@@ -194,6 +199,13 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     let mut others = find(&split, &window).unwrap().panes.iter();
     let other = others.find(|p| p.id != pane).unwrap().id.clone();
+    wait(&client, "a split starting where its pane is", |v| at_tmp(v, &other));
+    // Two panes change places, and change back.
+    let first = |v: &View| find(v, &window).and_then(|w| Some(w.borders.first()?.before.clone()));
+    for (with, then) in [(&other, &other), (&other, &pane)] {
+        send(&client, Action::Swap { pane: pane.clone(), with: with.clone() });
+        wait(&client, "two panes changing places", |v| first(v).as_ref() == Some(then));
+    }
     // The border between the two moves where it is asked to, and the server gives
     // each side its share. Asked faster than the server answers, as a drag asks,
     // it comes to rest where it was last asked to go.
@@ -225,7 +237,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         send(&client, Action::Zoom { pane: pane.clone() });
         wait(&client, label, |v| {
             // One pane alone has no border to drag.
-            let shown = |w: &Window| {
+            let shown = |w: &Tab| {
                 w.panes.len() == panes && w.panes[0].id == pane && w.borders.len() == panes - 1
             };
             find(v, &window).is_some_and(|w| w.zoomed == zoomed && shown(w))
@@ -255,7 +267,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let away = json!({"session_id": session, "layer_id": layer["layer_id"], "state": "minimized"});
     call("session.set_layer_state", away);
     let tab = |v: &View, shown: usize, hidden: &[&str]| {
-        let hides = |w: &Window| w.hidden.iter().map(|p| p.id.as_str()).eq(hidden.iter().copied());
+        let hides = |w: &Tab| w.hidden.iter().map(|p| p.id.as_str()).eq(hidden.iter().copied());
         find(v, &window).is_some_and(|w| w.panes.len() == shown && hides(w))
     };
     wait(&client, "a pane put away", |v| tab(v, 2, &[&floating]));
@@ -270,23 +282,22 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     send(&client, Action::ClosePane { pane: floating });
     let closed = wait(&client, "a floating pane closed", |v| tab(v, 2, &[]));
     assert_eq!(borders(&closed), 1);
-    send(&client, Action::CreateWindow(session.clone()));
+    send(&client, Action::CreateTab(session.clone()));
     let next = wait(&client, "new tab", |v| {
-        v.windows().len() == initial.windows().len() + 1
-            && v.selected_window.as_ref() != Some(&window)
-            && v.current_window().is_some_and(|w| w.panes.iter().all(|p| p.frame.is_some()))
+        v.tabs().len() == initial.tabs().len() + 1
+            && v.selected_tab.as_ref() != Some(&window)
+            && v.current_tab().is_some_and(|w| w.panes.iter().all(|p| p.frame.is_some()))
     });
     assert_eq!(next.selected_session.as_ref(), Some(&session));
-    let show =
-        |window: &str| Action::SelectWindow { session: session.clone(), window: window.into() };
+    let show = |window: &str| Action::SelectTab { session: session.clone(), tab: window.into() };
     send(&client, show(&window));
     wait(&client, "return to existing tab", |v| {
-        v.selected_window.as_ref() == Some(&window) && screen(v, &pane).contains("paste-verified")
+        v.selected_tab.as_ref() == Some(&window) && screen(v, &pane).contains("paste-verified")
     });
 
     // A tab shown before is kept fed while it is out of sight. Going back to
     // one finds it drawn, with nothing to wait for.
-    let tab = next.selected_window.clone().unwrap();
+    let tab = next.selected_tab.clone().unwrap();
     send(&client, show(&tab));
     assert!(client.snapshot().panes().all(|pane| pane.frame.is_some()));
     send(&client, show(&window));
@@ -295,21 +306,27 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // A tab goes by its name if it has one, and otherwise by its terminal's title.
     let edit = |session: &str, window: Option<&str>, edit| Action::Edit {
         session: session.into(),
-        window: window.map(str::to_owned),
+        tab: window.map(str::to_owned),
         edit,
     };
     let rename = |name: &str| edit(&session, Some(&window), Edit::Rename(name.into()));
     send(&client, rename("Named"));
     wait(&client, "a tab renamed", |v| find(v, &window).is_some_and(|w| w.name() == "Named"));
     send(&client, rename(""));
-    // Of its panes, the one that typing goes to.
+    // Of its panes, the one that typing goes to. A program that gives itself a
+    // title goes by it, and a shell back at its prompt by its name and where
+    // it is, which the server says without the shell's help.
     send(&client, Action::FocusPane { pane: pane.clone() });
-    run("printf '\\033]2;%s\\007' Titled");
+    run("printf '\\033]2;%s\\007' Titled; sleep 2");
     wait(&client, "a tab going by its terminal's title", |v| {
         find(v, &window).is_some_and(|w| w.name() == "Titled")
     });
+    wait(&client, "a tab going by its shell and where that is", |v| {
+        at_tmp(v, &pane) && find(v, &window).is_some_and(|w| w.name().ends_with(" /tmp"))
+    });
     // Programs say what they are doing, and what they wait for or end with is
     // passed on, for whoever is not looking. The message is "Run it?" in base64.
+    let of = format!(" — {}", client.snapshot().session().unwrap().name);
     let said = |report: &str, activity, note: Option<&str>| {
         run(&format!("printf '\\033]7501;{report}\\007'"));
         wait(&client, "a program's status", |v| {
@@ -317,9 +334,10 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         });
         let heard = notes.recv_timeout(Duration::from_millis(300)).ok();
         assert_eq!(heard.as_ref().map(|note| note.body.as_str()), note);
-        assert!(
-            heard.is_none_or(|note| note.tab == window && note.summary.starts_with("Titled — "))
-        );
+        // It says which tab, and of which session.
+        let about = heard.map(|note| (note.tab == window, note.summary));
+        let placed = |(tab, summary): &(bool, String)| *tab && summary.ends_with(&of);
+        assert!(about.as_ref().is_none_or(placed), "{about:?}");
     };
     let asked = Activity::Blocked(Wait::Approval);
     let ask = "state=blocked:kind=permission:msg=UnVuIGl0Pw";
@@ -379,7 +397,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     wait(&client, "a pane closed", |v| {
         find(v, &window).is_some_and(|w| !w.split() && w.panes[0].id == pane)
     });
-    let order = |v: &View| -> Vec<String> { v.windows().iter().map(|w| w.id.clone()).collect() };
+    let order = |v: &View| -> Vec<String> { v.tabs().iter().map(|w| w.id.clone()).collect() };
     let first = Edit::MoveBefore(Some(window.clone()));
     send(&client, edit(&session, Some(&tab), first));
     wait(&client, "a tab moved first", |v| order(v).first() == Some(&tab));
@@ -396,7 +414,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // The tabs of the session left behind are still listed.
     let behind = client.snapshot();
     let behind = behind.sessions.iter().find(|s| s.id == session).unwrap();
-    assert_eq!(behind.windows.len(), initial.windows().len() + 1);
+    assert_eq!(behind.tabs.len(), initial.tabs().len() + 1);
     send(&client, edit(&second, None, Edit::Rename("Renamed".into())));
     wait(&client, "a session renamed", |v| v.session().is_some_and(|s| s.name == "Renamed"));
     let first = Edit::MoveBefore(Some(session.clone()));
@@ -409,14 +427,14 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     send(&again, opened.unshown().unwrap());
     send(&again, show(&window));
     wait(&again, "a window back where it was", |v| {
-        v.selected_window.as_ref() == Some(&window) && drawn(v)
+        v.selected_tab.as_ref() == Some(&window) && drawn(v)
     });
     drop(again);
     // Its last tab closed, a session remains, empty.
-    let only = client.snapshot().windows()[0].id.clone();
+    let only = client.snapshot().tabs()[0].id.clone();
     send(&client, edit(&second, Some(&only), Edit::Close));
     wait(&client, "a session without tabs", |v| {
-        v.selected_session.as_ref() == Some(&second) && v.windows().is_empty()
+        v.selected_session.as_ref() == Some(&second) && v.tabs().is_empty()
     });
     send(&client, edit(&second, None, Edit::Close));
     let ended = wait(&client, "a session ended", |v| {
@@ -428,10 +446,10 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     });
     // A tab of a session shown again is shown with it.
     send(&client, show(&tab));
-    wait(&client, "a tab chosen", |v| v.selected_window.as_ref() == Some(&tab));
+    wait(&client, "a tab chosen", |v| v.selected_tab.as_ref() == Some(&tab));
     send(&client, edit(&session, Some(&tab), Edit::Close));
     wait(&client, "a tab closed", |v| {
-        v.windows().len() == initial.windows().len() && v.selected_window.as_ref() == Some(&window)
+        v.tabs().len() == initial.tabs().len() && v.selected_tab.as_ref() == Some(&window)
     });
 
     // A second window on the same session takes its panes by showing it: the
@@ -468,14 +486,14 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     wait(&client, "a pane given back", owned);
     wait(&other, "another window connected again", |v| v.connected);
     assert_eq!(clients(), 1);
-    assert!(other.snapshot().windows().is_empty());
+    assert!(other.snapshot().tabs().is_empty());
     let stays_left = || {
         std::thread::sleep(Duration::from_millis(400));
         let left = other.snapshot();
-        assert!(left.connected && left.selected_session.is_none() && left.windows().is_empty());
+        assert!(left.connected && left.selected_session.is_none() && left.tabs().is_empty());
     };
     // It stays left when the server next reports a change.
-    send(&client, Action::CreateWindow(session.clone()));
+    send(&client, Action::CreateTab(session.clone()));
     send(&client, show(&window));
     stays_left();
     // And when it left before the server had done what it was last asked.
@@ -547,7 +565,7 @@ fn live_keymap_actions_and_requests() {
     send(&client, client.snapshot().unshown().unwrap());
     let shown = wait(&client, "a terminal", drawn);
     let session = shown.selected_session.clone().unwrap();
-    let pane = shown.current_window().unwrap().panes[0].id.clone();
+    let pane = shown.current_tab().unwrap().panes[0].id.clone();
     let clients = call("client.list", json!({})).unwrap();
     let me = list(&clients["clients"]).into_iter();
     let me = me.filter(|c| c["info"]["name"] == "Rex Lite").map(|c| c["client_id"].clone());
@@ -590,7 +608,7 @@ fn live_keymap_actions_and_requests() {
     let made = json!({"session_id": session, "layout": shell, "focus": false});
     let other = call("session.new_window", made).unwrap();
     let other = other["window_id"].as_str().unwrap().to_owned();
-    let first = shown.selected_window.clone().unwrap();
+    let first = shown.selected_tab.clone().unwrap();
     let go = |name: &str, tab: &str| {
         format!(
             r#"rex.action{{ name = "{name}", title = "{name}", run = function(ctx, args)
@@ -684,7 +702,7 @@ fn live_keymap_actions_and_requests() {
 
     // The tab on show is the window's own: another client that has the server
     // show the other tab does not move it.
-    let tab = |v: &View| v.selected_window.clone().unwrap();
+    let tab = |v: &View| v.selected_tab.clone().unwrap();
     call("session.focus_window", json!({"session_id": session, "window_id": other})).unwrap();
     std::thread::sleep(Duration::from_millis(400));
     assert_eq!(tab(&client.snapshot()), first);

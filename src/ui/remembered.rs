@@ -78,8 +78,8 @@ impl Kept {
     fn place(&self, server: &str, view: &View) -> Option<Action> {
         let [session, tab] = self.shown.get(server)?.clone();
         let held = view.sessions.iter().find(|held| held.id == session)?;
-        Some(match held.windows.iter().any(|held| held.id == tab) {
-            true => Action::SelectWindow { session, window: tab },
+        Some(match held.tabs.iter().any(|held| held.id == tab) {
+            true => Action::SelectTab { session, tab },
             false => Action::SelectSession(session),
         })
     }
@@ -164,7 +164,7 @@ impl App {
         let address = self.servers[self.current].host.endpoints.first();
         if let Some((address, session)) = address.zip(view.selected_session.as_ref()) {
             // A session may have no tab.
-            let tab = view.selected_window.as_deref().unwrap_or_default();
+            let tab = view.selected_tab.as_deref().unwrap_or_default();
             let same = |[held, shown]: &[String; 2]| held == session && shown == tab;
             if !kept.shown.get(address).is_some_and(same) {
                 let place = [session.clone(), tab.to_owned()];

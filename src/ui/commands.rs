@@ -14,7 +14,7 @@ use super::{
     style::{Icon, icon_button},
 };
 use crate::{
-    model::{Action, Direction, Edit, View, Window},
+    model::{Action, Direction, Edit, Tab, View},
     terminal::{Request, Scroll},
 };
 
@@ -64,8 +64,14 @@ pub const COMMANDS: &[Command] = &[
     ("client.tab.goto", "Go to Tab", ONCE),
     ("client.tab.move.backward", "Move Tab Backward", ONCE),
     ("client.tab.move.forward", "Move Tab Forward", ONCE),
+    ("pane.split.left", "Split Pane Left", ONCE),
     ("pane.split.right", "Split Pane Right", ONCE),
+    ("pane.split.up", "Split Pane Up", ONCE),
     ("pane.split.down", "Split Pane Down", ONCE),
+    ("pane.move.left", "Move Pane Left", ONCE),
+    ("pane.move.right", "Move Pane Right", ONCE),
+    ("pane.move.up", "Move Pane Up", ONCE),
+    ("pane.move.down", "Move Pane Down", ONCE),
     ("pane.focus.left", "Focus Pane Left", HELD),
     ("pane.focus.right", "Focus Pane Right", HELD),
     ("pane.focus.up", "Focus Pane Up", HELD),
@@ -96,7 +102,7 @@ pub const COMMANDS: &[Command] = &[
     ("client.font.decrease", "Decrease Font Size", HELD),
     ("client.font.reset", "Reset Font Size", ONCE),
     ("client.sidebar.toggle", "Toggle Sidebar", ONCE),
-    ("client.sidebar.activity.toggle", "Show What Is at Work", ONCE),
+    ("client.sidebar.activity.toggle", "Show Activity", ONCE),
     ("client.palette.toggle", "Command Palette…", ONCE),
     // Rex has no name for this either. Its own app keeps it among its settings.
     (REMOTE, "Toggle Remote Control", ONCE),
@@ -107,8 +113,9 @@ pub const COMMANDS: &[Command] = &[
 
 /// The actions Rex also knows by one name for every direction, which is then
 /// among their arguments.
-const DIRECTED: [Command; 4] = [
+const DIRECTED: [Command; 5] = [
     ("pane.split", "Split Pane", ONCE),
+    ("pane.move", "Move Pane", ONCE),
     ("pane.focus", "Focus Pane", ONCE),
     ("pane.resize", "Resize Pane", HELD),
     ("client.tab.move", "Move Tab", ONCE),
@@ -119,7 +126,7 @@ const DIRECTED: [Command; 4] = [
 /// programs. Of several for one action the last is tried first, and is the one shown.
 pub(super) const KEYS: &[(&str, &str)] = &[
     ("ctrl+shift+n", "session.new"),
-    ("ctrl+k", "session.switch"),
+    ("ctrl+shift+k", "session.switch"),
     ("ctrl+shift+t", "client.tab.new"),
     ("ctrl+pagedown", "client.tab.next"),
     ("ctrl+tab", "client.tab.next"),
@@ -222,20 +229,22 @@ pub fn request() -> Value {
 
 /// What doing a command comes to.
 pub(super) enum Deed {
-    /// Asking it of the server.
-    Ask(Action),
+    /// Something for the server to do.
+    Server(Action),
     /// Taking the keyboard to a pane.
     Focus(String),
     Font(f32),
     Sidebar,
     /// Turning the sidebar to the list of what is at work, or back.
     Agents,
-    Palette,
+    /// Opening the palette, or putting it away: on what can be done, or else
+    /// on the sessions and the tabs.
+    Palette(bool),
     /// Letting a server's other clients have this window do things, or no longer.
     Remote,
-    /// Asking something of a pane's own terminal, which no server is told of:
+    /// Something for a pane's own terminal to do, which no server is told of:
     /// about what is selected or looked for in it, or to move through its history.
-    Tell(String, Request),
+    Terminal(String, Request),
     /// Opening the field that finds text in a pane.
     Find(String),
     /// Pasting what the desktop's clipboard holds into a pane.
@@ -295,22 +304,22 @@ impl Standing<'_> {
         // The next of some things or the one before, round and round.
         let on = name.ends_with("next");
         let round = |at: usize, of: usize| (at + if on { 1 } else { of - 1 }) % of;
-        let (tab, tabs) = (view.current_window(), view.windows());
-        let at = tabs.iter().position(|tab| Some(&tab.id) == view.selected_window.as_ref());
+        let (tab, tabs) = (view.current_tab(), view.tabs());
+        let at = tabs.iter().position(|tab| Some(&tab.id) == view.selected_tab.as_ref());
         let pane = pane.or(self.focused);
         let pane = pane.and_then(|id| tab?.panes.iter().find(|pane| pane.id == id));
         // What the pane shows, once its terminal has drawn.
         let frame = pane.and_then(|pane| pane.frame.as_ref());
         let session = || view.selected_session.clone();
         let show = |index: usize| {
-            let window = tabs.get(index)?.id.clone();
+            let tab = tabs.get(index)?.id.clone();
             let session = session()?;
-            Some(Deed::Ask(Action::SelectWindow { session, window }))
+            Some(Deed::Server(Action::SelectTab { session, tab }))
         };
-        let moved = |before: Option<&Window>| {
-            Some(Deed::Ask(Action::Edit {
+        let moved = |before: Option<&Tab>| {
+            Some(Deed::Server(Action::Edit {
                 session: session()?,
-                window: Some(tab?.id.clone()),
+                tab: Some(tab?.id.clone()),
                 edit: Edit::MoveBefore(before.map(|tab| tab.id.clone())),
             }))
         };
@@ -318,12 +327,13 @@ impl Standing<'_> {
         Some(match name {
             "client.sidebar.toggle" => Deed::Sidebar,
             "client.sidebar.activity.toggle" => Deed::Agents,
-            "client.palette.toggle" | "session.switch" => Deed::Palette,
+            "client.palette.toggle" => Deed::Palette(true),
+            "session.switch" => Deed::Palette(false),
             REMOTE => Deed::Remote,
             "client.font.increase" => Deed::Font(self.font_size + 1.0),
             "client.font.decrease" => Deed::Font(self.font_size - 1.0),
             "client.font.reset" => Deed::Font(DEFAULT_FONT_SIZE),
-            "session.refresh" => Deed::Ask(Action::Reconnect),
+            "session.refresh" => Deed::Server(Action::Reconnect),
             "client.mode.enter" => {
                 let name = text("name").filter(|name| self.keys.map.has_mode(name))?;
                 Deed::Enter(name, args["once"] == true)
@@ -335,30 +345,30 @@ impl Standing<'_> {
             // be the last screen of a connection that was lost.
             "pane.copy" => {
                 frame.filter(|frame| !frame.selected.is_empty())?;
-                Deed::Tell(pane?.id.clone(), Request::Copy)
+                Deed::Terminal(pane?.id.clone(), Request::Copy)
             }
-            "pane.select_all" => Deed::Tell(frame.and(pane)?.id.clone(), Request::SelectAll),
+            "pane.select_all" => Deed::Terminal(frame.and(pane)?.id.clone(), Request::SelectAll),
             "client.find.open" => Deed::Find(frame.and(pane)?.id.clone()),
             // The match before the one shown, or the one after it, of a search
             // under way.
             "client.find.next" | "client.find.previous" => {
                 frame?.found?;
-                Deed::Tell(pane?.id.clone(), Request::Step { older: on })
+                Deed::Terminal(pane?.id.clone(), Request::Step { older: on })
             }
             // And what moves through a pane's history: unless its program has the
             // whole screen, which keeps none.
             _ if scroll(name).is_some() => {
                 frame.filter(|frame| !frame.alternate_screen)?;
-                Deed::Tell(pane?.id.clone(), Request::Scroll(scroll(name)?))
+                Deed::Terminal(pane?.id.clone(), Request::Scroll(scroll(name)?))
             }
             // The rest is done by a server.
             _ if !view.connected => return None,
-            "session.new" => Deed::Ask(Action::CreateSession(None)),
+            "session.new" => Deed::Server(Action::CreateSession(None)),
             "session.select" => {
                 let listed = |id: &String| view.sessions.iter().any(|session| &session.id == id);
                 let session = text("session_id").filter(listed)?;
-                Deed::Ask(match text("window_id") {
-                    Some(window) => Action::SelectWindow { session, window },
+                Deed::Server(match text("window_id") {
+                    Some(tab) => Action::SelectTab { session, tab },
                     None => Action::SelectSession(session),
                 })
             }
@@ -366,17 +376,19 @@ impl Standing<'_> {
                 let sessions = &view.sessions;
                 let at = sessions.iter().position(|s| Some(&s.id) == session().as_ref())?;
                 let to = &sessions[round(at, sessions.len())];
-                Deed::Ask(Action::SelectSession(to.id.clone()))
+                Deed::Server(Action::SelectSession(to.id.clone()))
             }
             // A session's name is in the sidebar, and nowhere else.
             "session.rename" => {
                 let session = view.session().filter(|_| self.sidebar)?;
                 Deed::Rename(session.id.clone(), None, session.name.clone())
             }
-            "client.tab.new" => Deed::Ask(Action::CreateWindow(session()?)),
+            "client.tab.new" => Deed::Server(Action::CreateTab(session()?)),
             "client.tab.close" => Deed::CloseTab(session()?, tab?.id.clone(), tab?.idle()),
+            // The field opens on the name it was given, if it was given one:
+            // what it goes by otherwise is its terminal's title, and no name.
             "client.tab.rename" => {
-                let (id, name) = (tab?.id.clone(), tab?.name().to_owned());
+                let (id, name) = (tab?.id.clone(), tab?.label.clone().unwrap_or_default());
                 Deed::Rename(session()?, Some(id), name)
             }
             "client.tab.next" | "client.tab.previous" => show(round(at?, tabs.len()))?,
@@ -389,25 +401,32 @@ impl Standing<'_> {
             "client.tab.move.backward" => moved(Some(tabs.get(at?.checked_sub(1)?)?))?,
             // Before the one after the next, or last of all.
             "client.tab.move.forward" if at? + 1 < tabs.len() => moved(tabs.get(at? + 2))?,
-            "pane.split.right" | "pane.split.down" => {
-                let direction = match name.ends_with("right") {
-                    true => Direction::Right,
-                    false => Direction::Down,
+            "pane.split.left" | "pane.split.right" | "pane.split.up" | "pane.split.down" => {
+                let direction = match toward(name)? {
+                    [-1.0, _] => Direction::Left,
+                    [1.0, _] => Direction::Right,
+                    [_, -1.0] => Direction::Up,
+                    _ => Direction::Down,
                 };
                 let pane = pane?.id.clone();
-                Deed::Ask(Action::Split { pane, direction })
+                Deed::Server(Action::Split { pane, direction })
+            }
+            // It changes places with the pane on that side of it.
+            "pane.move.left" | "pane.move.right" | "pane.move.up" | "pane.move.down" => {
+                let with = tab?.beside(&pane?.id, toward(name)?)?.id.clone();
+                Deed::Server(Action::Swap { pane: pane?.id.clone(), with })
             }
             "pane.focus.left" | "pane.focus.right" | "pane.focus.up" | "pane.focus.down" => {
                 Deed::Focus(tab?.beside(&pane?.id, toward(name)?)?.id.clone())
             }
             // The border of the split the pane is in moves that way.
             "pane.resize.left" | "pane.resize.right" | "pane.resize.up" | "pane.resize.down" => {
-                Deed::Ask(Action::Divide(vec![tab?.nudged(&pane?.id, toward(name)?)?]))
+                Deed::Server(Action::Divide(vec![tab?.nudged(&pane?.id, toward(name)?)?]))
             }
             // Even already, there is nothing to ask.
             "pane.balance" => {
                 let borders = Some(tab?.balanced()).filter(|borders| !borders.is_empty());
-                Deed::Ask(Action::Divide(borders?))
+                Deed::Server(Action::Divide(borders?))
             }
             "pane.focus_next" | "pane.focus_previous" if tab?.panes.len() > 1 => {
                 let (pane, panes) = (pane?, &tab?.panes);
@@ -415,15 +434,15 @@ impl Standing<'_> {
                 Deed::Focus(panes[round(at, panes.len())].id.clone())
             }
             "pane.zoom" => {
-                let pane = pane.filter(|_| tab.is_some_and(Window::split))?.id.clone();
-                Deed::Ask(Action::Zoom { pane })
+                let pane = pane.filter(|_| tab.is_some_and(Tab::split))?.id.clone();
+                Deed::Server(Action::Zoom { pane })
             }
             "pane.close" => {
                 let (what, spared, pane) = (doomed(&pane?.id), pane?.idle, pane?.id.clone());
                 Deed::Close(what, spared, Action::ClosePane { pane })
             }
             "pane.paste" => Deed::Paste(pane?.id.clone()),
-            "pane.send_key" => Deed::Ask(input::press(&pane?.id, args["key"].as_str()?)?),
+            "pane.send_key" => Deed::Server(input::press(&pane?.id, args["key"].as_str()?)?),
             _ => return None,
         })
     }
@@ -461,9 +480,9 @@ impl App {
     /// Do what a command comes to, on the server it was planned for. `near` says
     /// the pointer asked.
     pub(super) fn act(&mut self, ctx: &egui::Context, server: usize, deed: Deed, near: bool) {
-        let row = |session, window| Target { server, session, window };
+        let row = |session, tab| Target { server, session, tab };
         match deed {
-            Deed::Ask(action) => self.open(server, action),
+            Deed::Server(action) => self.open(server, action),
             Deed::Focus(pane) => {
                 self.focused = Some(pane.clone());
                 self.send(Action::FocusPane { pane });
@@ -474,14 +493,18 @@ impl App {
             Deed::Sidebar => self.remembered.kept.sidebar ^= true,
             // The list is the sidebar's, which is brought out for it.
             Deed::Agents => {
-                self.agents ^= true;
-                self.remembered.kept.sidebar |= self.agents;
+                self.activity ^= true;
+                self.remembered.kept.sidebar |= self.activity;
             }
-            // It opens with nothing typed.
-            Deed::Palette => {
+            // It opens with nothing typed. Asked for the list it is not showing,
+            // it turns to that one, and is put away only by the one it shows.
+            Deed::Palette(commands) => {
+                let other = Popup::is_id_open(ctx, palette::id()) && self.commands != commands;
+                (self.commands, self.cursor) = (commands, None);
                 self.filter.clear();
-                self.cursor = None;
-                Popup::toggle_id(ctx, palette::id());
+                if !other {
+                    Popup::toggle_id(ctx, palette::id());
+                }
             }
             Deed::Remote => {
                 let remote = &mut self.remembered.kept.remote;
@@ -490,9 +513,9 @@ impl App {
                     true => "Other clients of a server may now control this window.",
                     false => "Other clients may no longer control this window.",
                 };
-                self.toast.say(said.into());
+                self.toast.note(said.into());
             }
-            Deed::Tell(pane, request) => self.ask(&pane, request),
+            Deed::Terminal(pane, request) => self.ask(&pane, request),
             Deed::Find(pane) => self.find(&pane),
             // The clipboard answers in a moment, to the pane with the keyboard.
             Deed::Paste(pane) => {
@@ -503,12 +526,12 @@ impl App {
             // It asks again by the name of its row, wherever that is said: on
             // the row, on its session's where it is the only tab, or over the
             // terminals while the sidebar lists what is at work.
-            Deed::CloseTab(session, window, spared) => {
-                self.shut(row(session, Some(window)), spared, near);
+            Deed::CloseTab(session, tab, spared) => {
+                self.shut(row(session, Some(tab)), spared, near);
             }
             // In a field where its name is, likewise.
-            Deed::Rename(session, window, name) => {
-                self.choose(row(session, window), &name, Choice::Rename);
+            Deed::Rename(session, tab, name) => {
+                self.choose(row(session, tab), &name, Choice::Rename);
             }
             Deed::Enter(name, once) => self.keys.modes.push((name, once)),
             Deed::Exit(all) => {

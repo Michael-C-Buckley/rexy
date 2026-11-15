@@ -5,9 +5,11 @@ use std::{cmp::Reverse, collections::HashSet, sync::Arc};
 
 #[derive(Clone, Default)]
 pub struct View {
-    /// Connection trouble in words. Empty while connected.
+    /// Why it is not connected, or what is being done to be. Empty while connected.
     pub status: String,
     pub connected: bool,
+    /// It is not, and will be tried again unasked.
+    pub retrying: bool,
     /// An action that failed, reported by one snapshot only.
     pub error: Option<String>,
     /// A pane this client has just made by a split, or brought out from out of
@@ -27,34 +29,43 @@ pub struct View {
     pub sessions: Vec<Session>,
     /// The session on show, and the tab of it on show.
     pub selected_session: Option<String>,
-    pub selected_window: Option<String>,
+    pub selected_tab: Option<String>,
 }
 
 impl View {
+    /// Why it is not connected, after whether that is being seen to: the first
+    /// thing to know of it, where there is not room for it all.
+    pub fn trouble(&self) -> String {
+        match self.retrying {
+            true => format!("Retrying · {}", self.status),
+            false => self.status.clone(),
+        }
+    }
+
     pub fn session(&self) -> Option<&Session> {
         let selected = self.selected_session.as_ref()?;
         self.sessions.iter().find(|s| &s.id == selected)
     }
 
     /// The tabs of the session on show.
-    pub fn windows(&self) -> &[Window] {
-        self.session().map_or(&[], |s| &s.windows)
+    pub fn tabs(&self) -> &[Tab] {
+        self.session().map_or(&[], |s| &s.tabs)
     }
 
-    pub fn current_window(&self) -> Option<&Window> {
-        let selected = self.selected_window.as_ref()?;
-        self.windows().iter().find(|w| &w.id == selected)
+    pub fn current_tab(&self) -> Option<&Tab> {
+        let selected = self.selected_tab.as_ref()?;
+        self.tabs().iter().find(|w| &w.id == selected)
     }
 
     /// Every tab of every session, with its session.
-    pub fn tabs(&self) -> impl Iterator<Item = (&Session, &Window)> {
+    pub fn every_tab(&self) -> impl Iterator<Item = (&Session, &Tab)> {
         let sessions = self.sessions.iter();
-        sessions.flat_map(|session| session.windows.iter().map(move |tab| (session, tab)))
+        sessions.flat_map(|session| session.tabs.iter().map(move |tab| (session, tab)))
     }
 
     /// A pane of any tab, on show or not, with the session and the tab that hold it.
-    pub fn find(&self, pane: &str) -> Option<(&Session, &Window, &Pane)> {
-        self.tabs().find_map(|(session, tab)| {
+    pub fn find(&self, pane: &str) -> Option<(&Session, &Tab, &Pane)> {
+        self.every_tab().find_map(|(session, tab)| {
             let pane = tab.every().find(|held| held.id == pane)?;
             Some((session, tab, pane))
         })
@@ -62,7 +73,7 @@ impl View {
 
     /// The panes of the session on show.
     pub fn panes(&self) -> impl Iterator<Item = &Pane> {
-        self.windows().iter().flat_map(|w| &w.panes)
+        self.tabs().iter().flat_map(|w| &w.panes)
     }
 
     pub fn panes_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
@@ -70,7 +81,7 @@ impl View {
         let sessions = self.sessions.iter_mut();
         sessions
             .filter(move |s| Some(&s.id) == selected)
-            .flat_map(|s| &mut s.windows)
+            .flat_map(|s| &mut s.tabs)
             .flat_map(|w| &mut w.panes)
     }
 
@@ -96,14 +107,14 @@ impl View {
     /// not move it. With none, it is the server's tab, or failing that the first.
     pub fn settle(&mut self) {
         let Some(session) = self.session() else {
-            (self.selected_session, self.selected_window) = (None, None);
+            (self.selected_session, self.selected_tab) = (None, None);
             return;
         };
-        let there = |id: &&String| session.windows.iter().any(|tab| &tab.id == *id);
-        let kept = self.selected_window.as_ref().filter(there);
+        let there = |id: &&String| session.tabs.iter().any(|tab| &tab.id == *id);
+        let kept = self.selected_tab.as_ref().filter(there);
         let shown = kept.or(session.active.as_ref().filter(there));
-        let first = || session.windows.first().map(|tab| &tab.id);
-        self.selected_window = shown.or_else(first).cloned();
+        let first = || session.tabs.first().map(|tab| &tab.id);
+        self.selected_tab = shown.or_else(first).cloned();
     }
 }
 
@@ -113,9 +124,9 @@ impl View {
     /// server showed that tab too, then: if it shows another now, what was
     /// asked of it moved it there.
     pub fn follow(&mut self, session: &str, tab: &str) {
-        let shown = (self.selected_session.as_deref(), self.selected_window.as_deref());
+        let shown = (self.selected_session.as_deref(), self.selected_tab.as_deref());
         if shown == (Some(session), Some(tab)) {
-            self.selected_window = None;
+            self.selected_tab = None;
             self.settle();
         }
     }
@@ -147,20 +158,20 @@ pub struct Session {
     pub name: String,
     /// The tab the server shows for this session.
     pub active: Option<String>,
-    pub windows: Vec<Window>,
+    pub tabs: Vec<Tab>,
 }
 
 impl Session {
     /// The most pressing thing its tabs have to say.
     pub fn activity(&self) -> Activity {
-        let said = self.windows.iter().map(|tab| tab.says().0);
+        let said = self.tabs.iter().map(|tab| tab.says().0);
         said.max().unwrap_or_default()
     }
 }
 
-/// A tab.
+/// A tab of a session, and the panes in it.
 #[derive(Clone, Default)]
-pub struct Window {
+pub struct Tab {
     pub id: String,
     /// The name it was given, if it was given one.
     pub label: Option<String>,
@@ -246,7 +257,7 @@ impl Border {
     }
 }
 
-impl Window {
+impl Tab {
     /// Every pane, on show or not.
     pub fn every(&self) -> impl Iterator<Item = &Pane> {
         self.panes.iter().chain(&self.hidden)
@@ -425,22 +436,19 @@ impl Pane {
     }
 }
 
-/// A directory as a name short enough for a title: under a home it starts at
+/// A directory as a name short enough for a title: under `home` it starts at
 /// `~`, and of one many levels down only the last two are given.
-pub fn folder(pwd: &str) -> String {
-    // A shell may give it as an address, with its machine's name.
-    let path = pwd
-        .strip_prefix("file://")
-        .map_or(pwd, |rest| rest.find('/').map_or("/", |slash| &rest[slash..]));
-    let levels: Vec<_> = path.split('/').filter(|level| !level.is_empty()).collect();
-    let (head, rest) = match levels.as_slice() {
-        ["home" | "Users", _, rest @ ..] | ["root", rest @ ..] => ("~", rest),
-        rest => ("", rest),
+pub fn folder(path: &str, home: &str) -> String {
+    let under = |rest: &&str| !home.is_empty() && (rest.is_empty() || rest.starts_with('/'));
+    let (head, rest) = match path.strip_prefix(home).filter(under) {
+        Some(rest) => ("~", rest),
+        None => ("", path),
     };
-    match rest {
+    let levels: Vec<_> = rest.split('/').filter(|level| !level.is_empty()).collect();
+    match levels.as_slice() {
         [] if !head.is_empty() => head.to_owned(),
-        [.., parent, last] if rest.len() > 2 => format!("…/{parent}/{last}"),
-        _ => format!("{head}/{}", rest.join("/")),
+        [.., parent, last] if levels.len() > 2 => format!("…/{parent}/{last}"),
+        _ => format!("{head}/{}", levels.join("/")),
     }
 }
 
@@ -491,7 +499,9 @@ pub struct Size {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Direction {
+    Left,
     Right,
+    Up,
     Down,
 }
 
@@ -520,9 +530,9 @@ pub fn is_modifier(code: &str) -> bool {
 pub enum Action {
     SelectSession(String),
     /// Show a tab, of any session.
-    SelectWindow {
+    SelectTab {
         session: String,
-        window: String,
+        tab: String,
     },
     /// Stop watching the session on show. Sent by `Client::leave`.
     Leave,
@@ -583,10 +593,16 @@ pub enum Action {
     /// Without a name, the server chooses one.
     CreateSession(Option<String>),
     /// A new tab in a session.
-    CreateWindow(String),
+    CreateTab(String),
+    /// A new pane on one side of a pane, which gives it half its room.
     Split {
         pane: String,
         direction: Direction,
+    },
+    /// Have two panes change places.
+    Swap {
+        pane: String,
+        with: String,
     },
     /// Move borders. A border asked to move again before the server has moved
     /// it goes only where it was last asked to.
@@ -599,10 +615,10 @@ pub enum Action {
     ClosePane {
         pane: String,
     },
-    /// Change a session or, with `window`, one of its tabs.
+    /// Change a session or, with `tab`, one of its tabs.
     Edit {
         session: String,
-        window: Option<String>,
+        tab: Option<String>,
         edit: Edit,
     },
     Reconnect,

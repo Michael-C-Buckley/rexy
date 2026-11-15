@@ -248,6 +248,24 @@ pub fn resolve<'a>(
     first(None).unwrap_or(Step::Pass)
 }
 
+/// The same, where a key that goes on no sequence is taken as itself: it may
+/// be bound alone, or begin a sequence of its own. With the step, whether it
+/// was so taken, and the keys before it count for nothing.
+pub fn press<'a>(
+    map: &'a Keymap,
+    modes: &[(String, bool)],
+    pressed: &[Vec<String>],
+    can: impl Fn(&Binding) -> bool,
+) -> (Step<'a>, bool) {
+    let step = resolve(map, modes, pressed, &can);
+    match pressed {
+        [.., last] if step == Step::Pass && pressed.len() > 1 => {
+            (resolve(map, modes, std::slice::from_ref(last), can), true)
+        }
+        _ => (step, false),
+    }
+}
+
 /// Where the keyboard stands with the keymap in force.
 pub struct Keys {
     /// The server's answer the keymap was read from, or none for this client's own.

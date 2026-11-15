@@ -88,6 +88,20 @@ fn a_sequence_waits_for_its_keys_and_hides_the_key_it_starts_with() {
 }
 
 #[test]
+fn a_key_that_goes_on_no_sequence_is_taken_as_itself() {
+    let map = map();
+    let press = |keys: &[&str]| press(&map, &[], &pressed(keys), |_| true);
+    // One bound alone does what it is bound to, and not what the keys before it began.
+    assert_eq!(press(&["ctrl+b", "ctrl+d"]), (Step::Run(&map.bindings[7]), true));
+    // One that begins a sequence begins it, and one bound to nothing is the terminal's.
+    assert_eq!(press(&["ctrl+b", "ctrl+b"]), (Step::Wait, true));
+    assert_eq!(press(&["ctrl+b", "q"]), (Step::Pass, true));
+    // A key of the sequence goes on with it, and a lone key was never in one.
+    assert!(!press(&["ctrl+b", "c"]).1);
+    assert!(!press(&["ctrl+l"]).1);
+}
+
+#[test]
 fn a_mode_has_its_own_keys_and_leaves_the_rest_unless_it_says_otherwise() {
     let map = map();
     assert_eq!(step(&map, &[], &["left"]), Err(Step::Pass));

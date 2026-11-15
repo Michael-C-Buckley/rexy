@@ -88,22 +88,25 @@ fn keeps_up_with_what_each_terminal_says_of_itself() {
     let owner = json!({"pid": 2455975, "name": "zsh"});
     let changed = block("title_changed", json!({"title": "ada@studio: ~", "owner": owner}));
     assert_eq!(changed, news(News::Title("ada@studio: ~".into())));
-    // A program has the icon of its script, of what it was started as, or of its executable.
-    let program = |foreground: Value, icon: Option<&str>| {
+    // A program has the icon of its script, of what it was started as, or of its
+    // executable, and goes by the first of them it has, without what leads to it.
+    let program = |foreground: Value, icon: Option<&str>, name: &str| {
         let pid = foreground["pid"].as_u64();
+        let folder = foreground["cwd"].as_str().map(str::to_owned);
         let event = block("process_changed", json!({"generation": 2, "foreground": foreground}));
-        let program = Program::named(icon);
-        assert_eq!(event, news(News::Program { program, pid }));
+        let (program, name) = (Program::named(icon), name.to_owned());
+        assert_eq!(event, news(News::Program(Running { pid, program, name, folder })));
     };
-    program(json!({"name": "2.1.325", "argv0": "claude"}), Some("claude-code"));
+    program(json!({"name": "2.1.325", "argv0": "claude"}), Some("claude-code"), "claude");
     let script = "/opt/lib/pi-coding-agent/dist/cli.js";
     let script = json!({"name": "node", "argv0": "node", "script": script});
-    program(script, Some("pi"));
-    program(json!({"name": "zsh", "argv0": "-zsh", "pid": 7}), None);
+    program(script, Some("pi"), "cli.js");
+    // Where it is, if the server can tell.
+    program(json!({"name": "zsh", "argv0": "-zsh", "pid": 7, "cwd": "/tmp"}), None, "zsh");
     // A terminal that started with a shell, and one that started with something else.
     assert_eq!(shell(&json!({"name": "zsh", "pid": 7})), Some(7));
     assert_eq!(shell(&json!({"name": "vim", "pid": 7})), None);
-    program(Value::Null, None);
+    program(Value::Null, None, "");
     // What a program reports comes whole, under its name, and what is cleared by
     // name alone. The program's own record has no name.
     let record = json!({"state": "blocked", "kind": "permission", "msg": "Run it?"});
@@ -113,10 +116,8 @@ fn keeps_up_with_what_each_terminal_says_of_itself() {
     let cleared = json!({"ids": ["", "build/test"], "reason": "clear"});
     let status = News::Status(vec![(String::new(), None), ("build/test".into(), None)]);
     assert_eq!(block("program_status_removed", cleared), news(status));
-    // Where its shell is, and how far along a program says it is: in hundredths
-    // while it counts, and no longer once it stops counting.
-    let folder = News::Folder("/home/a".into());
-    assert_eq!(block("pwd_changed", json!({"pwd": "/home/a"})), news(folder));
+    // How far along a program says it is: in hundredths while it counts, and no
+    // longer once it stops counting.
     let along = |state: &str, progress: Value| {
         block("progress_report", json!({"state": state, "progress": progress}))
     };

@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     link,
-    model::{Action, Pane, View, Window},
+    model::{Action, Pane, Tab, View},
     terminal::{Copied, Frame, Request, Scroll},
 };
 
@@ -38,7 +38,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         view: &View,
-        window: &Window,
+        tab: &Tab,
         pane: &Pane,
         rect: Rect,
         rest: Rect,
@@ -67,13 +67,13 @@ impl App {
         let mut scroll = None;
         let mut terminal_rect = rect;
         // The way back from a pane that fills the tab is where the way to it was.
-        let (zoom_icon, zoom) = match window.zoomed {
+        let (zoom_icon, zoom) = match tab.zoomed {
             true => (Icon::Restore, "Restore Panes"),
             false => (Icon::Zoom, title("pane.zoom")),
         };
         // One pane of several has a header, and so has one that fills the tab in
         // place of the rest.
-        if window.split() {
+        if tab.split() {
             terminal_rect.min.y += PANE_HEADER;
             // A click on it takes the keyboard to the pane, as one in its terminal
             // does. Its buttons lie over it.
@@ -93,7 +93,7 @@ impl App {
                 let tip = self.keys.map.tip(title("pane.close"), "pane.close");
                 close = small_button(&mut buttons, Icon::Close, &tip).clicked();
             }
-            if offered || window.zoomed {
+            if offered || tab.zoomed {
                 let tip = self.keys.map.tip(zoom, "pane.zoom");
                 if small_button(&mut buttons, zoom_icon, &tip).clicked() {
                     self.todo.push(("pane.zoom", Some(pane.id.clone())));
@@ -118,10 +118,10 @@ impl App {
             ui.painter().galley(corner, title, color);
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
-        let within = room(rect, window.split());
+        let within = room(rect, tab.split());
         // What dims the terminal, where it is dimmed, keeps to the card's corners.
         let below = CornerRadius { sw: CARD_RADIUS, se: CARD_RADIUS, ..CornerRadius::ZERO };
-        let corners = match window.split() {
+        let corners = match tab.split() {
             true => below,
             false => CornerRadius::same(CARD_RADIUS),
         };
@@ -178,7 +178,7 @@ impl App {
         }
         // The terminal is as large as the card will be at rest, from the first:
         // its program is told its size once, not all the way there.
-        let settled = Grid { rect: room(rest, window.split()), ..grid };
+        let settled = Grid { rect: room(rest, tab.split()), ..grid };
         let size = settled.size(ui.ctx().pixels_per_point());
         if state.last_size != Some(size) {
             let (pane, client) = (pane.id.clone(), &self.servers[self.current].client);
@@ -204,7 +204,7 @@ impl App {
             self.focused = Some(pane.id.clone());
             // A pane that is this window's, and where the server has the keyboard
             // already, needs no telling.
-            if !active || !pane.owner || window.focus.as_ref() != Some(&pane.id) {
+            if !active || !pane.owner || tab.focus.as_ref() != Some(&pane.id) {
                 actions.push(Action::FocusPane { pane: pane.id.clone() });
             }
         }
@@ -236,17 +236,27 @@ impl App {
                 pointer.select(state);
             }
             scroll = pointer.wheel(Wheel::of(frame, tracking), state, &mut actions);
-            // A screen that is no longer kept up shows a cursor nobody is at.
-            state.paint(ui.painter(), grid, frame, active && live, pane.idle);
+            // A screen that is no longer kept up shows a cursor nobody is at, as
+            // does one whose keyboard the palette or a field has for now.
+            state.paint(ui.painter(), grid, frame, keyboard && live, pane.idle);
             for &(row, start, end) in link.iter().flat_map(|link| &link.spans) {
                 let span = grid.span(row, start, end).intersect(grid.rect);
                 let line = Stroke::new(1.0, rgb(frame.fg));
                 ui.painter().hline(span.x_range(), span.bottom() - 1.0, line);
             }
             // Scrolled back, it says so at its foot, where a click returns it to
-            // the last of its output. How far back is known only as of this
-            // frame, so that is not said.
+            // the last of its output, and how far back by a mark at its edge:
+            // as long, of that edge, as the screen is of all there is to scroll
+            // through. Both are as of this frame.
             if frame.scroll_offset > 0 {
+                let (rows, back) = (f32::from(frame.rows), frame.scroll_offset as f32);
+                let history = frame.history.max(frame.scroll_offset) as f32;
+                let track = grid.rect.y_range();
+                let length = (track.span() * rows / (history + rows)).max(24.0);
+                let top = track.min + (track.span() - length) * (1.0 - back / history);
+                let edge = terminal_rect.right() - 6.0;
+                let mark = Rect::from_x_y_ranges(edge..=edge + 3.0, top..=top + length);
+                ui.painter().rect_filled(mark, 1.5, rgb(frame.fg).gamma_multiply(0.4));
                 let font = FontId::proportional(SMALL);
                 let said = ui.painter().layout_no_wrap("Scrolled back".into(), font, TEXT);
                 let size = said.size() + egui::vec2(20.0, 10.0);
@@ -269,7 +279,7 @@ impl App {
             // not the one typed in steps back a little, too.
             // It steps back and comes forward over a moment.
             let aside = egui::Id::unique(("aside", &pane.id));
-            let aside = eased(ui, aside, !active && window.split());
+            let aside = eased(ui, aside, !active && tab.split());
             let away = match live {
                 false => LAST,
                 true => AWAY * aside,
@@ -300,7 +310,7 @@ impl App {
         // A line around the card: faint, or in the colour of the one in use where
         // there are several to tell it from.
         let own = egui::Id::unique(("own", &pane.id));
-        let own = eased(ui, own, active && window.split());
+        let own = eased(ui, own, active && tab.split());
         let line = Stroke::new(1.0, BORDER.lerp_to_gamma(tints(ui.ctx()).accent, own));
         ui.painter().rect_stroke(rect, CARD_RADIUS, line, StrokeKind::Inside);
         if !tracking {

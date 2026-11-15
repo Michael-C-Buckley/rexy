@@ -146,15 +146,7 @@ impl App {
             let own = self.standing(view).keeps(&bound.name, &bound.args);
             own || bound.name == FORWARD || map.served(&bound.name).is_some()
         };
-        let pending = &self.keys.pending;
-        let mut step = keymap::resolve(&map, &self.keys.modes, pending, can);
-        // A key that goes on no sequence is taken as itself: it may be bound
-        // alone, or begin a sequence of its own.
-        let alone = step == Step::Pass && pending.len() > 1;
-        if alone {
-            let last = &pending[pending.len() - 1..];
-            step = keymap::resolve(&map, &self.keys.modes, last, can);
-        }
+        let (step, alone) = keymap::press(&map, &self.keys.modes, &self.keys.pending, can);
         match step {
             Step::Wait if alone => _ = self.keys.pending.drain(..self.keys.pending.len() - 1),
             Step::Wait => {}

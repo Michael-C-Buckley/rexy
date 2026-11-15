@@ -5,7 +5,7 @@ use super::{
     App,
     style::{eased, tints},
 };
-use crate::model::{Action, Border, Window};
+use crate::model::{Action, Border, Tab};
 
 /// A border of the tab that fills `area`, and what the pointer asks of it, if
 /// anything: the share of its room that the side before it is to have. A drag
@@ -57,8 +57,8 @@ fn drag(ui: &egui::Ui, border: &Border, area: Rect) -> Option<f32> {
 impl App {
     /// The borders of the tab on show, which fills `area`. They are asked for
     /// after the panes, or the terminals either side would have the pointer first.
-    pub(super) fn borders(&mut self, ui: &egui::Ui, window: &Window, area: Rect) {
-        for border in &window.borders {
+    pub(super) fn borders(&mut self, ui: &egui::Ui, tab: &Tab, area: Rect) {
+        for border in &tab.borders {
             if let Some(ratio) = drag(ui, border, area) {
                 self.send(Action::Divide(vec![border.moved(ratio)]));
             }

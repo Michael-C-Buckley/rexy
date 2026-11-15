@@ -32,7 +32,7 @@ const RED: Color32 = Color32::from_rgb(0xf6, 0x61, 0x51);
 /// Something has finished.
 const GREEN: Color32 = Color32::from_rgb(0x57, 0xe3, 0x89);
 /// What is said under a name: fainter than `DIM`.
-const FAINT: Color32 = white(110);
+const FAINT: Color32 = white(124);
 /// Fills of flat controls: selected, and pressed. Under the pointer one is as
 /// white as `HOVER` says, of 255.
 const HOVER: f32 = 18.0;
@@ -100,11 +100,17 @@ pub fn theme(ctx: &egui::Context, terminal: Option<(Color32, [Color32; 4])>) -> 
         ctx.data_mut(|data| data.insert_temp(egui::Id::NULL, tints));
         ctx.all_styles_mut(|style| {
             style.visuals.window_fill = popover;
-            style.visuals.selection.bg_fill = tints.accent.gamma_multiply(0.5);
-            style.visuals.selection.stroke = Stroke::new(1.0, tints.accent.gamma_multiply(0.8));
+            select(&mut style.visuals, tints.accent);
         });
     }
     ground
+}
+
+/// What is selected in a field lies on the accent, and is written in a tint of
+/// it light enough to read there. egui outlines the field in use in the same.
+fn select(visuals: &mut egui::Visuals, accent: Color32) {
+    visuals.selection.bg_fill = accent.gamma_multiply(0.5);
+    visuals.selection.stroke = Stroke::new(1.0, accent.lerp_to_gamma(Color32::WHITE, 0.75));
 }
 
 /// Translucent white, for text and fills that sit on any ground.
@@ -217,8 +223,7 @@ pub fn apply(ctx: &egui::Context) {
             color: Color32::from_black_alpha(96),
         };
         visuals.extreme_bg_color = ACTIVE;
-        visuals.selection.bg_fill = ACCENT.gamma_multiply(0.5);
-        visuals.selection.stroke = Stroke::new(1.0, ACCENT.gamma_multiply(0.8));
+        select(visuals, ACCENT);
         visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
         let states = [

@@ -41,6 +41,9 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
+# The crates this one is built on are built to run fast, and without what a
+# debugger would want of them, which is most of what a debug build takes on disk.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 

@@ -22,16 +22,16 @@ fn three() -> Value {
     layout
 }
 
-fn windows(view: &Value) -> Vec<Window> {
-    parse_windows(view, "me", &mut Vec::new())
+fn tabs(view: &Value) -> Vec<Tab> {
+    parse_tabs(view, "me", &mut Vec::new())
 }
 
 #[test]
 fn panes_sit_where_the_server_puts_them() {
     let view = json!({"windows": [{"window_id": "w", "layers": [{"layout": three()}]}]});
-    let window = &windows(&view)[0];
+    let tab = &tabs(&view)[0];
     let placed = |pane: &Pane| (pane.id.clone(), [pane.x, pane.y, pane.width, pane.height]);
-    let panes: Vec<_> = window.panes.iter().map(placed).collect();
+    let panes: Vec<_> = tab.panes.iter().map(placed).collect();
     let at = |id: &str, rect| (id.to_owned(), rect);
     assert_eq!(
         panes,
@@ -47,7 +47,7 @@ fn panes_sit_where_the_server_puts_them() {
 fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
     let tiled = json!({"kind": "tiled", "layout": three()});
     let tab = |layers: Value| json!({"windows": [{"window_id": "w", "layers": layers}]});
-    let borders = |view: &Value| windows(view).remove(0).borders;
+    let borders = |view: &Value| tabs(view).remove(0).borders;
     let border = |before: &str, after: &str, upright, room, at| Border {
         before: before.into(),
         after: after.into(),
@@ -88,7 +88,7 @@ fn what_is_not_a_terminal_keeps_its_place_and_says_what_it_is() {
     let layers = json!([{"layout": layout, "blocks": blocks}]);
     let view = json!({"windows": [{"window_id": "w", "layers": layers}]});
     let mut terminals = Vec::new();
-    let tabs = parse_windows(&view, "me", &mut terminals);
+    let tabs = parse_tabs(&view, "me", &mut terminals);
     let [terminal, other] = &tabs[0].panes[..] else {
         panic!("a pane was left out");
     };
@@ -140,20 +140,20 @@ fn zoom_and_minimized_layers_are_respected() {
         },
         {"state": "minimized", "layout": leaf(FULL, "hidden")},
     ]}]});
-    let windows = windows(&view);
-    assert_eq!(windows[0].panes.len(), 1);
-    assert_eq!(windows[0].panes[0].width, 1.);
-    assert!(windows[0].panes[0].owner);
+    let tabs = tabs(&view);
+    assert_eq!(tabs[0].panes.len(), 1);
+    assert_eq!(tabs[0].panes[0].width, 1.);
+    assert!(tabs[0].panes[0].owner);
     // The panes of a layer that was put away are kept track of, out of sight, as
     // are those behind a zoomed one.
     let ids = |panes: &[Pane]| panes.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-    assert_eq!(ids(&windows[0].hidden), ["hidden"]);
+    assert_eq!(ids(&tabs[0].hidden), ["hidden"]);
     let layout = split(FULL, leaf([0., 0., 0.5, 1.], "a"), leaf([0.5, 0., 0.5, 1.], "b"));
     let tab = json!({"window_id": "w", "zoomed_block_id": "b", "layers": [{"layout": layout}]});
-    let windows = self::windows(&json!({"windows": [tab]}));
-    assert_eq!(ids(&windows[0].panes), ["b"]);
-    assert_eq!(ids(&windows[0].hidden), ["a"]);
-    assert!(windows[0].zoomed && windows[0].split());
+    let tabs = self::tabs(&json!({"windows": [tab]}));
+    assert_eq!(ids(&tabs[0].panes), ["b"]);
+    assert_eq!(ids(&tabs[0].hidden), ["a"]);
+    assert!(tabs[0].zoomed && tabs[0].split());
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn a_terminal_is_what_the_news_of_it_last_said() {
     let mut block = Block::default();
     block.note(News::Title("vim".into()));
     let (program, pid) = (Program::named(["claude"]), Some(7));
-    block.note(News::Program { program, pid });
+    block.note(News::Program(wire::Running { program, pid, ..Default::default() }));
     assert_eq!((block.title.as_str(), block.foreground), ("vim", Some(7)));
     let report = |block: &mut Block, id: &str, record: Option<Value>| {
         let before = block.says().0;
@@ -242,25 +242,30 @@ fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at
         shell: Some(7),
         foreground: Some(7),
         prompt: "zsh".into(),
+        home: "/home/ada".into(),
         ..Block::default()
     };
     let mut blocks = HashMap::from([("p".to_owned(), block)]);
     let pane = |blocks: &HashMap<String, Block>| {
         let held = Pane { id: "p".into(), title: "Terminal".into(), ..Pane::default() };
-        let tab = Window { panes: vec![held], ..Window::default() };
-        let mut sessions = vec![Session { windows: vec![tab], ..Session::default() }];
+        let tab = Tab { panes: vec![held], ..Tab::default() };
+        let mut sessions = vec![Session { tabs: vec![tab], ..Session::default() }];
         fill(&mut sessions, blocks);
-        sessions.remove(0).windows.remove(0).panes.remove(0)
+        sessions.remove(0).tabs.remove(0).panes.remove(0)
     };
     let note = |blocks: &mut HashMap<String, Block>, news| blocks.get_mut("p").unwrap().note(news);
     // With no directory known, the title its prompt set.
     assert_eq!(pane(&blocks).title, "ada@studio: /home/ada/code");
-    note(&mut blocks, News::Folder("/home/ada/code".into()));
+    // The server says where the process in the foreground is: no shell has to.
+    let shell = json!({"pid": 7, "name": "zsh", "argv0": "-zsh", "cwd": "/home/ada/code"});
+    note(&mut blocks, News::Program(wire::running(&shell)));
     assert_eq!(pane(&blocks).title, "zsh ~/code");
-    // A program in the foreground has a title of its own to go by.
-    let (program, pid) = (None, Some(9));
-    note(&mut blocks, News::Program { program, pid });
+    // A program in the foreground has a title of its own to go by. One whose
+    // directory cannot be read leaves the terminal where it was known to be.
+    let less = json!({"pid": 9, "name": "less", "argv0": "/usr/bin/less"});
+    note(&mut blocks, News::Program(wire::running(&less)));
     assert_eq!(pane(&blocks).title, "ada@studio: /home/ada/code");
+    assert_eq!(blocks["p"].folder, "/home/ada/code");
     // What it is at and how far along, by the record that speaks for it, or
     // failing that as the terminal itself was told.
     note(&mut blocks, News::Progress(Some(10)));
@@ -272,23 +277,27 @@ fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at
     note(&mut blocks, status(json!({"state": "working"})));
     let held = pane(&blocks);
     assert_eq!((held.task.as_str(), held.progress), ("", Some(10)));
-    // A program that gives itself no title goes by the pane's label, whatever
-    // the pane went by before it: not by the prompt it has left.
+    // A program that gives itself no title goes by its own name, whatever the
+    // pane went by before it: not by the prompt it has left. A terminal with
+    // nothing known in its foreground goes by the pane's label.
     let mut sessions = vec![Session {
-        windows: vec![Window {
+        tabs: vec![Tab {
             panes: vec![Pane {
                 id: "p".into(),
                 title: "zsh ~/code".into(),
                 label: "shell".into(),
                 ..Pane::default()
             }],
-            ..Window::default()
+            ..Tab::default()
         }],
         ..Session::default()
     }];
     note(&mut blocks, News::Title(String::new()));
     fill(&mut sessions, &blocks);
-    assert_eq!(sessions[0].windows[0].panes[0].title, "shell");
+    assert_eq!(sessions[0].tabs[0].panes[0].title, "less");
+    note(&mut blocks, News::Program(wire::running(&Value::Null)));
+    fill(&mut sessions, &blocks);
+    assert_eq!(sessions[0].tabs[0].panes[0].title, "shell");
 }
 
 #[test]
@@ -427,12 +436,12 @@ fn input_racing_a_disconnect_never_outlives_it() {
 #[test]
 fn what_is_asked_to_be_shown_is_shown_at_once_and_what_is_made_awaited() {
     let (client, mut queue) = client();
-    let tab = |id: &str| Window { id: id.into(), ..Window::default() };
+    let tab = |id: &str| Tab { id: id.into(), ..Tab::default() };
     let session = |id: &str, active: &str| Session {
         id: id.into(),
         name: id.into(),
         active: Some(active.into()),
-        windows: vec![tab("a"), tab("b")],
+        tabs: vec![tab("a"), tab("b")],
     };
     client.shared.change(|s| {
         s.view.connected = true;
@@ -440,22 +449,20 @@ fn what_is_asked_to_be_shown_is_shown_at_once_and_what_is_made_awaited() {
     });
     let shown = || {
         let view = client.snapshot();
-        (view.selected_session, view.selected_window)
+        (view.selected_session, view.selected_tab)
     };
     let both = |session: &str, tab: &str| (Some(session.to_owned()), Some(tab.to_owned()));
-    let show = |session: &str, window: &str| Action::SelectWindow {
-        session: session.into(),
-        window: window.into(),
-    };
+    let show =
+        |session: &str, tab: &str| Action::SelectTab { session: session.into(), tab: tab.into() };
     // A session comes with the tab the server shows of it.
     client.try_send(Action::SelectSession("s".into())).unwrap();
     assert_eq!(shown(), both("s", "a"));
     client.try_send(show("s", "b")).unwrap();
     assert_eq!(shown(), both("s", "b"));
     // A new tab is yet to be, and the one on show stays until it is.
-    client.try_send(Action::CreateWindow("s".into())).unwrap();
+    client.try_send(Action::CreateTab("s".into())).unwrap();
     assert_eq!(shown(), both("s", "b"));
-    client.try_send(Action::CreateWindow("t".into())).unwrap();
+    client.try_send(Action::CreateTab("t".into())).unwrap();
     assert_eq!(shown(), both("t", "b"));
     // What is not there is asked for all the same, and nothing is shown for it.
     client.try_send(show("gone", "a")).unwrap();
@@ -470,7 +477,7 @@ fn what_is_asked_to_be_shown_is_shown_at_once_and_what_is_made_awaited() {
     assert!(awaited());
     client.try_send(show("s", "a")).unwrap();
     assert!(!awaited());
-    client.try_send(Action::CreateWindow("s".into())).unwrap();
+    client.try_send(Action::CreateTab("s".into())).unwrap();
     client.leave();
     assert!(!awaited());
     assert_eq!(shown(), (None, None));
@@ -489,12 +496,11 @@ fn a_terminal_fed_no_more_is_kept_for_its_last_screen() {
     // One has drawn its pane, and one has yet to.
     let (blank, _wakes) = worker(Vec::new());
     let pane = |id: &str| Pane { id: id.into(), ..Pane::default() };
-    let tab =
-        Window { id: "w".into(), panes: vec![pane("drawn"), pane("blank")], ..Window::default() };
+    let tab = Tab { id: "w".into(), panes: vec![pane("drawn"), pane("blank")], ..Tab::default() };
     {
         let mut state = client.shared.lock();
         state.view.sessions =
-            vec![Session { id: "s".into(), windows: vec![tab], ..Session::default() }];
+            vec![Session { id: "s".into(), tabs: vec![tab], ..Session::default() }];
         state.view.selected_session = Some("s".into());
         state.terminals.insert("drawn".into(), drawn);
         state.terminals.insert("blank".into(), blank);
@@ -715,12 +721,12 @@ async fn news_sent_ahead_of_an_answer_is_not_told_as_if_it_came_after() {
         "layout": {"rect": [0, 0, 1, 1], "block_id": "b1"},
         "blocks": [{"block_id": "b1", "creator_name": TERMINAL}],
     });
-    let window = json!({"window_id": "w1", "layers": [layer]});
-    let view = json!({"revision": 1, "active_window_id": "w1", "windows": [window]});
+    let tab = json!({"window_id": "w1", "layers": [layer]});
+    let view = json!({"revision": 1, "active_window_id": "w1", "windows": [tab]});
     answer(&mut socket, &views["s1"], view).await;
-    // The terminal is asked about, four ways.
+    // The terminal is asked about, three ways.
     let mut about = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         let (id, method, _) = asked(&mut socket).await.unwrap();
         about.push((method, id));
     }
@@ -775,10 +781,10 @@ async fn a_view_that_does_not_come_is_said_and_asked_for_again() {
             _ => assert!(began.elapsed() < RETRY[0] * 3, "it was not asked for again"),
         }
     };
-    let window = json!({"window_id": "w1", "layers": []});
-    let view = json!({"revision": 1, "active_window_id": "w1", "windows": [window]});
+    let tab = json!({"window_id": "w1", "layers": []});
+    let view = json!({"revision": 1, "active_window_id": "w1", "windows": [tab]});
     served::answer(&mut socket, &again, view).await;
-    let tabs = |view: &View| view.sessions[0].windows.len() == 1;
+    let tabs = |view: &View| view.sessions[0].tabs.len() == 1;
     served::until(&client, "its tabs", tabs).await;
 }
 
@@ -814,8 +820,10 @@ async fn a_server_that_closes_while_a_client_begins_is_said_to_have_and_why() {
     assert_eq!(method, "session.bootstrap");
     let frame = CloseFrame { code: CloseCode::from(1008), reason: "event backlog exceeded".into() };
     socket.close(Some(frame)).await.unwrap();
-    let lost = |view: &View| view.status.starts_with("Disconnected");
+    // It is said why, and that it will be tried again.
+    let lost = |view: &View| view.retrying;
     let view = served::until(&client, "its end", lost).await;
+    assert!(view.trouble().starts_with("Retrying · "), "{}", view.trouble());
     assert!(view.status.contains("fell too far behind"), "{}", view.status);
 }
 
@@ -835,11 +843,11 @@ async fn a_tab_picked_stays_on_show_and_one_made_here_is_shown_when_it_comes() {
     let (id, joined) = next(&mut socket, "session.attach", seen).await;
     assert_eq!(joined["session_id"], "s1");
     answer(&mut socket, &id, json!({"view": view(1, "w1", &tabs)})).await;
-    let shown = |tab: &'static str| move |view: &View| view.selected_window.as_deref() == Some(tab);
+    let shown = |tab: &'static str| move |view: &View| view.selected_tab.as_deref() == Some(tab);
     until(&client, "the server's tab", shown("w1")).await;
     // Another tab is shown as soon as it is picked, and the server is told.
-    let (session, window) = ("s1".to_owned(), "w2".to_owned());
-    client.try_send(Action::SelectWindow { session, window }).unwrap();
+    let (session, tab) = ("s1".to_owned(), "w2".to_owned());
+    client.try_send(Action::SelectTab { session, tab }).unwrap();
     assert!(shown("w2")(&client.snapshot()));
     let (id, picked) = next(&mut socket, "session.focus_window", seen).await;
     assert_eq!((&picked["session_id"], &picked["window_id"]), (&json!("s1"), &json!("w2")));
@@ -853,10 +861,10 @@ async fn a_tab_picked_stays_on_show_and_one_made_here_is_shown_when_it_comes() {
     let (id, _) = next(&mut socket, "session.view", seen).await;
     let more = [("w1", None), ("w2", None), ("w3", None)];
     answer(&mut socket, &id, view(3, "w1", &more)).await;
-    let listed = |view: &View| view.sessions[0].windows.len() == 3;
+    let listed = |view: &View| view.sessions[0].tabs.len() == 3;
     assert!(shown("w2")(&until(&client, "the tab made elsewhere", listed).await));
     // A tab made here is shown once the session has it.
-    client.try_send(Action::CreateWindow("s1".into())).unwrap();
+    client.try_send(Action::CreateTab("s1".into())).unwrap();
     let (id, _) = next(&mut socket, "session.new_window", seen).await;
     answer(&mut socket, &id, json!({"window_id": "w4", "revision": 4})).await;
     let (id, _) = next(&mut socket, "session.view", seen).await;
@@ -929,7 +937,7 @@ async fn what_the_user_has_the_server_do_moves_the_window_with_the_servers_tab()
     client.try_send(Action::SelectSession("s1".into())).unwrap();
     let (id, _) = next(&mut socket, "session.attach", seen).await;
     answer(&mut socket, &id, json!({"view": tabs("w1", 1)})).await;
-    let shown = |tab: &'static str| move |view: &View| view.selected_window.as_deref() == Some(tab);
+    let shown = |tab: &'static str| move |view: &View| view.selected_tab.as_deref() == Some(tab);
     until(&client, "its tab", shown("w1")).await;
     // Another client has the server show the second tab, which moves nothing here.
     say(&mut socket, viewed("s1", 2)).await;

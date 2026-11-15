@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{Session, Window};
+use crate::model::{Session, Tab};
 
 fn fresh() -> Kept {
     Kept::read(&Value::Null)
@@ -74,10 +74,10 @@ fn a_damaged_file_starts_afresh() {
 
 #[test]
 fn a_window_returns_to_where_it_was_if_that_is_still_there() {
-    let tab = |id: &str| Window { id: id.into(), ..Window::default() };
+    let tab = |id: &str| Tab { id: id.into(), ..Tab::default() };
     let session = |id: &str, tabs: &[&str]| Session {
         id: id.into(),
-        windows: tabs.iter().copied().map(tab).collect(),
+        tabs: tabs.iter().copied().map(tab).collect(),
         ..Session::default()
     };
     let mut view = View {
@@ -88,12 +88,12 @@ fn a_window_returns_to_where_it_was_if_that_is_still_there() {
     let place = ["second".to_owned(), "c".to_owned()];
     kept.shown.insert("unix:/here".into(), place);
     let asked = |kept: &Kept, view: &View| format!("{:?}", kept.place("unix:/here", view));
-    let tab = r#"Some(SelectWindow { session: "second", window: "c" })"#;
+    let tab = r#"Some(SelectTab { session: "second", tab: "c" })"#;
     assert_eq!(asked(&kept, &view), tab);
     // Each server has its own place.
     assert!(kept.place("unix:/there", &view).is_none());
     // A tab that has gone leaves its session, which shows the tab the server has.
-    view.sessions[1].windows.pop();
+    view.sessions[1].tabs.pop();
     assert_eq!(asked(&kept, &view), r#"Some(SelectSession("second"))"#);
     view.sessions.pop();
     assert_eq!(asked(&kept, &view), "None");

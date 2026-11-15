@@ -7,7 +7,7 @@ fn pane(id: &str, [x, y, width, height]: [f32; 4]) -> Pane {
 #[test]
 fn the_pane_beside_another_is_the_nearest_alongside_it() {
     // One pane down the left, and three on the right: one above two side by side.
-    let window = Window {
+    let tab = Tab {
         id: "w".into(),
         panes: vec![
             pane("left", [0.0, 0.0, 0.6, 1.0]),
@@ -15,9 +15,9 @@ fn the_pane_beside_another_is_the_nearest_alongside_it() {
             pane("low", [0.6, 0.25, 0.2, 0.75]),
             pane("corner", [0.8, 0.25, 0.2, 0.75]),
         ],
-        ..Window::default()
+        ..Tab::default()
     };
-    let beside = |pane, toward| window.beside(pane, toward).map(|pane| pane.id.as_str());
+    let beside = |pane, toward| tab.beside(pane, toward).map(|pane| pane.id.as_str());
     let [left, right, up, down] = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]];
     assert_eq!(beside("left", right), Some("top"));
     assert_eq!(beside("top", down), Some("low"));
@@ -39,8 +39,7 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
         message: message.into(),
         ..pane(id, [0.0; 4])
     };
-    let tab =
-        |panes, hidden| Window { id: "w".into(), zoomed: true, panes, hidden, ..Window::default() };
+    let tab = |panes, hidden| Tab { id: "w".into(), zoomed: true, panes, hidden, ..Tab::default() };
     // One out of sight is heard too, and of two as pressing, the first.
     let hidden = vec![says("b", Activity::Done, "Built"), says("c", Activity::Done, "Later")];
     let busy = tab(vec![says("a", Activity::Working, "Thinking")], hidden);
@@ -49,7 +48,7 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
     assert_eq!(quiet.says(), (Activity::Idle, ""));
     assert_eq!(tab(Vec::new(), Vec::new()).says(), (Activity::Idle, ""));
     let session =
-        Session { id: "s".into(), name: "s".into(), active: None, windows: vec![quiet, busy] };
+        Session { id: "s".into(), name: "s".into(), active: None, tabs: vec![quiet, busy] };
     assert_eq!(session.activity(), Activity::Done);
     // It is told as one line, of whichever parts there are.
     assert_eq!(line("Done", "Built"), "Done: Built");
@@ -58,8 +57,8 @@ fn a_tab_says_the_most_pressing_thing_any_of_its_panes_has_to() {
     assert_eq!(line("", ""), "");
 }
 
-fn tab(id: &str) -> Window {
-    Window { id: id.into(), ..Window::default() }
+fn tab(id: &str) -> Tab {
+    Tab { id: id.into(), ..Tab::default() }
 }
 
 fn session(id: &str, active: Option<&str>, tabs: &[&str]) -> Session {
@@ -67,7 +66,7 @@ fn session(id: &str, active: Option<&str>, tabs: &[&str]) -> Session {
         id: id.into(),
         name: id.into(),
         active: active.map(str::to_owned),
-        windows: tabs.iter().map(|id| tab(id)).collect(),
+        tabs: tabs.iter().map(|id| tab(id)).collect(),
     }
 }
 
@@ -79,9 +78,9 @@ fn the_tab_on_show_stays_while_it_is_there_whatever_the_server_shows() {
         ..Default::default()
     };
     let shown = |view: &mut View, asked: Option<&str>| {
-        view.selected_window = asked.map(str::to_owned);
+        view.selected_tab = asked.map(str::to_owned);
         view.settle();
-        view.selected_window.clone()
+        view.selected_tab.clone()
     };
     // With none shown yet, the tab the server shows.
     assert_eq!(shown(&mut view, None).as_deref(), Some("b"));
@@ -90,19 +89,19 @@ fn the_tab_on_show_stays_while_it_is_there_whatever_the_server_shows() {
     assert_eq!(shown(&mut view, Some("c")).as_deref(), Some("c"));
     view.sessions[0].active = Some("a".into());
     view.settle();
-    assert_eq!(view.selected_window.as_deref(), Some("c"));
+    assert_eq!(view.selected_tab.as_deref(), Some("c"));
     // One that has closed gives way to the server's.
     assert_eq!(shown(&mut view, Some("gone")).as_deref(), Some("a"));
     // And where the view held is yet to have the server's, to the first.
     view.sessions[0].active = Some("gone".into());
     assert_eq!(shown(&mut view, None).as_deref(), Some("a"));
-    view.sessions[0].windows.clear();
+    view.sessions[0].tabs.clear();
     assert_eq!(shown(&mut view, Some("a")), None);
     // A session that has ended is on show no longer, with its tab.
     view.sessions.clear();
-    view.selected_window = Some("a".into());
+    view.selected_tab = Some("a".into());
     view.settle();
-    assert_eq!((view.selected_session, view.selected_window), (None, None));
+    assert_eq!((view.selected_session, view.selected_tab), (None, None));
 }
 
 #[test]
@@ -137,7 +136,7 @@ fn a_key_moves_the_border_of_the_split_a_pane_is_in_and_balancing_evens_them() {
         room,
         at,
     };
-    let tab = |split: f32| Window {
+    let tab = |split: f32| Tab {
         panes: vec![
             pane("a", [0.0, 0.0, split, 1.0]),
             pane("b", [split, 0.0, 1.0 - split, 0.5]),
@@ -183,6 +182,7 @@ fn a_key_moves_the_border_of_the_split_a_pane_is_in_and_balancing_evens_them() {
 
 #[test]
 fn a_directory_is_named_shortly_for_a_title() {
+    let folder = |path| super::folder(path, "/home/ada");
     assert_eq!(folder("/home/ada"), "~");
     assert_eq!(folder("/home/ada/code"), "~/code");
     assert_eq!(folder("/home/ada/code/x"), "~/code/x");
@@ -190,11 +190,11 @@ fn a_directory_is_named_shortly_for_a_title() {
     let deep = "/home/ada/work/projects/rex-lite";
     assert_eq!(folder(deep), "…/projects/rex-lite");
     assert_eq!(folder("/var/log/nginx"), "…/log/nginx");
-    // A shell may give it as an address, with its machine's name.
-    assert_eq!(folder("file://studio/home/ada/code"), "~/code");
-    assert_eq!(folder("/Users/a/b"), "~/b");
-    assert_eq!(folder("/root"), "~");
-    assert_eq!(folder("/rootfs/x"), "/rootfs/x");
+    // Home is where the server says it is, and nowhere that only looks like it.
+    assert_eq!(folder("/home/adamant"), "/home/adamant");
+    assert_eq!(folder("/home/other"), "/home/other");
+    assert_eq!(super::folder("/srv/me/code", "/srv/me"), "~/code");
+    assert_eq!(super::folder("/home/ada", ""), "/home/ada");
     assert_eq!(folder("/"), "/");
     assert_eq!(folder("/etc"), "/etc");
 }

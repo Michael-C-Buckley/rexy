@@ -41,12 +41,12 @@ impl App {
     /// The button that turns the sidebar to that list and back. It wears the
     /// most pressing thing any pane has to say, on any server.
     pub(super) fn watch(&mut self, ui: &mut egui::Ui, views: &[View]) {
-        let tip = match self.agents {
+        let tip = match self.activity {
             true => "Sessions and tabs",
-            false => "What is at work, on every server",
+            false => "Activity on every server",
         };
         let name = "client.sidebar.activity.toggle";
-        let button = toggle(ui, Icon::Agents, &self.keys.map.tip(tip, name), self.agents);
+        let button = toggle(ui, Icon::Agents, &self.keys.map.tip(tip, name), self.activity);
         let sessions = views.iter().flat_map(|view| &view.sessions);
         worn(ui, &button, sessions.map(|session| session.activity()).max());
         if button.clicked() {
@@ -75,20 +75,20 @@ impl App {
     /// The list itself, in place of the servers and their sessions.
     pub(super) fn agents(&mut self, ui: &mut egui::Ui, views: &[View]) {
         // Each pane listed, under its kind: since when it has been so, its
-        // server, and the session it is in.
+        // server, and the session and the tab it is in.
         let mut listed: [Vec<_>; 4] = Default::default();
         for (server, view) in views.iter().enumerate() {
-            for (session, tab) in view.tabs() {
+            for (session, tab) in view.every_tab() {
                 for pane in tab.every() {
                     if let Some(kind) = kind(pane) {
                         let since = self.heard.get(&pane.id).and_then(|heard| heard.since);
-                        listed[kind].push((since, server, session, pane));
+                        listed[kind].push((since, server, session, tab, pane));
                     }
                 }
             }
         }
         if listed.iter().all(Vec::is_empty) {
-            return caption(ui, egui::RichText::new("Nothing is at work."));
+            return caption(ui, egui::RichText::new("No activity."));
         }
         let mut picked = None;
         for (kind, mut panes) in KINDS.iter().zip(listed) {
@@ -100,12 +100,19 @@ impl App {
             let head = format!("{kind} · {}", panes.len());
             caption(ui, egui::RichText::new(head).font(bold(SMALL)));
             panes.sort_by_key(|listed| listed.0);
-            for (_, server, session, pane) in panes {
-                // With nothing said of it, its title. That is under the pointer
-                // otherwise.
+            for (_, server, session, tab, pane) in panes {
+                // It goes by its session, and by its tab where the session has
+                // others to tell it from.
+                let name = match session.tabs.len() {
+                    0 | 1 => session.name.clone(),
+                    _ => format!("{} › {}", session.name, tab.name()),
+                };
+                // With nothing said of it, its title, unless that is what its
+                // tab goes by. It is under the pointer otherwise.
                 let (said, word) = self.told(ui.ctx(), pane);
+                let title = Some(pane.title.as_str()).filter(|title| !name.ends_with(title));
                 let (under, tip) = match said.is_empty() {
-                    true => (pane.title.as_str(), ""),
+                    true => (title.unwrap_or_default(), ""),
                     false => (said.as_str(), pane.title.as_str()),
                 };
                 let shown = server == self.current && self.focused.as_ref() == Some(&pane.id);
@@ -113,7 +120,7 @@ impl App {
                 let row = Item {
                     id: Some(egui::Id::unique(("at work", host, &pane.id))),
                     icon: Some(pane.program),
-                    label: &session.name,
+                    label: &name,
                     under,
                     selected: shown,
                     mark: dot(ui.ctx(), pane.activity),

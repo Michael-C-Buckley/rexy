@@ -6,24 +6,20 @@ fn pane(id: &str) -> Pane {
     Pane { id: id.into(), title: id.to_uppercase(), idle: id == "idle", ..Pane::default() }
 }
 
-fn tab(id: &str, panes: &[&str]) -> Window {
-    Window { id: id.into(), panes: panes.iter().map(|id| pane(id)).collect(), ..Window::default() }
+fn tab(id: &str, panes: &[&str]) -> Tab {
+    Tab { id: id.into(), panes: panes.iter().map(|id| pane(id)).collect(), ..Tab::default() }
 }
 
 /// One session on show, with three tabs: the second on show, and split.
 fn view() -> View {
-    let session = |id: &str, windows| Session {
-        id: id.into(),
-        name: id.to_uppercase(),
-        active: None,
-        windows,
-    };
+    let session =
+        |id: &str, tabs| Session { id: id.into(), name: id.to_uppercase(), active: None, tabs };
     let tabs = vec![tab("t1", &["a"]), tab("t2", &["b", "idle", "c"]), tab("t3", &["d"])];
     View {
         connected: true,
         sessions: vec![session("s1", tabs), session("s2", Vec::new())],
         selected_session: Some("s1".into()),
-        selected_window: Some("t2".into()),
+        selected_tab: Some("t2".into()),
         ..Default::default()
     }
 }
@@ -34,12 +30,13 @@ fn plan(view: &View, focused: &str, name: &str, args: Value) -> Result<String, &
     let standing =
         Standing { view, focused: Some(focused), font_size: 15.0, sidebar: false, keys: &keys };
     Ok(match standing.plan(name, &args, None)? {
-        Deed::Ask(Action::SelectWindow { window, .. }) => format!("show {window}"),
-        Deed::Ask(Action::SelectSession(session)) => format!("show {session}"),
-        Deed::Ask(Action::Edit { edit, .. }) => format!("{edit:?}"),
-        Deed::Ask(Action::Split { pane, direction }) => format!("split {pane} {direction:?}"),
-        Deed::Ask(Action::Zoom { pane }) => format!("zoom {pane}"),
-        Deed::Ask(Action::Key { code, .. }) => format!("press {code}"),
+        Deed::Server(Action::SelectTab { tab, .. }) => format!("show {tab}"),
+        Deed::Server(Action::SelectSession(session)) => format!("show {session}"),
+        Deed::Server(Action::Edit { edit, .. }) => format!("{edit:?}"),
+        Deed::Server(Action::Split { pane, direction }) => format!("split {pane} {direction:?}"),
+        Deed::Server(Action::Swap { pane, with }) => format!("swap {pane} {with}"),
+        Deed::Server(Action::Zoom { pane }) => format!("zoom {pane}"),
+        Deed::Server(Action::Key { code, .. }) => format!("press {code}"),
         Deed::Focus(pane) => format!("focus {pane}"),
         Deed::Close(_, spared, _) => format!("close, spared: {spared}"),
         Deed::CloseTab(_, tab, spared) => format!("close {tab}, spared: {spared}"),
@@ -79,12 +76,20 @@ fn an_action_with_a_direction_goes_by_a_name_of_its_own() {
     );
     assert_eq!(named("pane.split.right", &right), "pane.split.right");
     assert_eq!(named("pane.zoom", &right), "pane.zoom");
-    let view = view();
-    let split = plan(&view, "b", "pane.split", right);
-    assert_eq!(split.as_deref(), Ok("split b Right"));
+    let mut view = view();
+    let split = |view: &View, way: &str| plan(view, "b", "pane.split", json!({"direction": way}));
+    assert_eq!(split(&view, "right").as_deref(), Ok("split b Right"));
+    assert_eq!(split(&view, "up").as_deref(), Ok("split b Up"));
     // One this client lacks is not among its actions.
-    let left = json!({"direction": "left"});
-    assert_eq!(plan(&view, "b", "pane.split", left), Err("not_supported"));
+    assert_eq!(split(&view, "auto"), Err("not_supported"));
+    // A pane changes places with the one on that side of it, where there is one.
+    let panes = &mut view.sessions[0].tabs[1].panes;
+    for (at, pane) in panes.iter_mut().enumerate() {
+        (pane.x, pane.width, pane.height) = (at as f32 / 3.0, 1.0 / 3.0, 1.0);
+    }
+    let moved = |way: &str| plan(&view, "b", "pane.move", json!({"direction": way}));
+    assert_eq!(moved("right").as_deref(), Ok("swap b idle"));
+    assert_eq!(moved("left"), Err("refused"));
 }
 
 #[test]
@@ -111,10 +116,8 @@ fn a_command_is_planned_for_what_is_on_show() {
     assert_eq!((select("s2").as_deref(), select("s9")), (Ok("show s2"), Err("refused")));
     // A session's name is there to be changed only in the sidebar.
     assert_eq!(plan("session.rename", none.clone()), Err("refused"));
-    assert_eq!(
-        plan("client.tab.rename", none.clone()).as_deref(),
-        Ok("rename Some(\"t2\") from B")
-    );
+    // A tab nobody named has no name to start from: it goes by its terminal's title.
+    assert_eq!(plan("client.tab.rename", none.clone()).as_deref(), Ok("rename Some(\"t2\") from "));
     assert_eq!(plan("client.tab.close", none.clone()).as_deref(), Ok("close t2, spared: false"));
     // Panes are those of the tab on show, round and round.
     assert_eq!(plan("pane.focus_next", none.clone()).as_deref(), Ok("focus idle"));
@@ -153,12 +156,12 @@ fn a_command_is_refused_where_it_has_nothing_to_act_on() {
     assert!(keeps("pane.copy"));
     assert!(!keeps("client.scroll.page_up") && !keeps("client.settings"));
     // A tab of one pane has nothing to zoom, and a first tab nowhere to move back to.
-    view.selected_window = Some("t1".into());
+    view.selected_tab = Some("t1".into());
     assert_eq!(plan(&view, "a", "pane.zoom", Value::Null), Err("refused"));
     assert_eq!(plan(&view, "a", "pane.focus_next", Value::Null), Err("refused"));
     assert_eq!(plan(&view, "a", "client.tab.move.backward", Value::Null), Err("refused"));
     assert_eq!(plan(&view, "b", "pane.split.right", Value::Null), Err("refused"));
-    view.selected_window = Some("t3".into());
+    view.selected_tab = Some("t3".into());
     assert_eq!(plan(&view, "d", "client.tab.move.forward", Value::Null), Err("refused"));
     // Without a connection there is the window itself to change, and the connection.
     view.connected = false;
