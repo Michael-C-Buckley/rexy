@@ -435,8 +435,7 @@ fn a_cursor_that_only_moved_and_colours_that_changed_are_drawn() {
     let shaped = drawn(&mut terminal, b"\x1b[?25h\x1b[6 q");
     let cursor = (shaped.cursor, shaped.cursor_shape);
     assert_eq!(cursor, (Some((1, 0)), CursorShape::Bar));
-    // One asked to blink does, and so does one of which no more is asked: as
-    // the server's own is not, though nothing was asked of it either.
+    // One asked to blink does, and so does one of which no more is asked.
     assert!(!shaped.cursor_blink);
     assert!(drawn(&mut terminal, b"\x1b[5 q").cursor_blink);
     let steady = drawn(&mut terminal, b"\x1b[2 q");
@@ -444,13 +443,13 @@ fn a_cursor_that_only_moved_and_colours_that_changed_are_drawn() {
         (steady.cursor_shape, steady.cursor_blink),
         (CursorShape::Block, false)
     );
+    // A steady block was asked for, and is kept. So is a steady bar.
     configure(&mut terminal).unwrap();
-    let unasked = drawn(&mut terminal, b"");
+    let block = drawn(&mut terminal, b"\x1b[1;4H");
     assert_eq!(
-        (unasked.cursor_shape, unasked.cursor_blink),
-        (CursorShape::Block, true)
+        (block.cursor_shape, block.cursor_blink),
+        (CursorShape::Block, false)
     );
-    // A steady bar was asked for, and is kept.
     drawn(&mut terminal, b"\x1b[6 q");
     configure(&mut terminal).unwrap();
     let asked = drawn(&mut terminal, b"\x1b[1;3H");
@@ -747,6 +746,16 @@ fn links_are_those_marked_and_those_written_out() {
     assert_eq!((link(4, 1), link(10, 2), link(11, 2)), (None, None, None));
     // A file is never followed, and a name without its kind is no address.
     assert_eq!((link(0, 3), link(5, 3)), (None, None));
+    // An address that runs on below the last row shown is not all there.
+    let mut terminal = self::terminal(20, 2);
+    terminal.vt_write(b"https://example.com/a/long/way/down/and/then/some");
+    let whole = "https://example.com/a/long/way/down/and/then/some".to_owned();
+    let shown = |frame: Arc<Frame>| crate::link::at(&frame, 3, 0).map(|link| link.target);
+    terminal.scroll_viewport(libghostty_vt::terminal::ScrollViewport::Top);
+    assert_eq!(shown(render(&terminal)), None);
+    let mut terminal = self::terminal(20, 3);
+    terminal.vt_write(whole.as_bytes());
+    assert_eq!(shown(render(&terminal)), Some(whole));
 }
 
 /// Counts what each thread asks of the allocator, for the benchmarks.

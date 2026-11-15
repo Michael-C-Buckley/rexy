@@ -39,7 +39,8 @@ pub fn at(frame: &Frame, x: usize, y: usize) -> Option<Link> {
     followed(&target).then_some(Link { target, spans })
 }
 
-/// An address written out in the text, which may run over rows that wrap.
+/// An address written out in the text, which may run over rows that wrap. One
+/// that runs on below the last row shown is not all there, and is no link.
 fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
     let wraps = |row: usize| frame.lines.get(row).is_some_and(|row| row.wrapped);
     let first = (0..y)
@@ -47,7 +48,7 @@ fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
         .take_while(|row| wraps(*row))
         .last()
         .unwrap_or(y);
-    let last = (y..).find(|row| !wraps(*row))?;
+    let last = (y..frame.lines.len()).find(|row| !wraps(*row))?;
     // Every character of the line, with the row and the column it is shown at.
     let mut line = Vec::new();
     for (row, cells) in frame.lines.iter().enumerate().take(last + 1).skip(first) {

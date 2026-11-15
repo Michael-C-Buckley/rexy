@@ -433,13 +433,8 @@ fn configure(terminal: &mut Terminal) -> Result<()> {
     terminal.set_kitty_image_temp_file_dir(None)?;
     terminal.set_scrollback_max_bytes(Some(SCROLLBACK_BYTES))?;
     // A cursor its program has asked nothing of blinks, as Ghostty's does. The
-    // server's own is steady, and its snapshot cannot say whether that was asked
-    // for: a steady block is taken for the cursor nobody asked anything of.
+    // snapshot says whether one was asked for, and one that was is left as it is.
     terminal.set_default_cursor_blink(Some(true))?;
-    let cursor = RenderState::new()?.update(terminal)?.cursor()?;
-    if cursor.visual_style == CursorVisualStyle::Block && !cursor.blinking {
-        terminal.vt_write(b"\x1b[0 q");
-    }
     Ok(())
 }
 

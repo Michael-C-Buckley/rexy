@@ -455,6 +455,8 @@ pub struct Pane {
     /// The terminal's title, as its program set it. At a shell's prompt, the
     /// shell and the directory it is in, where the server says.
     pub title: String,
+    /// The server's name for it, which it goes by when it has no title.
+    pub label: String,
     pub program: Program,
     pub activity: Activity,
     /// The line its program has to say of that, if it has one.

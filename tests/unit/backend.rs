@@ -306,6 +306,23 @@ fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at
     note(&mut blocks, status(json!({"state": "working"})));
     let held = pane(&blocks);
     assert_eq!((held.task.as_str(), held.progress), ("", Some(10)));
+    // A program that gives itself no title goes by the pane's label, whatever
+    // the pane went by before it: not by the prompt it has left.
+    let mut sessions = vec![Session {
+        windows: vec![Window {
+            panes: vec![Pane {
+                id: "p".into(),
+                title: "zsh ~/code".into(),
+                label: "shell".into(),
+                ..Pane::default()
+            }],
+            ..Window::default()
+        }],
+        ..Session::default()
+    }];
+    note(&mut blocks, News::Title(String::new()));
+    fill(&mut sessions, &blocks);
+    assert_eq!(sessions[0].windows[0].panes[0].title, "shell");
 }
 
 #[test]
@@ -326,18 +343,18 @@ fn a_pane_is_taken_only_from_an_owner_that_has_left_the_server() {
 #[test]
 fn what_keeps_failing_is_tried_again_less_often_or_not_at_all() {
     let lost = anyhow::Error::from(Ended::Dropped);
-    let secs = |failures, near| retry(&lost, failures, near).map(|wait| wait.as_secs());
-    // A server on this machine, and a terminal of a session joined, for ever.
-    let near: Vec<_> = (0..5).map(|failures| secs(failures, true)).collect();
-    assert_eq!(near, [2, 15, 15, 15, 15].map(Some));
-    // Another machine three times, and then when the user says.
-    let far: Vec<_> = (0..4).map(|failures| secs(failures, false)).collect();
-    assert_eq!(far, [Some(2), Some(15), None, None]);
-    // A server that this client cannot talk to is not asked again, however near,
-    // nor a terminal that has closed.
+    let secs = |failures, login| retry(&lost, failures, login).map(|wait| wait.as_secs());
+    // A server reached without a login, and a terminal of a session joined, for ever.
+    let open: Vec<_> = (0..5).map(|failures| secs(failures, false)).collect();
+    assert_eq!(open, [2, 15, 15, 15, 15].map(Some));
+    // One that is logged in to three times, and then when the user says.
+    let login: Vec<_> = (0..4).map(|failures| secs(failures, true)).collect();
+    assert_eq!(login, [Some(2), Some(15), None, None]);
+    // A server that this client cannot talk to is not asked again, however it is
+    // reached, nor a terminal that has closed.
     let refused = anyhow::Error::from(Ended::Incompatible("update the server".into()));
-    assert_eq!(retry(&refused.context("Connecting"), 0, true), None);
-    assert_eq!(retry(&Ended::BlockClosed.into(), 0, true), None);
+    assert_eq!(retry(&refused.context("Connecting"), 0, false), None);
+    assert_eq!(retry(&Ended::BlockClosed.into(), 0, false), None);
 }
 
 #[test]
@@ -560,4 +577,226 @@ fn a_terminal_fed_no_more_is_kept_for_its_last_screen() {
     assert!(shown("drawn") && client.terminal("drawn").is_ok());
     assert!(client.shared.terminal("drawn").is_none());
     assert!(!shown("blank") && client.terminal("blank").is_err());
+}
+
+/// A server of one connection at a socket of its own, which says what a test
+/// has it say.
+mod served {
+    use super::*;
+    use futures_util::SinkExt;
+    use tokio::net::{UnixListener, UnixStream};
+    use tokio_tungstenite::{
+        WebSocketStream,
+        tungstenite::{
+            Message,
+            handshake::server::{ErrorResponse, Request, Response},
+        },
+    };
+
+    pub type Socket = WebSocketStream<UnixStream>;
+
+    pub struct Server {
+        path: std::path::PathBuf,
+        listener: UnixListener,
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    impl Server {
+        pub fn at(name: &str) -> Self {
+            let name = format!("rex-lite-test-{name}-{}.sock", std::process::id());
+            let path = std::env::temp_dir().join(name);
+            let _ = std::fs::remove_file(&path);
+            let listener = UnixListener::bind(&path).unwrap();
+            Self { path, listener }
+        }
+
+        /// A client of it, and what the client's panes have to say.
+        pub fn client(&self) -> (Client, flume::Receiver<crate::notify::Note>) {
+            let endpoint = format!("unix://{}", self.path.display());
+            let (herald, notes) = Herald::new();
+            let client = Client::spawn(vec![endpoint], Arc::new(|| {}), herald, None, None);
+            (client, notes)
+        }
+
+        /// Take a client's connection and welcome it. None if the client has gone.
+        pub async fn welcome(&self) -> Option<Socket> {
+            let (stream, _) = self.listener.accept().await.unwrap();
+            // The size of the error is the library's choice.
+            #[allow(clippy::result_large_err)]
+            let agree = |request: &Request, mut response: Response| {
+                let protocol = request.headers()["Sec-WebSocket-Protocol"].clone();
+                let headers = response.headers_mut();
+                headers.insert("Sec-WebSocket-Protocol", protocol);
+                Ok::<_, ErrorResponse>(response)
+            };
+            let socket = tokio_tungstenite::accept_hdr_async(stream, agree);
+            let mut socket = socket.await.ok()?;
+            socket.next().await?.ok()?;
+            let welcome = json!({
+                "type": "welcome",
+                "protocol": "rex.control.v1",
+                "api_revision": 13,
+                "limits": {"max_message_bytes": 65536},
+                "client": {"id": "client:1"},
+            });
+            let welcome = Message::Text(welcome.to_string().into());
+            socket.send(welcome).await.ok()?;
+            Some(socket)
+        }
+    }
+
+    pub async fn say(socket: &mut Socket, message: Value) {
+        let message = Message::Text(message.to_string().into());
+        socket.send(message).await.unwrap();
+    }
+
+    /// The next thing asked: its number, its method and what it carries. None
+    /// if the client has gone, or asks nothing for a while.
+    pub async fn asked(socket: &mut Socket) -> Option<(String, String, Value)> {
+        let next = async {
+            loop {
+                if let Message::Text(text) = socket.next().await?.ok()? {
+                    return serde_json::from_str::<Value>(&text).ok();
+                }
+            }
+        };
+        let request = tokio::time::timeout(Duration::from_secs(2), next);
+        let request = request.await.ok()??;
+        let text = |key: &str| request[key].as_str().unwrap_or_default().to_owned();
+        Some((text("id"), text("method"), request["payload"].clone()))
+    }
+
+    pub async fn answer(socket: &mut Socket, id: &str, payload: Value) {
+        say(
+            socket,
+            json!({"type": "response", "id": id, "payload": payload}),
+        )
+        .await;
+    }
+
+    /// Answer what a client asks first, with the sessions there are, and what
+    /// it asks next but for their views: those are handed back, by session.
+    pub async fn listed(socket: &mut Socket, sessions: &[&str]) -> HashMap<String, String> {
+        let (id, method, _) = asked(socket).await.unwrap();
+        assert_eq!(method, "session.bootstrap");
+        let named = |id: &&str| json!({"session_id": id, "label": id});
+        let named: Vec<_> = sessions.iter().map(named).collect();
+        let boot = json!({"attach_all": {"sessions": named}, "attached_sessions": []});
+        answer(socket, &id, boot).await;
+        // The view of each, and the host list.
+        let mut views = HashMap::new();
+        for _ in 0..=sessions.len() {
+            let (id, method, payload) = asked(socket).await.unwrap();
+            match method.as_str() {
+                "session.view" => {
+                    let session = payload["session_id"].as_str().unwrap();
+                    views.insert(session.to_owned(), id);
+                }
+                _ => answer(socket, &id, json!({})).await,
+            }
+        }
+        views
+    }
+
+    /// Wait for a client to be as a test would have it.
+    pub async fn until(client: &Client, what: &str, ready: impl Fn(&View) -> bool) -> View {
+        for _ in 0..200 {
+            let view = client.snapshot();
+            if ready(&view) {
+                return view;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+}
+
+#[tokio::test]
+async fn a_client_let_go_while_connecting_asks_nothing_of_the_server() {
+    let server = served::Server::at("orphan");
+    drop(server.client());
+    // Only now does the server take the connection, or what is left of it, if
+    // one was made at all.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let asked = async { served::asked(&mut server.welcome().await?).await };
+    let asked = tokio::time::timeout(Duration::from_millis(500), asked).await;
+    let asked = asked.ok().flatten().map(|(_, method, _)| method);
+    assert_eq!(asked, None);
+}
+
+#[tokio::test]
+async fn news_sent_ahead_of_an_answer_is_not_told_as_if_it_came_after() {
+    use served::{answer, asked, say};
+    let server = served::Server::at("news");
+    let (client, notes) = server.client();
+    let mut socket = server.welcome().await.unwrap();
+    let views = served::listed(&mut socket, &["s1", "s2"]).await;
+    let layer = json!({
+        "kind": "tiled",
+        "layout": {"rect": [0, 0, 1, 1], "block_id": "b1"},
+        "blocks": [{"block_id": "b1", "creator_name": TERMINAL}],
+    });
+    let window = json!({"window_id": "w1", "layers": [layer]});
+    let view = json!({"revision": 1, "active_window_id": "w1", "windows": [window]});
+    answer(&mut socket, &views["s1"], view).await;
+    // The terminal is asked about, four ways.
+    let mut about = Vec::new();
+    for _ in 0..4 {
+        let (id, method, _) = asked(&mut socket).await.unwrap();
+        about.push((method, id));
+    }
+    // It was waiting on the user, it went back to work, and then the answers
+    // were written, which say it is at work.
+    let status = |state: &str| {
+        let record = json!({"id": "x", "state": state, "msg": "m"});
+        let payload = json!({"id": "x", "record": record});
+        let news = json!({"block_id": "b1", "name": "program_status_changed", "payload": payload});
+        json!({"type": "event", "payload": {"type": "block_event", "payload": news}})
+    };
+    say(&mut socket, status("blocked")).await;
+    say(&mut socket, status("working")).await;
+    for (method, id) in &about {
+        let payload = match method.as_str() {
+            STATUS => json!({"records": [{"id": "x", "state": "working", "msg": "m"}]}),
+            _ => json!({}),
+        };
+        answer(&mut socket, id, payload).await;
+    }
+    // The last view comes, and the client is connected.
+    answer(
+        &mut socket,
+        &views["s2"],
+        json!({"revision": 1, "windows": []}),
+    )
+    .await;
+    let at_work = |view: &View| {
+        let pane = view.find("b1").map(|(_, _, pane)| pane.activity);
+        view.connected && pane == Some(Activity::Working)
+    };
+    served::until(&client, "a pane at work", at_work).await;
+    let said: Vec<String> = notes.try_iter().map(|note| note.body).collect();
+    assert!(said.is_empty(), "old news was told: {said:?}");
+}
+
+#[tokio::test]
+async fn a_view_that_does_not_come_is_said_and_its_session_still_listed() {
+    let server = served::Server::at("view");
+    let (client, _notes) = server.client();
+    let mut socket = server.welcome().await.unwrap();
+    let views = served::listed(&mut socket, &["s1"]).await;
+    let error = json!({"code": "internal", "message": "busy"});
+    let refusal = json!({"type": "response", "id": views["s1"], "error": error});
+    served::say(&mut socket, refusal).await;
+    let view = served::until(&client, "a connection", |view| view.connected).await;
+    assert_eq!(view.sessions.len(), 1);
+    let error = view.error.or_else(|| client.snapshot().error);
+    assert_eq!(
+        error.as_deref(),
+        Some("A session's tabs were not read: internal: busy")
+    );
 }

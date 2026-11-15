@@ -268,7 +268,9 @@ fn a_key_is_spelled_as_rex_spells_it() {
     for (key, name, place) in named {
         assert_eq!(spelled(key, key, model::SHIFT), [name, place]);
     }
-    assert_eq!(spellings(Key::Escape, None, 0).unwrap()[0], "escape");
+    // Escape is the one key Rex shortens, in a binding. Its code is whole.
+    assert_eq!(spellings(Key::Escape, None, 0).unwrap()[0], "esc");
+    assert_eq!(key_code(Key::Escape).as_deref(), Some("escape"));
     assert_eq!(spelled(Key::K, Key::K, model::SUPER)[0], "cmd+k");
     // A modifier alone is no chord.
     assert_eq!(
@@ -343,4 +345,27 @@ fn the_key_that_ends_a_sequence_goes_with_the_keys_before_it() {
     assert_eq!(prefix(&out[1]), ["ctrl+x"]);
     assert_eq!(key_of(&out[1]).1, model::CTRL);
     assert_eq!(keyboard.prefix, None);
+}
+
+#[test]
+fn a_key_that_types_nothing_is_named_for_what_it_does() {
+    // With NumLock off, the 8 of a number pad is Up, and its 7 is Home.
+    let pad = |key, place| Event::Key {
+        key,
+        physical_key: Some(place),
+        pressed: true,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+    };
+    let events = [pad(Key::ArrowUp, Key::Num8), pad(Key::Home, Key::Num7)];
+    let out = Keyboard::default().translate("p", &events);
+    let codes = out.iter().map(|action| match action {
+        Action::Key { code, .. } => code.as_str(),
+        _ => "",
+    });
+    assert_eq!(codes.collect::<Vec<_>>(), ["arrow_up", "home"]);
+    // One that types is still named for its place: another layout's letter there.
+    let typed = [pad(Key::Q, Key::A), Event::Text("q".into())];
+    let out = Keyboard::default().translate("p", &typed);
+    assert!(matches!(&out[0], Action::Key { key, code, .. } if key == "q" && code == "key_a"));
 }

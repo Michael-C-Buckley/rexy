@@ -221,8 +221,9 @@ pub(super) enum Deed {
     /// Closing a pane by an action, unless programs may be lost by it and this
     /// is the first asking: by its name, and whether nothing would be lost.
     Close(egui::Id, bool, Action),
-    /// Closing a tab of a session, likewise.
-    CloseTab(String, String, bool),
+    /// Closing a tab of a session, likewise. Last, whether the question is put
+    /// on the session's row, which is all the row its one tab has.
+    CloseTab(String, String, bool, bool),
     /// Opening the field that renames a session, or the tab of it that is
     /// given, on the name it goes by.
     Rename(String, Option<String>, String),
@@ -355,7 +356,11 @@ impl Standing<'_> {
                 Deed::Rename(session.id.clone(), None, session.name.clone())
             }
             "client.tab.new" => Deed::Ask(Action::CreateWindow(session()?)),
-            "client.tab.close" => Deed::CloseTab(session()?, tab?.id.clone(), tab?.idle()),
+            "client.tab.close" => {
+                // A session's one tab has no row in the sidebar but the session's.
+                let lone = self.sidebar && view.windows().len() == 1;
+                Deed::CloseTab(session()?, tab?.id.clone(), tab?.idle(), lone)
+            }
             "client.tab.rename" => {
                 let (id, name) = (tab?.id.clone(), tab?.name().to_owned());
                 Deed::Rename(session()?, Some(id), name)
@@ -476,12 +481,23 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
             }
             Deed::Close(what, spared, action) => self.close(what, spared, near, server, action),
-            Deed::CloseTab(session, window, spared) => {
-                let target = row(session, Some(window));
-                let (what, action) = (self.row(&target), target.edit(Edit::Close));
+            Deed::CloseTab(session, window, spared, lone) => {
+                let target = row(session.clone(), Some(window));
+                let asked = if lone {
+                    row(session, None)
+                } else {
+                    target.clone()
+                };
+                let (what, action) = (self.row(&asked), target.edit(Edit::Close));
+                // It asks again on a row, which the list of what is at work has not.
+                if !spared {
+                    self.agents = false;
+                }
                 self.close(what, spared, near, server, action);
             }
+            // In a field on its row, likewise.
             Deed::Rename(session, window, name) => {
+                self.agents = false;
                 self.choose(row(session, window), &name, Choice::Rename);
             }
             Deed::Enter(name, once) => self.keys.modes.push((name, once)),

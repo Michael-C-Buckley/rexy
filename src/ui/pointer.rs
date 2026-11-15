@@ -89,6 +89,10 @@ impl Pointer<'_> {
                     pressed,
                     modifiers,
                 } => {
+                    // A button Rex has no name for is not the program's.
+                    let Some(named) = mouse_button(*button) else {
+                        continue;
+                    };
                     // Hovered, not merely inside: whatever is drawn over the pane keeps its clicks.
                     let start = *pressed && self.tracking && self.response.hovered();
                     let end = !pressed && state.mouse_button == Some(*button);
@@ -99,7 +103,7 @@ impl Pointer<'_> {
                             kind: if *pressed { "press" } else { "release" },
                             x,
                             y,
-                            button: Some(mouse_button(*button)),
+                            button: Some(named),
                             modifiers: self.keyboard.bits(*modifiers),
                         });
                         state.mouse_button = pressed.then_some(*button);
@@ -128,7 +132,7 @@ impl Pointer<'_> {
                 kind: "motion",
                 x,
                 y,
-                button: state.mouse_button.map(mouse_button),
+                button: state.mouse_button.and_then(mouse_button),
                 modifiers: self.keyboard.bits(self.ui.input(|i| i.modifiers)),
             });
         }
@@ -222,11 +226,13 @@ impl Pointer<'_> {
     }
 }
 
-fn mouse_button(button: egui::PointerButton) -> &'static str {
+/// A button as Rex names it. It has no name for those at a mouse's side.
+fn mouse_button(button: egui::PointerButton) -> Option<&'static str> {
     match button {
-        egui::PointerButton::Secondary => "right",
-        egui::PointerButton::Middle => "middle",
-        _ => "left",
+        egui::PointerButton::Primary => Some("left"),
+        egui::PointerButton::Secondary => Some("right"),
+        egui::PointerButton::Middle => Some("middle"),
+        _ => None,
     }
 }
 

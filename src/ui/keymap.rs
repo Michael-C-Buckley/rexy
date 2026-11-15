@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::commands;
+use super::{commands, input};
 
 /// The action of a key that a function on the server is bound to: the key is
 /// sent there, as any key is.
@@ -119,11 +119,19 @@ impl Keymap {
     }
 
     /// The keys that do something, as they are shown: `Ctrl+Shift+D`, or nothing
-    /// for what has none. Of several, those that would be tried first.
+    /// for what has none. Of several, those that would be tried first. Keys
+    /// that never come to it are not its keys: those that something tried
+    /// before it always takes, as what is sent on to the server does.
     pub fn shortcut(&self, name: &str) -> String {
-        let mut bound = self.bindings.iter();
-        let bound = bound.find(|bound| bound.name == name && bound.mode.is_none());
-        bound.map_or_else(String::new, |bound| {
+        let always = |over: &Binding| over.name == FORWARD || self.served(&over.name).is_some();
+        let reached = |at: usize, bound: &Binding| {
+            let over = |over: &Binding| over.mode.is_none() && over.keys == bound.keys;
+            !self.bindings[..at].iter().any(|b| over(b) && always(b))
+        };
+        let mut bound = self.bindings.iter().enumerate();
+        let bound = bound
+            .find(|(at, bound)| bound.name == name && bound.mode.is_none() && reached(*at, bound));
+        bound.map_or_else(String::new, |(_, bound)| {
             let keys = bound.keys.iter().map(|key| shown(key));
             keys.collect::<Vec<_>>().join(", ")
         })
@@ -220,7 +228,7 @@ pub fn resolve<'a>(
 ) -> Step<'a> {
     let escape = pressed
         .last()
-        .is_some_and(|key| key.iter().any(|key| key == "escape"));
+        .is_some_and(|key| key.iter().any(|key| key == input::ESCAPE));
     if escape && pressed.len() > 1 {
         return Step::Void;
     }

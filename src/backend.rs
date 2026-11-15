@@ -71,10 +71,11 @@ struct State {
     view: View,
     /// The terminals being fed what their panes show, which take what is typed.
     terminals: HashMap<String, TerminalHandle>,
-    /// Those fed no more, since a stream or the connection failed. Each is kept
-    /// for its last screen, to be read, looked through and copied from, until
-    /// its pane is fed again or goes from sight. Nothing is typed into one.
-    last: HashMap<String, TerminalHandle>,
+    /// Those fed no more, since a stream or the connection failed. Each that has
+    /// drawn is kept for its last screen, to be read, looked through and copied
+    /// from, until its pane is fed again or goes from sight. Nothing is typed
+    /// into one, whether or not it had drawn.
+    last: HashMap<String, Option<TerminalHandle>>,
     /// How many times the user has asked for something to be shown, or to be left.
     /// Each asking goes to the worker with its number, so that what the server
     /// shows moves what is on show only once it has answered the last of them.
@@ -82,13 +83,14 @@ struct State {
 }
 
 impl State {
-    /// Stop counting a pane's terminal among those fed. One that has drawn is
-    /// kept for its last screen.
+    /// Count a pane's terminal among those fed no more. One that has drawn is
+    /// kept for its last screen, as is the screen kept from an earlier time.
     fn rest(&mut self, pane: &str) {
-        if let Some(terminal) = self.terminals.remove(pane)
-            && terminal.latest().is_some()
-        {
-            self.last.insert(pane.into(), terminal);
+        let terminal = self.terminals.remove(pane);
+        let drawn = terminal.filter(|terminal| terminal.latest().is_some());
+        let kept = self.last.entry(pane.into()).or_default();
+        if drawn.is_some() {
+            *kept = drawn;
         }
     }
 }
@@ -212,7 +214,7 @@ impl Client {
                     None if pane.frame.is_some() => String::new(),
                     None => "Restoring terminal…".into(),
                 };
-            } else if let Some(terminal) = state.last.get(&pane.id) {
+            } else if let Some(Some(terminal)) = state.last.get(&pane.id) {
                 // Its last screen, with what has been selected on it since.
                 pane.frame = terminal.latest();
             }
@@ -285,7 +287,8 @@ impl Client {
     /// history, selecting, and finding text.
     pub fn terminal(&self, pane: &str) -> Result<TerminalHandle, String> {
         let state = self.shared.lock();
-        let terminal = state.terminals.get(pane).or_else(|| state.last.get(pane));
+        let kept = || state.last.get(pane)?.as_ref();
+        let terminal = state.terminals.get(pane).or_else(kept);
         terminal
             .cloned()
             .ok_or_else(|| "Terminal is not ready".into())
@@ -293,17 +296,17 @@ impl Client {
 }
 
 /// How long to wait before trying again what has failed with `error`, having failed
-/// `failures` times running before, or `None` to try it no more unasked. What is `near`, on this machine
-/// or already joined, is tried for as long as it takes, slowly. Another machine is
-/// left alone after a few tries: one that keeps refusing a login may come to
-/// refuse the address it comes from.
-fn retry(error: &anyhow::Error, failures: usize, near: bool) -> Option<Duration> {
+/// `failures` times running before, or `None` to try it no more unasked. Most is
+/// tried for as long as it takes, slowly. What is reached by a `login` to another
+/// machine is left alone after a few tries: one that keeps refusing a login may
+/// come to refuse the address it comes from.
+fn retry(error: &anyhow::Error, failures: usize, login: bool) -> Option<Duration> {
     // A server this client cannot talk to, and a terminal that has closed, will
     // be no different next time.
     if let Some(Ended::Incompatible(_) | Ended::BlockClosed) = error.downcast_ref() {
         return None;
     }
-    let slowly = RETRY.last().filter(|_| near);
+    let slowly = RETRY.last().filter(|_| !login);
     RETRY.get(failures).or(slowly).copied()
 }
 
@@ -332,13 +335,9 @@ async fn run(
     mut actions: mpsc::Receiver<(Action, u64)>,
     shared: Shared,
 ) {
-    let socket = |endpoint: &String| {
-        matches!(
-            wire::targets(endpoint).as_deref(),
-            Ok([wire::Target::Unix(_)])
-        )
-    };
-    let near = endpoints.iter().all(socket);
+    let login = endpoints
+        .iter()
+        .any(|endpoint| endpoint.starts_with("ssh://"));
     let mut link = Link {
         keymap,
         theme,
@@ -358,7 +357,7 @@ async fn run(
         let delay = match &result {
             // The user asked for it to be made again, which is done at once.
             Ok(()) => Some(Duration::ZERO),
-            Err(error) => retry(error, failures, near),
+            Err(error) => retry(error, failures, login),
         };
         failures += 1;
         shared.change(|s| {
@@ -419,14 +418,24 @@ async fn run_connected(
     actions: &mut mpsc::Receiver<(Action, u64)>,
     shared: &Shared,
 ) -> Result<()> {
-    let (_tunnel, mut control) = connect(endpoints, link).await?;
-    link.token = control.reconnect_token.take();
-    link.target = Some(control.target.clone());
-    let mut connection = Connection::open(&control, link, shared).await?;
+    let opened = async move {
+        let (tunnel, mut control) = connect(endpoints, link).await?;
+        link.token = control.reconnect_token.take();
+        link.target = Some(control.target.clone());
+        let connection = Connection::open(&control, link, shared).await?;
+        anyhow::Ok((tunnel, control, connection))
+    };
+    // A client that goes while its connection is being made has no use for it.
+    // Nothing else is asked of one that is yet to be made but to make it.
+    let gone = async { while actions.recv().await.is_some() {} };
+    let (_tunnel, mut control, mut connection) = tokio::select! {
+        opened = opened => opened?,
+        () = gone => return Ok(()),
+    };
     let mut connected = false;
     loop {
         // The UI is told of the connection once the tabs of every session have come,
-        // so that it is never shown half a server. News waits its turn until then.
+        // so that it is never shown half a server.
         if !connected && connection.views.values().all(|held| !held.asking) {
             connected = true;
             while actions.try_recv().is_ok() {} // Requests to try again have been answered.
@@ -439,13 +448,17 @@ async fn run_connected(
             connection.show().await;
         }
         tokio::select! {
+            // In this order: the server's news is taken before its answers, as it
+            // sent them. An answer taken first would have older news follow it,
+            // and be told of as if it were new.
+            biased;
             // Its worker alone knows why a connection has ended. Nothing else here
             // ends one, so that this is what is said of it.
             result = &mut control.task => {
                 result.context("Rex control worker stopped")??;
                 bail!(ENDED);
             }
-            Some(event) = control.events.recv(), if connected => connection.event(event).await,
+            Some(event) = control.events.recv() => connection.event(event).await,
             // Nothing comes of what was asked of a connection that has ended.
             Some(Some((reply, answer))) = connection.replies.next() => {
                 connection.answered(reply, answer).await;
@@ -479,6 +492,9 @@ enum Reply {
     Change(String, u64, Option<String>),
     /// A session's view.
     View(String),
+    /// A session whose view did not come, when it is time to ask for it again.
+    /// No answer of the server's: the wait is over.
+    Unseen(String),
     /// Joining a session, and leaving one.
     Joined(String),
     Left(String),
@@ -834,10 +850,19 @@ impl<'a> Connection<'a> {
                 return;
             }
             Event::Asked(asked) => {
-                // A window that is out of sight takes nothing. What it has not
-                // taken after a while is refused for it, and so never done late.
                 let (shared, rpc, call) =
                     (self.shared.clone(), self.rpc.clone(), asked.call.clone());
+                // A window still connecting can do nothing, and says so at once.
+                if !shared.lock().view.connected {
+                    if let Some(call) = call {
+                        let _ = rpc
+                            .enqueue("client.reply", reply(&call, Some("refused")))
+                            .await;
+                    }
+                    return;
+                }
+                // A window that is out of sight takes nothing. What it has not
+                // taken after a while is refused for it, and so never done late.
                 self.shared.change(|s| s.view.asked.push(asked));
                 tokio::spawn(async move {
                     tokio::time::sleep(UNTAKEN).await;
@@ -976,13 +1001,27 @@ impl<'a> Connection<'a> {
                 if let Some(held) = self.views.get_mut(&session) {
                     held.asking = false;
                 }
-                // A session that ended a moment ago has none, as the news will say.
-                if let Ok(view) = answer {
-                    self.view(&session, &view).await;
-                    // A newer one may have been heard of while this was on its way.
-                    self.want(&session, 0).await;
+                match answer {
+                    Ok(view) => {
+                        self.view(&session, &view).await;
+                        // A newer one may have been heard of while this was on its way.
+                        self.want(&session, 0).await;
+                    }
+                    // A session that ended a moment ago has none, as the news will say.
+                    Err(error) if error.starts_with("session_not_found") => {}
+                    // Its tabs are not known for any other reason: say so, and ask
+                    // again in a while, if nothing has asked by then.
+                    Err(error) => {
+                        self.shared
+                            .fail(format!("A session's tabs were not read: {error}"));
+                        self.replies.push(Box::pin(async move {
+                            tokio::time::sleep(RETRY[1]).await;
+                            Some((Reply::Unseen(session), Ok(Value::Null)))
+                        }));
+                    }
                 }
             }
+            (Reply::Unseen(session), _) => self.want(&session, 0).await,
             (Reply::Joined(session), answer) => {
                 self.joining = None;
                 match answer {
@@ -1423,6 +1462,11 @@ impl<'a> Connection<'a> {
     async fn input(&mut self, action: Action) -> Result<()> {
         let event =
             |kind: &str, payload: Value| json!({"event": {"type": kind, "payload": payload}});
+        // What is typed, which a terminal takes before it has drawn.
+        let typed = matches!(
+            action,
+            Action::Key { .. } | Action::Text { .. } | Action::Paste { .. }
+        );
         // Input that engages the terminal takes ownership and returns to live
         // output. A size engages nothing, and is taken by a terminal not yet seen.
         let (pane, method, mut payload, engage) = match action {
@@ -1514,19 +1558,27 @@ impl<'a> Connection<'a> {
         payload["session_id"] = json!(session);
         payload["block_id"] = json!(pane);
         if let Some(engage) = engage {
-            let ready = self
-                .shared
-                .terminal(&pane)
-                .filter(|terminal| terminal.latest().is_some() && terminal.status().is_none());
-            let Some(terminal) = ready else {
+            let terminal = self.shared.terminal(&pane);
+            // A terminal that is fed no more takes nothing: what it shows, if
+            // anything, is what it last showed. One that is being fed and has yet
+            // to draw, as a pane just made is, takes what is typed ahead: only the
+            // pointer needs a screen to mean anything.
+            let lost = match &terminal {
+                Some(terminal) => terminal.status().is_some(),
+                None => self.shared.lock().last.contains_key(&pane),
+            };
+            let drawn = terminal.as_ref().is_some_and(|t| t.latest().is_some());
+            if lost || !(typed || drawn) {
                 // A release or a motion may trail a pane that has left the screen.
                 // Only input that would have done something is worth a complaint.
                 ensure!(!engage, "Terminal is not ready; input was not sent");
                 return Ok(());
-            };
+            }
             if engage {
                 self.claim(&session, &pane).await;
-                terminal.ask(Request::Scroll(Scroll::Bottom));
+                if let Some(terminal) = terminal {
+                    terminal.ask(Request::Scroll(Scroll::Bottom));
+                }
             }
         }
         self.ask(Reply::Input, method, payload).await;
@@ -1583,7 +1635,7 @@ async fn stream_pane(
         if began.elapsed() > RETRY[1] {
             failures = 0;
         }
-        let wait = retry(&error, failures, true);
+        let wait = retry(&error, failures, false);
         failures += 1;
         shared.change(|s| {
             s.rest(&pane);
@@ -1791,9 +1843,11 @@ fn parse_windows(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> 
                         None => (&mut panes, bounds),
                     };
                     let [x, y, width, height] = bounds;
+                    let named = label(block["label"].as_str(), other.unwrap_or("Terminal"));
                     panes.push(Pane {
                         id,
-                        title: label(block["label"].as_str(), other.unwrap_or("Terminal")),
+                        title: named.clone(),
+                        label: named,
                         program: Program::default(),
                         activity: Activity::Idle,
                         message: String::new(),
@@ -1871,12 +1925,14 @@ fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
             pane.idle = block.shell.is_some() && block.shell == block.foreground;
             // At its shell's prompt it goes by the shell and where that is: the
             // title a prompt sets tells who is at what machine first, and at
-            // length. One with no title keeps its label.
+            // length. One with no title goes by its label.
             if pane.idle && !block.folder.is_empty() {
                 let named = format!("{} {}", block.prompt, model::folder(&block.folder));
                 named.trim_start().clone_into(&mut pane.title);
             } else if !block.title.is_empty() {
                 pane.title.clone_from(&block.title);
+            } else {
+                pane.title.clone_from(&pane.label);
             }
             // What it is doing, by the record that speaks for it: the line said of
             // that, what it is at, and how far along. Failing the last, how far the

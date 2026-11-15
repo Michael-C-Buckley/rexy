@@ -104,7 +104,10 @@ impl Keyboard {
                     repeat,
                 } => {
                     let identity = physical_key.unwrap_or(*key);
-                    let Some(code) = key_code(identity) else {
+                    // A key that types nothing is named for what it does, not for
+                    // where it is: with NumLock off, the 8 of a number pad is Up.
+                    let named = if is_printable(*key) { identity } else { *key };
+                    let Some(code) = key_code(named) else {
                         continue;
                     };
                     // The text this press typed follows it, before any other key event.
@@ -197,6 +200,9 @@ pub fn clears_selection(action: &Action) -> bool {
     }
 }
 
+/// Escape as Rex spells it.
+pub const ESCAPE: &str = "esc";
+
 /// The modifiers as Rex spells them, in the order it writes them.
 const MODIFIERS: [(u8, &str); 4] = [
     (model::CTRL, "ctrl"),
@@ -221,6 +227,7 @@ pub fn spellings(key: Key, physical: Option<Key>, modifiers: u8) -> Option<Vec<S
     };
     let name = match logical_text(plain) {
         Some(text) if !text.trim().is_empty() => text,
+        _ if plain == Key::Escape => ESCAPE.to_owned(),
         _ => plain.name().to_lowercase(),
     };
     // `page_up` is PageUp in a place's name.

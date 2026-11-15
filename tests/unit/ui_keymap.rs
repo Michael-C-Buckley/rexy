@@ -87,7 +87,7 @@ fn a_sequence_waits_for_its_keys_and_hides_the_key_it_starts_with() {
     assert_eq!(step(&map, &[], &["ctrl+b", "x"]), Ok(FORWARD));
     // A key that goes on no sequence is the terminal's, and Escape ends one.
     assert_eq!(step(&map, &[], &["ctrl+b", "q"]), Err(Step::Pass));
-    assert_eq!(step(&map, &[], &["ctrl+b", "escape"]), Err(Step::Void));
+    assert_eq!(step(&map, &[], &["ctrl+b", "esc"]), Err(Step::Void));
     // With nothing the sequence could come to, its first key is free.
     let none = |bound: &Binding| bound.keys.len() == 1;
     assert_eq!(
@@ -106,7 +106,7 @@ fn a_mode_has_its_own_keys_and_leaves_the_rest_unless_it_says_otherwise() {
     // What it does not bind is as it was, but for a key it blocks.
     assert_eq!(step(&map, &["move"], &["ctrl+m"]), Ok("pane.zoom"));
     assert_eq!(step(&map, &["move"], &["ctrl+d"]), Err(Step::Void));
-    assert_eq!(step(&map, &["move"], &["escape"]), Err(Step::Leave));
+    assert_eq!(step(&map, &["move"], &["esc"]), Err(Step::Leave));
     // One that is all there is ignores every other key. The last entered is asked first.
     assert_eq!(step(&map, &["move", "only"], &["left"]), Err(Step::Void));
     assert_eq!(
@@ -120,6 +120,8 @@ fn a_mode_has_its_own_keys_and_leaves_the_rest_unless_it_says_otherwise() {
 fn keys_are_shown_as_they_are_read_on_a_keyboard() {
     let map = map();
     assert_eq!(map.shortcut("client.tab.new"), "Ctrl+B, C");
+    // Not a key that is sent on to the server before it comes to this.
+    assert_eq!(map.shortcut("pane.zoom"), "Ctrl+M");
     assert_eq!(map.tip("Split", "pane.split.right"), "Split (Ctrl+D)");
     // Those of a mode are not its keys the rest of the time.
     assert_eq!(map.tip("Top", "client.scroll.top"), "Top");

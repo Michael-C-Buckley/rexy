@@ -102,6 +102,8 @@ pub struct App {
     servers: Vec<Server>,
     /// The server whose session fills the window.
     current: usize,
+    /// The server it is to turn to when it next draws.
+    next: Option<usize>,
     /// Home's address, as typed.
     endpoint: String,
     /// The pane that has the keyboard, while one is on screen.
@@ -157,6 +159,7 @@ impl App {
         Self {
             servers: vec![Server::home(&cc.egui_ctx, &endpoint, &herald)],
             current: 0,
+            next: None,
             endpoint,
             focused: None,
             panes: HashMap::new(),
@@ -202,14 +205,25 @@ impl App {
         true
     }
 
-    /// Show a session or a tab, on whichever server it lives.
+    /// Show a session or a tab, on whichever server it lives. The window turns
+    /// to another server when it next draws: what it has still to draw and to
+    /// send as it is, such as a key typed in the same moment, is for the server
+    /// it began with.
     fn open(&mut self, server: usize, action: Action) {
         if server != self.current {
+            self.next = Some(server);
+        }
+        self.tell(server, action);
+    }
+
+    /// Turn to the server that was asked for while the window last drew.
+    fn turn(&mut self) {
+        let next = self.next.take().filter(|next| *next < self.servers.len());
+        if let Some(next) = next.filter(|next| *next != self.current) {
             // The session left behind keeps running; this window just stops watching it.
             self.servers[self.current].client.leave();
-            self.current = server;
+            self.current = next;
         }
-        self.send(action);
     }
 
     /// Something other than a terminal is taking what is typed.
@@ -357,6 +371,7 @@ impl eframe::App for App {
 
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
+        self.turn();
         let home = self.servers[0].client.snapshot();
         self.follow_hosts(&ctx, &home);
         let others = self.servers[1..].iter().map(|s| s.client.snapshot());
