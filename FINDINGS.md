@@ -52,7 +52,7 @@ The new connection tests use a small fake server added to `tests/unit/backend.rs
 
 **3. Add the fake-server test for the connection state machine (7.1)** before touching anything in step 4. *Two tests are in (`2626c56`): picking a tab, and feeding, taking and giving up the panes of a tab on show. They state today's behaviour and will change with the two decisions that rewrite it.* The harness already exists in `work/review/`.
 
-**4. Decide the five behaviour questions.** *Decided on 2026-11-14, as recommended: shortcuts follow home (done, `2626c56`); pane focus stays the window's own (no change); a tab's panes are taken when it comes on show (to do); a picked tab stays picked (done, unstaged); remote control sits behind a setting, off at first (done, `2626c56`).* Each one removes machinery:
+**4. Decide the five behaviour questions.** *Decided on 2026-11-14, as recommended: shortcuts follow home (done, `2626c56`); pane focus stays the window's own (no change); a tab's panes are taken when it comes on show (done; typing and clicking still take a pane, since without that a window could not get one back); a picked tab stays picked (done; what the user has the server do, by a key a Lua function answers or by an action, still moves the window with the server's tab); remote control sits behind a setting, off at first (done, `2626c56`).* Each one removes machinery:
 
 | Decision | Ref | Removes |
 |---|---|---|

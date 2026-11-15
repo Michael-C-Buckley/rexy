@@ -107,6 +107,20 @@ impl View {
     }
 }
 
+impl View {
+    /// Show the tab the server shows of a session, if the window still shows
+    /// the `tab` it showed when it asked the server to act for the user. The
+    /// server showed that tab too, then: if it shows another now, what was
+    /// asked of it moved it there.
+    pub fn follow(&mut self, session: &str, tab: &str) {
+        let shown = (self.selected_session.as_deref(), self.selected_window.as_deref());
+        if shown == (Some(session), Some(tab)) {
+            self.selected_window = None;
+            self.settle();
+        }
+    }
+}
+
 /// A server, by the name it goes by and the addresses that reach it, in the order to try them.
 #[derive(Clone, PartialEq)]
 pub struct Host {
@@ -528,9 +542,9 @@ pub enum Action {
         pressed: bool,
         /// Pressed by being held down.
         repeat: bool,
-        /// The keys before it, as Rex spells them, if it ends a sequence that a
-        /// function on the server is bound to.
-        prefix: Vec<String>,
+        /// With a function on the server bound to it, the keys before it in the
+        /// sequence it ends, as Rex spells them: none where it is bound alone.
+        served: Option<Vec<String>>,
     },
     Text {
         pane: String,

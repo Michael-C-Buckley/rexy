@@ -206,7 +206,7 @@ impl Pointer<'_> {
                     modifiers: 0,
                     pressed,
                     repeat: false,
-                    prefix: Vec::new(),
+                    served: None,
                 })
                 .into(),
             // The server takes each for one step, however far it says it went.

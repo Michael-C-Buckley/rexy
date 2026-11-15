@@ -284,12 +284,12 @@ fn the_key_that_ends_a_sequence_goes_with_the_keys_before_it() {
     // Only that key: one pressed ahead of it goes as it is.
     let events = [key(Key::ArrowUp, true, Modifiers::NONE), key(Key::S, true, Modifiers::CTRL)];
     let out = keyboard.translate("p", &events);
-    let prefix = |action: &Action| match action {
-        Action::Key { prefix, .. } => prefix.clone(),
+    let served = |action: &Action| match action {
+        Action::Key { served, .. } => served.clone(),
         other => panic!("expected a key, got {other:?}"),
     };
-    assert_eq!(prefix(&out[0]), [""; 0]);
-    assert_eq!(prefix(&out[1]), ["ctrl+x"]);
+    assert_eq!(served(&out[0]), None);
+    assert_eq!(served(&out[1]), Some(vec!["ctrl+x".into()]));
     assert_eq!(key_of(&out[1]).1, model::CTRL);
     assert_eq!(keyboard.prefix, None);
 }

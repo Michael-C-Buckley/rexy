@@ -15,8 +15,8 @@ pub struct Keyboard {
     composing: bool,
     /// The Super keys that are down, left and right.
     supers: [bool; 2],
-    /// A key about to be translated that ends a sequence, and the keys before it
-    /// as Rex spells them: a function on the server answers to the whole of it.
+    /// A key about to be translated that a function on the server answers to,
+    /// and the keys before it in its sequence, if any, as Rex spells them.
     pub prefix: Option<(Key, Vec<String>)>,
 }
 
@@ -77,7 +77,7 @@ impl Keyboard {
             modifiers,
             pressed,
             repeat,
-            prefix: Vec::new(),
+            served: None,
         };
         for (index, event) in events.iter().enumerate() {
             match event {
@@ -121,10 +121,10 @@ impl Keyboard {
                     };
                     let held = Held { pane: pane.into(), key, code, modifiers: bits };
                     let mut pressed = key_action(&held, bits, true, *repeat);
-                    if let Action::Key { prefix, .. } = &mut pressed
+                    if let Action::Key { served, .. } = &mut pressed
                         && let Some(before) = self.prefix.take_if(|(key, _)| *key == identity)
                     {
-                        *prefix = before.1;
+                        *served = Some(before.1);
                     }
                     actions.push(pressed);
                     self.held.insert(identity, held);
@@ -213,7 +213,7 @@ pub fn press(pane: &str, chord: &str) -> Option<Action> {
         modifiers: modifiers.sum::<Option<u8>>()?,
         pressed: true,
         repeat: false,
-        prefix: Vec::new(),
+        served: None,
     })
 }
 

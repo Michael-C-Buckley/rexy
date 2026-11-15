@@ -53,7 +53,7 @@ fn key(pane: &str, key: &str, code: &str, modifiers: u8, pressed: bool) -> Actio
         modifiers,
         pressed,
         repeat: false,
-        prefix: Vec::new(),
+        served: None,
     }
 }
 
@@ -434,7 +434,8 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         v.windows().len() == initial.windows().len() && v.selected_window.as_ref() == Some(&window)
     });
 
-    // A second window on the same session takes nothing from the first by showing it.
+    // A second window on the same session takes its panes by showing it: the
+    // window looked at is the one they are to fit.
     let other = open(&endpoint, Herald::new().0);
     wait(&other, "another connection", |v| v.connected);
     send(&other, Action::SelectSession(session.clone()));
@@ -448,12 +449,18 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         ours.filter(|c| c["info"]["label"] == hostname.trim()).count()
     };
     assert_eq!(clients(), 2);
+    wait(&other, "a pane taken by being shown", owned);
+    wait(&client, "a pane lost to another window", |v| !owned(v));
+    // The first does not take it back for that, or the two would never be done.
     std::thread::sleep(Duration::from_millis(300));
-    assert!(owned(&client.snapshot()) && !owned(&other.snapshot()));
-    // What it takes by using it comes back when it goes.
+    assert!(owned(&other.snapshot()) && !owned(&client.snapshot()));
+    // Each takes it by using it, and it comes back when the other goes.
+    send(&client, Action::FocusPane { pane: pane.clone() });
+    wait(&client, "a pane taken back by using it", owned);
+    wait(&other, "a pane lost in turn", |v| !owned(v));
     send(&other, Action::FocusPane { pane: pane.clone() });
     wait(&other, "a pane taken", owned);
-    wait(&client, "a pane lost to another window", |v| !owned(v));
+    wait(&client, "a pane lost again", |v| !owned(v));
     // A connection made again finds the client still in the session it had joined,
     // and leaves it if that is no longer on show.
     send(&other, Action::Reconnect);
@@ -578,6 +585,19 @@ fn live_keymap_actions_and_requests() {
     // Only that of a server made for testing, as `tests/smoke.py` makes one.
     let disposable = ["/work/rex-lite-live-", "/work/rex-lite-smoke-"];
     assert!(disposable.iter().any(|made| path.contains(made)), "refusing to write {path}");
+    // A second tab, for the configuration to have the server show.
+    let shell = json!({"block": {"flavor": "com.superlogical.terminal.shell"}});
+    let made = json!({"session_id": session, "layout": shell, "focus": false});
+    let other = call("session.new_window", made).unwrap();
+    let other = other["window_id"].as_str().unwrap().to_owned();
+    let first = shown.selected_window.clone().unwrap();
+    let go = |name: &str, tab: &str| {
+        format!(
+            r#"rex.action{{ name = "{name}", title = "{name}", run = function(ctx, args)
+          rex.session.focus_window{{ window_id = "{tab}" }}
+        end }}"#
+        )
+    };
     let config = r#"
         rex.bind("ctrl+shift+d", "pane.zoom")
         rex.unbind("ctrl+tab")
@@ -591,7 +611,9 @@ fn live_keymap_actions_and_requests() {
         }
         rex.mode("only", { exclusive = true })
         rex.bind("only/z", "client.mode.exit")
+        rex.bind("ctrl+x>ctrl+t", function(ctx, ev) rex.invoke("to_other") return true end)
     "#;
+    let config = format!("{config}\n{}\n{}", go("to_other", &other), go("to_first", &first));
     std::fs::write(path, config).unwrap();
     rex(&endpoint, &["config", "reload"]).unwrap();
     let zoom = json!(["ctrl+shift+d"]);
@@ -616,8 +638,8 @@ fn live_keymap_actions_and_requests() {
     // The last key of a sequence goes to the function bound to it with the keys
     // before it, and without them to the terminal.
     let mut last = key(&pane, "s", "key_s", model::CTRL, true);
-    if let Action::Key { prefix, .. } = &mut last {
-        *prefix = vec!["ctrl+x".into()];
+    if let Action::Key { served, .. } = &mut last {
+        *served = Some(vec!["ctrl+x".into()]);
     }
     send(&client, last);
     wait(&client, "a sequence answered by a function", |v| {
@@ -659,6 +681,24 @@ fn live_keymap_actions_and_requests() {
     assert!(said.contains("no_such_action"), "{said}");
     assert!(!said.contains("not_found"), "{said}");
     assert_eq!(session, client.snapshot().selected_session.unwrap());
+
+    // The tab on show is the window's own: another client that has the server
+    // show the other tab does not move it.
+    let tab = |v: &View| v.selected_window.clone().unwrap();
+    call("session.focus_window", json!({"session_id": session, "window_id": other})).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(tab(&client.snapshot()), first);
+    // What the user has the server do moves it: a key that a function answers,
+    // which shows the other tab, and an action, which shows the first again.
+    let mut key = key(&pane, "t", "key_t", model::CTRL, true);
+    if let Action::Key { served, .. } = &mut key {
+        *served = Some(vec!["ctrl+x".into()]);
+    }
+    send(&client, key);
+    wait(&client, "the tab a key's function showed", |v| tab(v) == other);
+    send(&client, perform("to_first"));
+    wait(&client, "the tab an action showed", |v| tab(v) == first);
+    call("session.close_window", json!({"session_id": session, "window_id": other})).unwrap();
     // The configuration is left as it was found.
     std::fs::write(path, "").unwrap();
     rex(&endpoint, &["config", "reload"]).unwrap();

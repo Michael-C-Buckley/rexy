@@ -483,8 +483,13 @@ enum Reply {
     Hosts,
     /// What this client's keys do.
     Keymap,
-    /// One of the server's own actions, which may ask this client for more.
-    Performed,
+    /// Something the server did for the user: one of its own actions, or a key
+    /// that a function of its configuration answers. It may ask this client for
+    /// more. With it are the session and the tab that were on show when it was
+    /// asked, to tell whether it has moved the server's tab.
+    Performed(Option<(String, String)>),
+    /// The view of that session as the server left it.
+    Moved(String, String),
     /// A terminal's title, its processes, what its programs report and the
     /// directory it is in, in a list.
     /// `known` says an earlier connection knew the terminal.
@@ -569,8 +574,11 @@ struct Connection<'a> {
     streams: HashMap<String, (JoinHandle<()>, Arc<AtomicBool>)>,
     /// The session last on show, whose panes are this client's to size.
     held: Option<String>,
-    /// The panes on show that are another client's, and have been asked for.
-    asked: HashSet<String>,
+    /// The panes on show. One that is another client's is taken as it comes on
+    /// show, and not again while it stays there: two windows that show one tab
+    /// would otherwise take it from each other in turn. After that it is taken
+    /// by typing or clicking in it.
+    showing: HashSet<String>,
     /// The fetching of the last text a program copied.
     copying: Option<JoinHandle<()>>,
     /// Where a border was last asked to go, for `divide` to ask of the server.
@@ -702,7 +710,7 @@ impl<'a> Connection<'a> {
             warm: Vec::new(),
             streams: HashMap::new(),
             held: None,
-            asked: HashSet::new(),
+            showing: HashSet::new(),
             copying: None,
             borders: divide(control.rpc.clone(), shared.clone()),
         };
@@ -896,7 +904,7 @@ impl<'a> Connection<'a> {
             (Reply::Keymap, Err(error)) => {
                 return self.shared.fail(format!("The server's keys were not read: {error}"));
             }
-            (Reply::Performed, Ok(done)) => {
+            (Reply::Performed(shown), Ok(done)) => {
                 // Its configuration may ask this client for actions of its own, in turn.
                 let asked = items(&done["client_actions"]).filter_map(|asked| {
                     Some(model::Asked {
@@ -908,9 +916,23 @@ impl<'a> Connection<'a> {
                     })
                 });
                 let asked: Vec<_> = asked.collect();
-                return self.shared.change(|s| s.view.asked.extend(asked));
+                self.shared.change(|s| s.view.asked.extend(asked));
+                // A key that no function took after all has done nothing here.
+                if let Some((session, tab)) = shown.filter(|_| done["handled"] != false) {
+                    let request = json!({"session_id": session});
+                    self.ask(Reply::Moved(session, tab), "session.view", request).await;
+                }
+                return;
             }
-            (Reply::Performed, Err(error)) => return self.shared.fail(error.to_string()),
+            (Reply::Performed(_), Err(error)) => return self.shared.fail(error.to_string()),
+            // What the user had the server do has moved its tab, and the
+            // window goes with it: the server's own doing does not move it.
+            (Reply::Moved(session, tab), answer) => {
+                if let Ok(view) = answer {
+                    self.view(&session, &view).await;
+                    self.shared.change(|s| s.view.follow(&session, &tab));
+                }
+            }
             (Reply::Learned { block, known }, answer) => {
                 // Unless the terminal has gone meanwhile.
                 let Some(held) = self.asking.get_mut(&block).and_then(Option::take) else {
@@ -1069,8 +1091,7 @@ impl<'a> Connection<'a> {
 
     /// Stream the terminals of the tab on show, once its session is joined, and
     /// go on streaming those of the tabs shown before it, up to `WARM` in all.
-    /// One on show that is another client's is asked for, to be this client's
-    /// when that one lets it go, as one that has left the server has already.
+    /// One that comes on show while another client's is taken from it.
     async fn reconcile(&mut self) {
         let (selected, shown, kept) = {
             let mut state = self.shared.lock();
@@ -1125,7 +1146,7 @@ impl<'a> Connection<'a> {
         if let Some((session, _)) = &shown {
             self.held = Some(session.clone());
         }
-        self.asked.retain(|pane| kept.contains_key(pane));
+        self.showing.retain(|pane| kept.contains_key(pane));
         self.streams.retain(|id, (task, _)| {
             let keep = kept.contains_key(id);
             if !keep {
@@ -1133,7 +1154,7 @@ impl<'a> Connection<'a> {
             }
             keep
         });
-        // Those on show that are another client's, and not yet asked for.
+        // Those that have just come on show and are another client's.
         let mut others = Vec::new();
         for (pane, (session, on_show, owner)) in kept {
             match self.streams.get(&pane) {
@@ -1158,29 +1179,17 @@ impl<'a> Connection<'a> {
                     self.streams.insert(pane.clone(), (tokio::spawn(stream), shown));
                 }
             }
-            if !on_show || owner {
-                self.asked.remove(&pane);
-            } else if self.asked.insert(pane.clone()) {
+            if !on_show {
+                self.showing.remove(&pane);
+            } else if self.showing.insert(pane.clone()) && !owner {
                 others.push(pane);
             }
         }
-        let Some((session, _)) = shown else {
-            return;
-        };
-        if !others.is_empty() {
-            // Apart from all else that goes on here, which does not wait for it.
-            let rpc = self.rpc.clone();
-            tokio::spawn(async move {
-                let own = "session.own_block";
-                let claim = |panes: Value, mode: &str| json!({"session_id": session, "block_ids": panes, "mode": mode});
-                let owned = rpc.call(own, claim(json!(others), "request")).await?;
-                let present = rpc.call("client.list", json!({})).await?;
-                let gone = abandoned(&owned["blocks"], &present["clients"]);
-                if !gone.is_empty() {
-                    rpc.call(own, claim(json!(gone), "take")).await?;
-                }
-                anyhow::Ok(())
-            });
+        // They are taken, to be the size this window gives them: the window
+        // looked at is the one to fit. Nothing waits on the answer.
+        if let Some((session, _)) = shown.filter(|_| !others.is_empty()) {
+            let request = json!({"session_id": session, "block_ids": others, "mode": "take"});
+            let _ = self.rpc.enqueue("session.own_block", request).await;
         }
     }
 
@@ -1258,6 +1267,23 @@ impl<'a> Connection<'a> {
             let request = json!({"session_id": session, "block_ids": [pane], "mode": "take"});
             self.ask(Reply::Input, "session.own_block", request).await;
         }
+    }
+
+    /// Have the server show the tab this window shows, where it shows another,
+    /// before it is asked to act for the user: what its configuration does, it
+    /// does to the tab the server shows. Returns the session and the tab on show.
+    async fn agree(&mut self) -> Option<(String, String)> {
+        let (session, tab, agreed) = {
+            let state = self.shared.lock();
+            let (session, tab) = (state.view.session()?, state.view.selected_window.clone()?);
+            (session.id.clone(), tab.clone(), session.active.as_ref() == Some(&tab))
+        };
+        if !agreed && self.joined(&session) {
+            let request = json!({"session_id": session, "window_id": tab});
+            let reply = Reply::Change(session.clone(), None, false);
+            self.ask(reply, "session.focus_window", request).await;
+        }
+        Some((session, tab))
     }
 
     /// The session that holds a pane, which is the one to name in asking anything
@@ -1378,7 +1404,8 @@ impl<'a> Connection<'a> {
                         payload[key] = value;
                     }
                 }
-                self.ask(Reply::Performed, "client.action", payload).await;
+                let shown = self.agree().await;
+                self.ask(Reply::Performed(shown), "client.action", payload).await;
                 return Ok(());
             }
             Action::Reply { call, error } => {
@@ -1407,6 +1434,8 @@ impl<'a> Connection<'a> {
         // What is typed, which a terminal takes before it has drawn.
         let typed =
             matches!(action, Action::Key { .. } | Action::Text { .. } | Action::Paste { .. });
+        // A key that a function on the server answers is the server's to act on.
+        let served = matches!(action, Action::Key { served: Some(_), .. });
         // Input that engages the terminal takes ownership and returns to live
         // output. A size engages nothing, and is taken by a terminal not yet seen.
         let (pane, method, mut payload, engage) = match action {
@@ -1423,14 +1452,14 @@ impl<'a> Connection<'a> {
                 let method = "com.superlogical.terminal.resize";
                 (pane, method, json!({"args": args}), None)
             }
-            Action::Key { pane, key, code, modifiers, pressed, repeat, prefix } => {
+            Action::Key { pane, key, code, modifiers, pressed, repeat, served } => {
                 let stroke = match (pressed, repeat) {
                     (false, _) => "release",
                     (true, false) => "press",
                     (true, true) => "repeat",
                 };
                 let mut payload = json!({"key": key_payload(&key, &code, modifiers, stroke)});
-                if !prefix.is_empty() {
+                if let Some(prefix) = served.filter(|prefix| !prefix.is_empty()) {
                     payload["prefix"] = json!(prefix);
                 }
                 // A modifier held alone asks nothing of the terminal.
@@ -1498,7 +1527,11 @@ impl<'a> Connection<'a> {
                 }
             }
         }
-        self.ask(Reply::Input, method, payload).await;
+        let reply = match served {
+            true => Reply::Performed(self.agree().await),
+            false => Reply::Input,
+        };
+        self.ask(reply, method, payload).await;
         Ok(())
     }
 }
@@ -1633,18 +1666,6 @@ fn label(value: Option<&str>, fallback: &str) -> String {
 /// The entry for one block in a server block list, or null.
 fn block<'a>(blocks: &'a Value, id: &str) -> &'a Value {
     items(blocks).find(|b| b["block_id"] == id).unwrap_or(&NULL)
-}
-
-/// The panes to take, of those the server says are `owned` by whom: the ones whose
-/// owner is not among the clients `present` on it. A pane stays with an owner that
-/// has left the server without ever joining the session, as one that only made the
-/// session has, and nobody is left to let go of it. Nothing is taken from a client
-/// that is there, nor when who is there is not known.
-fn abandoned<'a>(owned: &'a Value, present: &Value) -> Vec<&'a Value> {
-    let here = |owner: &str| items(present).any(|client| client["client_id"] == owner);
-    let gone = |block: &&Value| block["owner"].as_str().is_some_and(|owner| !here(owner));
-    let gone = items(owned).filter(gone).map(|block| &block["block_id"]);
-    gone.filter(|_| present.is_array()).collect()
 }
 
 /// Bring the list of sessions up to date with news of it. Told the same thing

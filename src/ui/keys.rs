@@ -171,10 +171,9 @@ impl App {
                     |(name, once): &(String, bool)| *once && Some(name) == bound.mode.as_ref();
                 self.keys.modes.retain(|mode| !spent(mode));
                 if bound.name == FORWARD {
-                    // The key goes there as any key does, with the keys before it.
-                    if let [prefix @ .., _] = bound.keys.as_slice()
-                        && !prefix.is_empty()
-                    {
+                    // The key goes there as any key does, with the keys before it,
+                    // and marked as one a function there answers.
+                    if let [prefix @ .., _] = bound.keys.as_slice() {
                         self.keyboard.prefix = Some((key, prefix.to_vec()));
                     }
                     taken = false;
