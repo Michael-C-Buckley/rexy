@@ -36,6 +36,7 @@ fn plan(view: &View, focused: &str, name: &str, args: Value) -> Result<String, &
         Deed::Server(Action::Split { pane, toward }) => format!("split {pane} {toward:?}"),
         Deed::Server(Action::Swap { pane, with }) => format!("swap {pane} {with}"),
         Deed::Server(Action::Zoom { pane }) => format!("zoom {pane}"),
+        Deed::Server(Action::MovePane { pane, tab }) => format!("move {pane} to {tab:?}"),
         Deed::Server(Action::Key { code, .. }) => format!("press {code}"),
         Deed::Focus(pane) => format!("focus {pane}"),
         Deed::Close(_, spared, _) => format!("close, spared: {spared}"),
@@ -123,6 +124,7 @@ fn a_command_is_planned_for_what_is_on_show() {
     assert_eq!(plan("pane.focus_next", none.clone()).as_deref(), Ok("focus idle"));
     assert_eq!(plan("pane.focus_previous", none.clone()).as_deref(), Ok("focus c"));
     assert_eq!(plan("pane.zoom", none.clone()).as_deref(), Ok("zoom b"));
+    assert_eq!(plan(TO_TAB, none.clone()).as_deref(), Ok("move b to None"));
     assert_eq!(plan("pane.close", none.clone()).as_deref(), Ok("close, spared: false"));
     assert_eq!(plan("pane.send_key", json!({"key": "ctrl+b"})).as_deref(), Ok("press key_b"));
     assert_eq!(plan("pane.send_key", none.clone()), Err("refused"));
@@ -155,9 +157,11 @@ fn a_command_is_refused_where_it_has_nothing_to_act_on() {
     assert!(keeps("client.mode.exit") && keeps("client.tab.goto") && keeps("pane.zoom"));
     assert!(keeps("pane.copy"));
     assert!(!keeps("client.scroll.page_up") && !keeps("client.settings"));
-    // A tab of one pane has nothing to zoom, and a first tab nowhere to move back to.
+    // A tab of one pane has nothing to zoom, and a first tab nowhere to move back
+    // to. Its pane has a tab of its own already.
     view.selected_tab = Some("t1".into());
     assert_eq!(plan(&view, "a", "pane.zoom", Value::Null), Err("refused"));
+    assert_eq!(plan(&view, "a", TO_TAB, Value::Null), Err("refused"));
     assert_eq!(plan(&view, "a", "pane.focus_next", Value::Null), Err("refused"));
     assert_eq!(plan(&view, "a", "client.tab.move.backward", Value::Null), Err("refused"));
     assert_eq!(plan(&view, "b", "pane.split.right", Value::Null), Err("refused"));

@@ -1,7 +1,8 @@
 //! The rows of sessions and tabs, in the sidebar or along the top: showing,
 //! renaming, moving and closing them.
 use eframe::egui::{
-    self, Align2, DragAndDrop, Key, PointerButton, Pos2, Rect, Sense, Stroke, UiBuilder, Vec2,
+    self, Align2, DragAndDrop, Key, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind,
+    UiBuilder, Vec2,
 };
 
 use super::{
@@ -36,6 +37,13 @@ impl Target {
     }
 }
 
+/// A pane being dragged by its header, and the tab it is dragged from.
+#[derive(Clone)]
+pub(super) struct Carried {
+    pub(super) from: Target,
+    pub(super) pane: String,
+}
+
 /// A name being typed over a session's or a tab's.
 pub struct Rename {
     target: Target,
@@ -65,6 +73,22 @@ impl App {
         egui::Id::unique(("row", host, &target.session, &target.tab))
     }
 
+    /// The pane let go on a session's or a tab's row, if one was that can go
+    /// there, and while one is held over the row the row is marked. A pane
+    /// goes to another tab of its own session, or dropped on the session to a
+    /// tab of its own: a server moves none from one session to another.
+    fn landed(&self, ui: &egui::Ui, row: &egui::Response, target: &Target) -> Option<String> {
+        let fits = |carried: &Carried| {
+            let near = (carried.from.server, &carried.from.session);
+            near == (target.server, &target.session) && carried.from.tab != target.tab
+        };
+        let held = row.dnd_hover_payload::<Carried>().filter(|carried| fits(carried))?;
+        let line = Stroke::new(1.5, tints(ui.ctx()).accent);
+        ui.painter().rect_stroke(row.rect, 7, line, StrokeKind::Inside);
+        let dropped = row.dnd_release_payload::<Carried>().is_some();
+        dropped.then(|| held.pane.clone())
+    }
+
     /// A session's tabs, down the sidebar or along the top. `shown` is the one on show.
     pub(super) fn tabs(
         &mut self,
@@ -78,7 +102,54 @@ impl App {
         let rows: Vec<_> = rows
             .map(|(index, held)| (&held.id, self.tab(ui, server, session, shown, index, size)))
             .collect();
-        self.reorder(ui, server, &rows);
+        if !self.joining(ui, server, session, &rows) {
+            self.reorder(ui, server, &rows);
+        }
+    }
+
+    /// While a tab of one pane is dragged over the middle of another tab of its
+    /// session, mark that tab, and have the pane join it when it is let go
+    /// there. True while it is over one: let go between two rows, a tab moves
+    /// to there instead, as `reorder` has it. A tab of several panes only
+    /// moves, for joining another would lose how they are laid out.
+    fn joining(
+        &mut self,
+        ui: &egui::Ui,
+        server: usize,
+        session: &Session,
+        rows: &[(&String, Rect)],
+    ) -> bool {
+        let Some(drag) = DragAndDrop::payload::<Target>(ui.ctx()) else {
+            return false;
+        };
+        let here = drag.server == server && drag.session == session.id;
+        let from = drag.tab.as_ref().filter(|_| here);
+        let from = from.and_then(|id| session.tabs.iter().find(|tab| &tab.id == id));
+        let alone = from.and_then(|tab| {
+            let mut panes = tab.every();
+            panes.next().filter(|_| panes.next().is_none())
+        });
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        let (Some(from), Some(pane), Some(pointer)) = (from, alone, pointer) else {
+            return false;
+        };
+        // The middle of a row, along the way the rows run: its ends are where
+        // a tab is let go to be moved.
+        let ends = if ui.layout().is_horizontal() { [0.3, 0.0] } else { [0.0, 0.3] };
+        let middle = |space: &Rect| space.shrink2(space.size() * Vec2::from(ends));
+        let over =
+            |(tab, space): &&(&String, Rect)| **tab != from.id && middle(space).contains(pointer);
+        let Some((to, space)) = rows.iter().find(over) else {
+            return false;
+        };
+        let line = Stroke::new(1.5, tints(ui.ctx()).accent);
+        ui.painter().rect_stroke(*space, 7, line, StrokeKind::Inside);
+        if ui.input(|i| i.pointer.any_released()) {
+            let (session, tab) = (session.id.clone(), (*to).clone());
+            self.tell(server, Action::MovePane { pane: pane.id.clone(), tab: Some(tab.clone()) });
+            self.open(server, Action::SelectTab { session, tab });
+        }
+        true
     }
 
     /// While one of these rows is dragged, mark where among them it would land, and
@@ -208,6 +279,9 @@ impl App {
         };
         if folds {
             fold(ui, response.rect, folded);
+        }
+        if let Some(pane) = self.landed(ui, &response, &target) {
+            self.open(server, Action::MovePane { pane, tab: None });
         }
         if aside && response.clicked() {
             let folded = &mut self.remembered.kept.folded;
@@ -341,6 +415,10 @@ impl App {
         let (response, button) = item(ui, size, row);
         self.follow(id, selected, &response);
         self.picked(&response, &target, selected);
+        if let Some(pane) = self.landed(ui, &response, &target) {
+            self.tell(server, Action::MovePane { pane, tab: Some(tab.id.clone()) });
+            self.open(server, target.select());
+        }
         self.wait(ui, response.rect, &response, ask);
         if response.drag_started_by(PointerButton::Primary) {
             DragAndDrop::set_payload(ui.ctx(), target.clone());

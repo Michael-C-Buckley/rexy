@@ -27,6 +27,8 @@ const HELD: bool = true;
 /// The command that lets a server's other clients have this window do things,
 /// or lets them no longer.
 pub const REMOTE: &str = "client.remote_control.toggle";
+/// The command that gives a pane a tab of its own.
+pub const TO_TAB: &str = "client.pane.to_new_tab";
 /// The code of the error another client is answered with while they may not.
 pub const BARRED: &str = "remote_control_off";
 
@@ -72,6 +74,8 @@ pub const COMMANDS: &[Command] = &[
     ("pane.move.right", "Move Pane Right", ONCE),
     ("pane.move.up", "Move Pane Up", ONCE),
     ("pane.move.down", "Move Pane Down", ONCE),
+    // Nor for this, which takes a pane out of a tab it shares.
+    (TO_TAB, "Move Pane to New Tab", ONCE),
     ("pane.focus.left", "Focus Pane Left", HELD),
     ("pane.focus.right", "Focus Pane Right", HELD),
     ("pane.focus.up", "Focus Pane Up", HELD),
@@ -410,6 +414,10 @@ impl Standing<'_> {
             "pane.move.left" | "pane.move.right" | "pane.move.up" | "pane.move.down" => {
                 let with = tab?.beside(&pane?.id, toward(name)?)?.id.clone();
                 Deed::Server(Action::Swap { pane: pane?.id.clone(), with })
+            }
+            // Alone in its tab, it has one already.
+            TO_TAB if tab?.every().count() > 1 => {
+                Deed::Server(Action::MovePane { pane: pane?.id.clone(), tab: None })
             }
             "pane.focus.left" | "pane.focus.right" | "pane.focus.up" | "pane.focus.down" => {
                 Deed::Focus(tab?.beside(&pane?.id, toward(name)?)?.id.clone())

@@ -13,7 +13,7 @@ Rex Lite is an unofficial client and is not affiliated with Superlogical. It is 
 - **Every server in one sidebar.** Your home server and every host it knows of, each with its sessions and tabs, reached over a Unix socket, SSH or WebSocket. Fold away a server or a session you are not using, and it keeps a dot for the most pressing thing inside. Prefer tabs along the top? **Ctrl Shift B**.
 - **See what your agents are doing.** Each tab shows its program's icon, stacked on those of its other panes if it is split, a status dot and a line in words: *Working*, *Needs approval*, *Question*, *Done*, *Error*, with progress or how long it has been that way. An activity view lists everything at work on every server under **Needs you**, **Done**, **Working** and **Idle**.
 - **Notifications that take you there.** What a tab reports while you are not looking at it becomes a desktop notification; clicking it shows the pane and focuses it. Any tab can be muted.
-- **Splits.** Split a pane in any direction, move it, drag or key its borders, balance the tab, or zoom one pane to fill it.
+- **Splits.** Split a pane in any direction, move it, drag or key its borders, balance the tab, or zoom one pane to fill it. Drag a pane by its header into another tab of its session, or give it a tab of its own.
 - **A real terminal.** libghostty does the emulation, so programs behave as they do in Ghostty: Kitty graphics, hyperlinks, synchronized output, shell prompt marks, clipboard copies, IME input. Box-drawing characters are drawn as shapes, so frames have no gaps.
 - **Your Ghostty colours.** If Ghostty's configuration is on the machine, terminals take its theme, and the window is tinted to match.
 - **Selection, search and scrollback.** Select by character, word, line or block, find text through a pane's whole history, and jump between shell prompts.
@@ -119,6 +119,7 @@ With the mouse:
 - **Shift** overrides a program's mouse capture.
 - Hold **Ctrl** over a link and click to open it.
 - Drag the line between two panes to resize them; double-click it to even them out.
+- Drag a pane's header onto a tab to move the pane there, or onto its session's name to give it a tab of its own. **Move Pane to New Tab**, in the pane's menu and the palette, does the same. A tab with a single pane joins another when you drop it on the middle of that tab; dropped between two tabs it is reordered, as before.
 - Click a server's heading to fold its sessions away, and a session's heading, anywhere but its name, to fold its tabs.
 - Right-click a session, tab or pane for its menu. Double-click a name to rename it, and drag a session or tab to reorder it.
 
@@ -141,7 +142,8 @@ With the mouse:
 ## Not yet
 
 - Adding or editing hosts from the window, or installing Rex on another machine
-- Floating panes, and moving a pane to another tab
+- Floating panes
+- Moving a pane or a tab to another session, which Rex itself has no way to do
 - Animated pictures
 - Platforms other than Linux
 

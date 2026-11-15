@@ -1,17 +1,19 @@
 //! One pane of the tab on show: its header, its terminal, and what the
 //! pointer does there.
 use eframe::egui::{
-    self, Align, Align2, CornerRadius, FontId, Layout, Rect, Sense, Stroke, StrokeKind, UiBuilder,
+    self, Align, Align2, CornerRadius, DragAndDrop, FontId, Layout, Rect, Sense, Stroke,
+    StrokeKind, UiBuilder,
 };
 use serde_json::Value;
 
 use super::{
     App,
     close::{Ask, CLOSE, asking, closer, doomed},
-    commands::title,
+    commands::{TO_TAB, title},
     heard::dot,
     pointer::{Pointer, Wheel},
     render::{Grid, rgb},
+    rows::{Carried, Target},
     style::{
         BODY, BORDER, CARD, CARD_RADIUS, DIM, ICON, Icon, Item, SMALL, SMALL_BUTTON, TEXT, TILE,
         badge, confirm, eased, entry, fitted, small_button, tints,
@@ -79,7 +81,32 @@ impl App {
             // does. Its buttons lie over it.
             let bar = rect.with_max_y(terminal_rect.top());
             let id = ui.scope_id().with(("header", &pane.id));
-            picked = ui.interact(bar, id, Sense::click()).clicked();
+            let grip = ui.interact(bar, id, Sense::click_and_drag());
+            picked = grip.clicked();
+            // Dragged, it carries the pane to a row of the sidebar or a tab
+            // along the top, and its title goes with the pointer meanwhile.
+            if grip.drag_started() {
+                let from = view.selected_session.clone().map(|session| Target {
+                    server: self.current,
+                    session,
+                    tab: Some(tab.id.clone()),
+                });
+                if let Some(from) = from {
+                    DragAndDrop::set_payload(ui.ctx(), Carried { from, pane: pane.id.clone() });
+                }
+            }
+            if let Some(at) = grip.interact_pointer_pos().filter(|_| grip.dragged()) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                let layer = egui::LayerId::new(egui::Order::Tooltip, id);
+                let painter = ui.ctx().layer_painter(layer);
+                let font = FontId::proportional(SMALL);
+                let title = painter.layout_no_wrap(pane.title.clone(), font, TEXT);
+                let pill = Rect::from_min_size(at + egui::vec2(12.0, 12.0), title.size());
+                let pill = pill.expand2(egui::vec2(8.0, 5.0)).translate(egui::vec2(8.0, 5.0));
+                painter.rect_filled(pill, 6, ui.visuals().window_fill);
+                painter.rect_stroke(pill, 6, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+                painter.galley(pill.min + egui::vec2(8.0, 5.0), title, TEXT);
+            }
             let mut header = bar.shrink2(egui::vec2(4.0, 0.0));
             let layout = Layout::right_to_left(Align::Center);
             let mut buttons = ui.new_child(UiBuilder::new().max_rect(header).layout(layout));
@@ -321,6 +348,7 @@ impl App {
                     (title("pane.split.right"), "pane.split.right"),
                     (title("pane.split.down"), "pane.split.down"),
                     (zoom, "pane.zoom"),
+                    (title(TO_TAB), TO_TAB),
                 ];
                 for (label, name) in entries {
                     if name == "pane.split.right" {

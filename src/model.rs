@@ -593,6 +593,12 @@ pub enum Action {
         pane: String,
         with: String,
     },
+    /// Take a pane out of its tab and into another of its session, beside the
+    /// pane in front there, or with no `tab` into one of its own.
+    MovePane {
+        pane: String,
+        tab: Option<String>,
+    },
     /// Move borders. A border asked to move again before the server has moved
     /// it goes only where it was last asked to.
     Divide(Vec<Division>),

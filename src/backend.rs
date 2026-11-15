@@ -221,7 +221,10 @@ impl Client {
             Action::SelectTab { session, tab } => Some((session.clone(), Some(tab.clone()))),
             _ => None,
         };
-        let making = matches!(action, Action::CreateSession(_) | Action::CreateTab(_));
+        let making = matches!(
+            action,
+            Action::CreateSession(_) | Action::CreateTab(_) | Action::MovePane { tab: None, .. }
+        );
         self.actions.try_send(action).map_err(|e| format!("Input not sent: {e}"))?;
         if shown.is_some() || making {
             state.awaited = making;
@@ -488,6 +491,13 @@ enum Reply {
     Performed(Option<(String, String)>),
     /// The view of that session as the server left it.
     Moved(String, String),
+    /// A tab made for a pane of that session to have to itself. The server
+    /// makes no tab without a terminal in it, so this one has a shell to stand
+    /// in: the pane is moved beside that, and the shell then closed.
+    Room(String, String),
+    /// The pane is there, or is not. With it are the session, the pane, the
+    /// shell that stood in for it and the tab.
+    Housed(String, String, String, String),
     /// A terminal's title, its processes and what its programs report, in a list.
     /// `known` says an earlier connection knew the terminal.
     Learned {
@@ -564,6 +574,9 @@ struct Connection<'a> {
     making: Option<(String, Option<String>)>,
     /// A pane this client has made or brought out, reported once it is on show.
     made: Option<String>,
+    /// The shells that stand in tabs made for panes to move to, each with its
+    /// session. A tab is none of the window's while one is in it.
+    standing: Vec<(String, String)>,
     /// The tabs kept fed, the last shown first, each by its session and itself.
     /// Going back to one finds it as it is, with nothing to fetch.
     warm: Vec<(String, String)>,
@@ -710,6 +723,7 @@ impl<'a> Connection<'a> {
             joining: None,
             making: None,
             made: None,
+            standing: Vec::new(),
             warm: Vec::new(),
             streams: HashMap::new(),
             held: None,
@@ -787,7 +801,15 @@ impl<'a> Connection<'a> {
             return;
         }
         let mut terminals = Vec::new();
-        let tabs = parse_tabs(view, &self.client_id, &mut terminals);
+        let mut tabs = parse_tabs(view, &self.client_id, &mut terminals);
+        // A tab being made for a pane is left out until the shell that stands in
+        // it has closed: it is then the pane's alone, and is shown so. The
+        // shell is never drawn, nor asked anything. One the view no longer
+        // has is closed, and forgotten.
+        self.standing.retain(|(held, shell)| held != session || terminals.contains(shell));
+        let stands = |id: &String| self.standing.iter().any(|(_, shell)| shell == id);
+        tabs.retain(|tab| !tab.every().any(|pane| stands(&pane.id)));
+        terminals.retain(|id| !stands(id));
         // Terminals that have left it are forgotten, and those not seen before on
         // this connection asked about: news of them may have been missed. There is
         // no asking all of it at once, nor of several terminals.
@@ -974,6 +996,34 @@ impl<'a> Connection<'a> {
                 }
                 Err(error) => self.shared.fail(error.to_string()),
             },
+            (Reply::Room(session, pane), answer) => match answer {
+                Ok(made) => {
+                    let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+                    let (shell, tab) = (text(&made["block_ids"][0]), text(&made["window_id"]));
+                    self.standing.push((session.clone(), shell.clone()));
+                    let request = json!({
+                        "session_id": session,
+                        "block_id": pane,
+                        "anchor_block_id": shell,
+                    });
+                    let reply = Reply::Housed(session, pane, shell, tab);
+                    self.ask(reply, "session.move_block", request).await;
+                }
+                Err(error) => self.shared.fail(error.to_string()),
+            },
+            (Reply::Housed(session, pane, shell, tab), answer) => {
+                // The tab is shown once it is the pane's alone, and the pane
+                // given the keyboard. Failing that, it goes with its shell.
+                match answer {
+                    Ok(_) => {
+                        self.making = Some((session.clone(), Some(tab)));
+                        self.made = Some(pane);
+                    }
+                    Err(error) => self.shared.fail(error.to_string()),
+                }
+                let request = json!({"session_id": session, "block_id": shell});
+                self.ask(Reply::Change(session, None, false), "block.close", request).await;
+            }
             (Reply::View(session), answer) => {
                 // A session that has ended has none, as the news says or will say.
                 if let Some(held) = self.views.get_mut(&session) {
@@ -1048,9 +1098,9 @@ impl<'a> Connection<'a> {
                 (view.selected_session, view.selected_tab) = (Some(session), tab);
             }
             view.settle();
-            let seen = |id: &String| {
-                view.every_tab().any(|(_, tab)| tab.panes.iter().any(|p| &p.id == id))
-            };
+            // In the tab on show: a pane moved to another tab is somewhere all along.
+            let shown = view.current_tab();
+            let seen = |id: &String| shown.is_some_and(|tab| tab.panes.iter().any(|p| &p.id == id));
             if let Some(made) = self.made.take_if(|made| seen(made)) {
                 view.made = Some(made);
             }
@@ -1377,6 +1427,24 @@ impl<'a> Connection<'a> {
                     "focus": true,
                 });
                 (self.session(&pane)?, "session.new_split", payload, None)
+            }
+            Action::MovePane { pane, tab: Some(tab) } => {
+                let session = self.session(&pane)?;
+                let front = {
+                    let state = self.shared.lock();
+                    let tab = state.view.every_tab().find(|(_, held)| held.id == tab);
+                    tab.and_then(|(_, tab)| tab.front()).map(|pane| pane.id.clone())
+                };
+                let front = front.context("That tab has closed")?;
+                let payload = json!({"block_id": pane, "anchor_block_id": front});
+                (session, "session.move_block", payload, Some(pane))
+            }
+            Action::MovePane { pane, tab: None } => {
+                let session = self.session(&pane)?;
+                let request =
+                    json!({"session_id": session, "layout": self.shell(None), "focus": false});
+                self.ask(Reply::Room(session, pane), "session.new_window", request).await;
+                return Ok(());
             }
             Action::Swap { pane, with } => {
                 let payload = json!({"block_id": pane, "other_block_id": with});
