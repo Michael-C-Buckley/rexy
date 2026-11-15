@@ -27,6 +27,13 @@ pub fn state_home() -> Option<PathBuf> {
     state.or_else(home)
 }
 
+/// Put a key among those kept, or take it out if it is there.
+pub fn flip(kept: &mut HashSet<String>, key: &str) {
+    if !kept.remove(key) {
+        kept.insert(key.to_owned());
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kept {
     pub font_size: f32,

@@ -105,9 +105,7 @@ impl View {
         let first = || session.tabs.first().map(|tab| &tab.id);
         self.selected_tab = shown.or_else(first).cloned();
     }
-}
 
-impl View {
     /// Show the tab the server shows of a session, if the window still shows
     /// the `tab` it showed when it asked the server to act for the user. The
     /// server showed that tab too, then: if it shows another now, what was

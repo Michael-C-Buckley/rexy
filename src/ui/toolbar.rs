@@ -14,7 +14,7 @@ use super::{
         item,
     },
 };
-use crate::model::{Action, Session, Tab, View};
+use crate::model::{Action, Tab, View};
 
 impl App {
     /// The buttons that make another terminal: in a tab of its own, or beside
@@ -124,35 +124,26 @@ impl App {
                 let plain = FontId::proportional(BODY);
                 // The session and its tab, as the sidebar's rows go by, while it
                 // has none of them.
-                let folded = &self.remembered.kept.folded;
-                let away = self.activity || folded.contains(self.servers[self.current].address());
-                let row = |session: &Session, tab: Option<&Tab>| Target {
-                    server: self.current,
-                    session: session.id.clone(),
-                    tab: tab.map(|tab| tab.id.clone()),
+                let (server, folded) = (self.current, &self.remembered.kept.folded);
+                let away = self.activity || folded.contains(self.servers[server].address());
+                let row = |tab: Option<&Tab>| {
+                    let (session, tab) = (session?.id.clone(), tab.map(|tab| tab.id.clone()));
+                    Some(Target { server, session, tab })
                 };
-                let named = session.filter(|_| away).map(|session| row(session, None));
-                let tucked = |session: &&Session| {
-                    away || (session.tabs.len() > 1 && folded.contains(&session.id))
-                };
-                let tabbed = session.filter(tucked).zip(tab);
-                let tabbed = tabbed.map(|(session, tab)| row(session, Some(tab)));
+                let named = row(None).filter(|_| away);
+                let tucked = away || session.is_some_and(|session| self.folded(session));
+                let tabbed = tab.and_then(|tab| row(Some(tab))).filter(|_| tucked);
                 // The tab was asked to close, and asks again after the names, on
                 // a button so wide.
-                let asked = tabbed.clone();
-                let asked = asked.filter(|tab| self.closing.waits(self.row(tab)));
+                let asked = tabbed.clone().filter(|tab| self.closing.waits(self.row(tab)));
                 let asked = asked.map(|tab| (tab, confirm_width(ui, CLOSE_TAB)));
                 let mut room = ui.available_rect_before_wrap();
                 if let Some((_, width)) = asked {
                     room.max.x -= width + 10.0;
                 }
+                let host = (server > 0).then(|| self.servers[server].label().to_owned());
                 let names = [
-                    (
-                        (self.current > 0).then(|| self.servers[self.current].label()),
-                        &plain,
-                        DIM,
-                        None,
-                    ),
+                    (host.as_deref(), &plain, DIM, None),
                     (session.map(|session| session.name.as_str()), &bold(BODY), TEXT, named),
                     (tab.map(Tab::name), &plain, DIM, tabbed),
                     // A tab that was given a name has this to add.
@@ -162,7 +153,6 @@ impl App {
                 // from the handle they lie on. But one being renamed gives its
                 // place to the field for it.
                 let mut at = room.left_center() + egui::vec2(8.0, 0.0);
-                let mut field = None;
                 for (name, font, color, target) in names {
                     let left = room.right() - 4.0 - at.x;
                     let Some(name) = name.filter(|_| left > 24.0) else {
@@ -171,8 +161,10 @@ impl App {
                     let size = match target.filter(|target| self.renames(target)) {
                         Some(target) => {
                             let size = Vec2::new(left.min(260.0), 28.0);
-                            let min = at - egui::vec2(0.0, size.y / 2.0);
-                            field = Some((target, Rect::from_min_size(min, size)));
+                            let field =
+                                Rect::from_min_size(at - egui::vec2(0.0, size.y / 2.0), size);
+                            let mut within = ui.new_child(UiBuilder::new().max_rect(field));
+                            self.renaming(&mut within, &target, self.row(&target), size);
                             size
                         }
                         None => {
@@ -183,11 +175,6 @@ impl App {
                         }
                     };
                     at.x += size.x + 10.0;
-                }
-                if let Some((target, field)) = field {
-                    let mut within = ui.new_child(UiBuilder::new().max_rect(field));
-                    let row = self.row(&target);
-                    self.renaming(&mut within, &target, row, field.size());
                 }
                 if let Some((target, width)) = asked {
                     let (edge, id) = (at + egui::vec2(width, 0.0), self.row(&target));

@@ -420,24 +420,22 @@ pub fn badge(
 ) {
     // Only what has an icon stacks: a prompt drawn in lines stands alone.
     let drawn = |program: &&Program| program.drawing().is_some();
-    let behind: Vec<_> = behind.iter().filter(drawn).take(2).collect();
-    let behind = if program.drawing().is_some() { behind } else { Vec::new() };
+    let most = if drawn(&&program) { 2 } else { 0 };
+    let behind: Vec<_> = behind.iter().filter(drawn).take(most).collect();
     // Each stands a step up and to the left of the one before it, into the
     // row's own margin: the icon in front is where a lone one would be, and
     // as large.
-    let step = side * 0.14;
-    let top = left - egui::vec2(0.0, side / 2.0);
     let layers = behind.len();
     for (back, program) in behind.into_iter().rev().chain([&program]).enumerate() {
-        let corner = top - Vec2::splat(step * (layers - back) as f32);
+        let left = left - Vec2::splat(side * 0.14 * (layers - back) as f32);
         if back > 0 {
             // A dark rim parts it from the one behind: the tile's own shape,
             // which is wider than it is tall, and a little more.
-            let middle = corner + Vec2::splat(side / 2.0);
+            let middle = left + egui::vec2(side / 2.0, 0.0);
             let rim = Rect::from_center_size(middle, side * egui::vec2(0.976, 0.76));
             painter.rect_filled(rim.expand(1.5), side * 0.2 + 1.5, Color32::from_black_alpha(170));
         }
-        tile(painter, *program, corner + egui::vec2(0.0, side / 2.0), side, ink);
+        tile(painter, *program, left, side, ink);
     }
     if let Some(color) = dot {
         // A dark rim parts it from the icon, whatever that is drawn in.

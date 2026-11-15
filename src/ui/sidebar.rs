@@ -7,6 +7,7 @@ use super::{
     App,
     frame::titlebar,
     heard::dot,
+    remembered::flip,
     style::{BODY, BORDER, DIM, Icon, ROW, SMALL, TOOLBAR, bold, fold, icon_button, search},
     toolbar::bar,
 };
@@ -125,7 +126,7 @@ impl App {
             self.session(ui, server, &view.sessions, index, shown);
             // A session's one tab is the session's own row. Several are listed
             // under its name.
-            if session.tabs.len() != 1 && !self.remembered.kept.folded.contains(&session.id) {
+            if session.tabs.len() != 1 && !self.folded(session) {
                 // The tab on show, if it is one of this session's.
                 let shown = view.selected_tab.as_deref().filter(|_| shown);
                 let size = Vec2::new(ui.available_width(), ROW);
@@ -183,10 +184,7 @@ impl App {
                 // Asked after the name, so that the press is not the name's own.
                 let id = egui::Id::unique(("fold", &address));
                 if ui.interact(rest, id, Sense::click()).clicked() {
-                    let folded = &mut self.remembered.kept.folded;
-                    if !folded.remove(&address) {
-                        folded.insert(address);
-                    }
+                    flip(&mut self.remembered.kept.folded, &address);
                 }
             }
         });

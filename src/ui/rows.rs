@@ -9,6 +9,7 @@ use super::{
     App,
     close::{Ask, CLOSE, CLOSE_TAB, asking, closer},
     heard::dot,
+    remembered::flip,
     style::{BODY, DIM, Icon, Item, ROW, SMALL, bold, entry, fold, item, tints},
 };
 use crate::model::{self, Action, Activity, Edit, Session, Tab};
@@ -73,6 +74,12 @@ impl App {
         egui::Id::unique(("row", host, &target.session, &target.tab))
     }
 
+    /// Whether a session's tabs are folded away under its name. Only several
+    /// are: a session's one tab is its own row.
+    pub(super) fn folded(&self, session: &Session) -> bool {
+        session.tabs.len() > 1 && self.remembered.kept.folded.contains(&session.id)
+    }
+
     /// The pane let go on a session's or a tab's row, if one was that can go
     /// there, and while one is held over the row the row is marked. A pane
     /// goes to another tab of its own session, or dropped on the session to a
@@ -83,8 +90,7 @@ impl App {
             near == (target.server, &target.session) && carried.from.tab != target.tab
         };
         let held = row.dnd_hover_payload::<Carried>().filter(|carried| fits(carried))?;
-        let line = Stroke::new(1.5, tints(ui.ctx()).accent);
-        ui.painter().rect_stroke(row.rect, 7, line, StrokeKind::Inside);
+        outline(ui, row.rect);
         let dropped = row.dnd_release_payload::<Carried>().is_some();
         dropped.then(|| held.pane.clone())
     }
@@ -142,8 +148,7 @@ impl App {
         let Some((to, space)) = rows.iter().find(over) else {
             return false;
         };
-        let line = Stroke::new(1.5, tints(ui.ctx()).accent);
-        ui.painter().rect_stroke(*space, 7, line, StrokeKind::Inside);
+        outline(ui, *space);
         if ui.input(|i| i.pointer.any_released()) {
             let (session, tab) = (session.id.clone(), (*to).clone());
             self.tell(server, Action::MovePane { pane: pane.id.clone(), tab: Some(tab.clone()) });
@@ -210,8 +215,7 @@ impl App {
         // Several tabs fold away under its name, which then stands for them:
         // it is lit while one of them is on show, and says the most pressing
         // thing any of them does.
-        let folds = session.tabs.len() > 1;
-        let folded = folds && self.remembered.kept.folded.contains(&session.id);
+        let (folds, folded) = (session.tabs.len() > 1, self.folded(session));
         let height = if lone.is_some() { ROW } else { 28.0 };
         let size = Vec2::new(ui.available_width(), height);
         let id = self.row(&target);
@@ -284,10 +288,7 @@ impl App {
             self.open(server, Action::MovePane { pane, tab: None });
         }
         if aside && response.clicked() {
-            let folded = &mut self.remembered.kept.folded;
-            if !folded.remove(&session.id) {
-                folded.insert(session.id.clone());
-            }
+            flip(&mut self.remembered.kept.folded, &session.id);
         } else if !aside {
             self.picked(&response, &target, shown);
         }
@@ -481,9 +482,7 @@ impl App {
             Choice::Mute => {
                 let tab = target.tab.as_deref().unwrap_or_default();
                 let muted = &mut self.remembered.kept.muted;
-                if !muted.remove(tab) {
-                    muted.insert(tab.to_owned());
-                }
+                flip(muted, tab);
                 self.desktop.mute(muted.clone());
             }
             Choice::Edit(edit) => self.edit(target, edit),
@@ -545,6 +544,12 @@ impl App {
         }
         Some(rect)
     }
+}
+
+/// Mark a row as where what is held over it would go.
+fn outline(ui: &egui::Ui, row: Rect) {
+    let line = Stroke::new(1.5, tints(ui.ctx()).accent);
+    ui.painter().rect_stroke(row, 7, line, StrokeKind::Inside);
 }
 
 /// What a tab has to say on its row: the most pressing thing any of its panes

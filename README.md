@@ -119,7 +119,7 @@ With the mouse:
 - **Shift** overrides a program's mouse capture.
 - Hold **Ctrl** over a link and click to open it.
 - Drag the line between two panes to resize them; double-click it to even them out.
-- Drag a pane's header onto a tab to move the pane there, or onto its session's name to give it a tab of its own. **Move Pane to New Tab**, in the pane's menu and the palette, does the same. A tab with a single pane joins another when you drop it on the middle of that tab; dropped between two tabs it is reordered, as before.
+- Drag a pane's header onto a tab to move the pane there, or onto its session's name to give it a tab of its own. **Move Pane to New Tab**, in the pane's menu and the palette, does the same. A tab with a single pane joins another when you drop it on the middle of that tab; dropped between two tabs, it moves there.
 - Click a server's heading to fold its sessions away, and a session's heading, anywhere but its name, to fold its tabs.
 - Right-click a session, tab or pane for its menu. Double-click a name to rename it, and drag a session or tab to reorder it.
 

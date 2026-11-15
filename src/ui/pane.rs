@@ -85,15 +85,11 @@ impl App {
             picked = grip.clicked();
             // Dragged, it carries the pane to a row of the sidebar or a tab
             // along the top, and its title goes with the pointer meanwhile.
-            if grip.drag_started() {
-                let from = view.selected_session.clone().map(|session| Target {
-                    server: self.current,
-                    session,
-                    tab: Some(tab.id.clone()),
-                });
-                if let Some(from) = from {
-                    DragAndDrop::set_payload(ui.ctx(), Carried { from, pane: pane.id.clone() });
-                }
+            if grip.drag_started()
+                && let Some(session) = view.selected_session.clone()
+            {
+                let from = Target { server: self.current, session, tab: Some(tab.id.clone()) };
+                DragAndDrop::set_payload(ui.ctx(), Carried { from, pane: pane.id.clone() });
             }
             if let Some(at) = grip.interact_pointer_pos().filter(|_| grip.dragged()) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
@@ -101,11 +97,12 @@ impl App {
                 let painter = ui.ctx().layer_painter(layer);
                 let font = FontId::proportional(SMALL);
                 let title = painter.layout_no_wrap(pane.title.clone(), font, TEXT);
-                let pill = Rect::from_min_size(at + egui::vec2(12.0, 12.0), title.size());
-                let pill = pill.expand2(egui::vec2(8.0, 5.0)).translate(egui::vec2(8.0, 5.0));
+                let pad = egui::vec2(8.0, 5.0);
+                let pill =
+                    Rect::from_min_size(at + egui::vec2(12.0, 12.0), title.size() + 2.0 * pad);
                 painter.rect_filled(pill, 6, ui.visuals().window_fill);
                 painter.rect_stroke(pill, 6, Stroke::new(1.0, BORDER), StrokeKind::Inside);
-                painter.galley(pill.min + egui::vec2(8.0, 5.0), title, TEXT);
+                painter.galley(pill.min + pad, title, TEXT);
             }
             let mut header = bar.shrink2(egui::vec2(4.0, 0.0));
             let layout = Layout::right_to_left(Align::Center);
