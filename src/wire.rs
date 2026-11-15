@@ -161,6 +161,40 @@ impl fmt::Display for Ended {
 
 impl std::error::Error for Ended {}
 
+/// Why a request came to nothing on a connection that went on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Failed {
+    /// The server would not do it: the code of its error, and its words for it.
+    Refused { code: String, message: String },
+    /// It was larger than the server takes, which is so many bytes, and was not sent.
+    TooLarge(usize),
+    /// The server did not answer in time what was asked by this method.
+    Unanswered(String),
+}
+
+impl Failed {
+    /// Whether the server refused it with this code of its own.
+    pub fn is(&self, refusal: &str) -> bool {
+        matches!(self, Self::Refused { code, .. } if code == refusal)
+    }
+}
+
+impl fmt::Display for Failed {
+    /// The server's words alone, where it has any: its codes are for programs.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused { code, message } if message.is_empty() => {
+                write!(f, "The server refused ({code})")
+            }
+            Self::Refused { message, .. } => f.write_str(message),
+            Self::TooLarge(most) => write!(f, "Request exceeds server limit ({most} bytes)"),
+            Self::Unanswered(method) => write!(f, "The server took too long to answer {method}"),
+        }
+    }
+}
+
+impl std::error::Error for Failed {}
+
 /// A WebSocket error as the end it stands for, where it stands for one.
 fn lost(error: tungstenite::Error) -> anyhow::Error {
     use tungstenite::{Error, error::ProtocolError::ResetWithoutClosingHandshake};
@@ -376,8 +410,10 @@ pub async fn handshake(socket: &mut Socket, ticket: &str) -> Result<u64> {
     Ok(nonce)
 }
 
-type Reply = oneshot::Sender<Result<Value, String>>;
-pub type Response = oneshot::Receiver<Result<Value, String>>;
+/// What comes of a request on a connection that goes on.
+pub type Answer = Result<Value, Failed>;
+type Reply = oneshot::Sender<Answer>;
+pub type Response = oneshot::Receiver<Answer>;
 
 struct Request {
     method: String,
@@ -407,7 +443,7 @@ impl Rpc {
 
     pub async fn call(&self, method: &str, payload: Value) -> Result<Value> {
         let rx = self.enqueue(method, payload).await?;
-        rx.await.context(ENDED)?.map_err(anyhow::Error::msg)
+        Ok(rx.await.context(ENDED)??)
     }
 }
 
@@ -427,6 +463,15 @@ pub struct Control {
     /// Ends with the connection, and with an `Ended` in its error if it is known why.
     pub task: tokio::task::JoinHandle<Result<()>>,
     closing: Arc<Notify>,
+}
+
+/// Wait for a control connection's worker to end, which it does with the
+/// connection, and say why that is over: with an `Ended` if it is known.
+pub async fn ended(task: &mut tokio::task::JoinHandle<Result<()>>) -> anyhow::Error {
+    match task.await.context("Rex control worker stopped") {
+        Ok(Ok(())) => anyhow!(ENDED),
+        Ok(Err(error)) | Err(error) => error,
+    }
 }
 
 impl Drop for Control {
@@ -710,14 +755,14 @@ fn news(name: &str, fields: &Value) -> Option<News> {
     })
 }
 
-fn response_result(message: &Value) -> Result<Value, String> {
+fn response_result(message: &Value) -> Answer {
     let error = &message["error"];
     if error.is_object() {
-        return Err(format!(
-            "{}: {}",
-            error["code"].as_str().unwrap_or("request_failed"),
-            error["message"].as_str().unwrap_or("Request failed")
-        ));
+        let text = |key: &str| error[key].as_str().unwrap_or_default().to_owned();
+        return Err(Failed::Refused {
+            code: text("code"),
+            message: text("message"),
+        });
     }
     Ok(message.get("payload").cloned().unwrap_or_else(|| json!({})))
 }
@@ -780,9 +825,7 @@ async fn control_loop(
                         .to_string();
                 // Sent, it would have the server close the connection.
                 if text.len() > max_message {
-                    let _ = reply.send(Err(format!(
-                        "Request exceeds server limit ({max_message} bytes)"
-                    )));
+                    let _ = reply.send(Err(Failed::TooLarge(max_message)));
                     continue;
                 }
                 send_with_deadline(&mut socket, Message::Text(text.into()), STEP_TIMEOUT)
@@ -806,14 +849,11 @@ async fn control_loop(
             }
             Some(()) = ticks.next() => {
                 tick += 1;
-                // A request the server does not answer fails alone, and the link is
-                // judged by its pings. An answer that comes after all is to a number
-                // no longer known, and is passed over.
+                // A request the server does not answer fails alone, and is not asked
+                // again here. The link is judged by its pings. An answer that comes
+                // after all is to a number no longer known, and is passed over.
                 for (_, late) in pending.extract_if(|_, request| tick - request.sent >= REQUEST_TICKS) {
-                    let _ = late.reply.send(Err(format!(
-                        "The server took too long to answer {}; it was not asked again",
-                        late.method
-                    )));
+                    let _ = late.reply.send(Err(Failed::Unanswered(late.method)));
                 }
                 if std::mem::take(&mut heard) {
                     pinged = false;

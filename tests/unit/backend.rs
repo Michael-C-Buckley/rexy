@@ -784,7 +784,7 @@ async fn news_sent_ahead_of_an_answer_is_not_told_as_if_it_came_after() {
 }
 
 #[tokio::test]
-async fn a_view_that_does_not_come_is_said_and_its_session_still_listed() {
+async fn a_view_that_does_not_come_is_said_and_asked_for_again() {
     let server = served::Server::at("view");
     let (client, _notes) = server.client();
     let mut socket = server.welcome().await.unwrap();
@@ -792,11 +792,70 @@ async fn a_view_that_does_not_come_is_said_and_its_session_still_listed() {
     let error = json!({"code": "internal", "message": "busy"});
     let refusal = json!({"type": "response", "id": views["s1"], "error": error});
     served::say(&mut socket, refusal).await;
+    // In the server's words, without its code.
+    let said = |view: &View| view.error.is_some();
+    let view = served::until(&client, "its saying so", said).await;
+    assert_eq!(
+        view.error.as_deref(),
+        Some("A session's tabs were not read: busy")
+    );
     let view = served::until(&client, "a connection", |view| view.connected).await;
     assert_eq!(view.sessions.len(), 1);
-    let error = view.error.or_else(|| client.snapshot().error);
-    assert_eq!(
-        error.as_deref(),
-        Some("A session's tabs were not read: internal: busy")
+    // Asked for again before long, its tabs come.
+    let began = std::time::Instant::now();
+    let again = loop {
+        match served::asked(&mut socket).await {
+            Some((id, method, _)) if method == "session.view" => break id,
+            _ => assert!(began.elapsed() < RETRY[0] * 3, "it was not asked for again"),
+        }
+    };
+    let window = json!({"window_id": "w1", "layers": []});
+    let view = json!({"revision": 1, "active_window_id": "w1", "windows": [window]});
+    served::answer(&mut socket, &again, view).await;
+    let tabs = |view: &View| view.sessions[0].windows.len() == 1;
+    served::until(&client, "its tabs", tabs).await;
+}
+
+#[tokio::test]
+async fn what_is_asked_of_a_client_still_connecting_waits_for_it_to_connect() {
+    let server = served::Server::at("early");
+    let (client, _notes) = server.client();
+    let mut socket = server.welcome().await.unwrap();
+    let views = served::listed(&mut socket, &["s1"]).await;
+    let asked = json!({"call_id": "c1", "action": "pane.zoom", "args": {}});
+    let asked = json!({"type": "client_perform_requested", "payload": asked});
+    served::say(&mut socket, json!({"type": "event", "payload": asked})).await;
+    // Neither refused nor passed to a window with nothing yet to do it to.
+    let moment = Duration::from_millis(200);
+    let refused = tokio::time::timeout(moment, served::asked(&mut socket)).await;
+    assert!(refused.is_err(), "it was answered: {refused:?}");
+    assert!(client.snapshot().asked.is_empty());
+    let view = json!({"revision": 1, "windows": []});
+    served::answer(&mut socket, &views["s1"], view).await;
+    let passed = |view: &View| !view.asked.is_empty();
+    let view = served::until(&client, "its being passed on", passed).await;
+    assert!(view.connected);
+    assert_eq!(view.asked[0].call.as_deref(), Some("c1"));
+}
+
+#[tokio::test]
+async fn a_server_that_closes_while_a_client_begins_is_said_to_have_and_why() {
+    use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+    let server = served::Server::at("closed");
+    let (client, _notes) = server.client();
+    let mut socket = server.welcome().await.unwrap();
+    let (_, method, _) = served::asked(&mut socket).await.unwrap();
+    assert_eq!(method, "session.bootstrap");
+    let frame = CloseFrame {
+        code: CloseCode::from(1008),
+        reason: "event backlog exceeded".into(),
+    };
+    socket.close(Some(frame)).await.unwrap();
+    let lost = |view: &View| view.status.starts_with("Disconnected");
+    let view = served::until(&client, "its end", lost).await;
+    assert!(
+        view.status.contains("fell too far behind"),
+        "{}",
+        view.status
     );
 }

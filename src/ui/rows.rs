@@ -6,7 +6,7 @@ use eframe::egui::{
 
 use super::{
     App,
-    close::{Ask, CLOSE, asking, closer},
+    close::{Ask, CLOSE, CLOSE_TAB, asking, closer},
     heard::dot,
     style::{DIM, Icon, Item, ROW, entry, item, tints},
 };
@@ -167,6 +167,10 @@ impl App {
         }
         let spared = session.windows.iter().all(Window::idle);
         let ask = self.closing.ask(id, spared);
+        // Its one tab, asked to close by a command, asks again here: by its own
+        // name, and of itself, for the session outlives it.
+        let asked = tab.as_ref();
+        let asked = asked.filter(|tab| self.closing.waits(self.row(tab)));
         // What the tab's own row would say of it.
         let muted = lone.map(|tab| self.remembered.kept.muted.contains(&tab.id));
         // Under the session's name, what the tab says or the tab's own.
@@ -186,7 +190,10 @@ impl App {
             word: word.as_deref().filter(|_| muted != Some(true)),
             tip: &tip,
             buttons: &[(Icon::Plus, "New tab"), (Icon::Close, "Close session")],
-            confirm: (ask == Ask::Again).then_some(CLOSE),
+            confirm: match asked {
+                Some(_) => Some(CLOSE_TAB),
+                None => (ask == Ask::Again).then_some(CLOSE),
+            },
             movable: true,
             label: &session.name,
             ..Default::default()
@@ -196,7 +203,8 @@ impl App {
             self.follow(id, shown, &response);
         }
         self.picked(&response, &target, shown);
-        self.wait(ui, response.rect, &response, ask);
+        let either = if asked.is_some() { Ask::Again } else { ask };
+        self.wait(ui, response.rect, &response, either);
         if response.drag_started_by(PointerButton::Primary) {
             DragAndDrop::set_payload(ui.ctx(), target.clone());
         }
@@ -204,10 +212,10 @@ impl App {
         let at = |index: usize| sessions.get(index).map(|s| s.id.clone());
         match (button, menu(&response, labels, muted, index, at, ask)) {
             (Some(0), _) => self.open(server, Action::CreateWindow(session.id.clone())),
-            // This ends every program in the session.
-            (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
-                self.close(id, spared, true, server, target.edit(Edit::Close));
-            }
+            // The tab that asked, and not the session with it. Otherwise this
+            // ends every program in the session.
+            (Some(_), _) => self.shut(asked.cloned().unwrap_or(target), spared, true),
+            (None, Some(Choice::Edit(Edit::Close))) => self.shut(target, spared, true),
             // Only a tab is muted.
             (None, Some(Choice::Mute)) => {
                 if let Some((tab, window)) = tab.zip(lone) {
@@ -322,7 +330,7 @@ impl App {
         let at = |index: usize| session.windows.get(index).map(|w| w.id.clone());
         match (button, menu(&response, labels, Some(muted), index, at, ask)) {
             (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
-                self.close(id, spared, true, server, target.edit(Edit::Close));
+                self.shut(target, spared, true);
             }
             // The field opens on the name it goes by, given or not.
             (None, Some(choice)) => self.choose(target, window.name(), choice),
@@ -382,9 +390,22 @@ impl App {
         self.tell(target.server, target.edit(edit));
     }
 
+    /// Close a session or a tab as `close` does, by the name of its row: it asks
+    /// again wherever that name is asked after.
+    pub(super) fn shut(&mut self, target: Target, spared: bool, near: bool) {
+        let (what, server) = (self.row(&target), target.server);
+        self.close(what, spared, near, server, target.edit(Edit::Close));
+    }
+
+    /// Whether this is the session or the tab being renamed.
+    pub(super) fn renames(&self, target: &Target) -> bool {
+        let renamed = self.rename.as_ref();
+        renamed.is_some_and(|rename| &rename.target == target)
+    }
+
     /// Show the field that stands in for a row while it is renamed, and return the
     /// space it took. None if this row is not the one.
-    fn renaming(
+    pub(super) fn renaming(
         &mut self,
         ui: &mut egui::Ui,
         target: &Target,

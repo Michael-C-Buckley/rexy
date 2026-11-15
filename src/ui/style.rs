@@ -519,13 +519,25 @@ pub fn fitted(
     ui.painter().layout_job(job)
 }
 
-/// A button that asks to be pressed, to close what a press before it would not,
-/// lest programs end by a slip. Its trailing edge is at `edge`, where that press was.
-pub fn confirm(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: &str) -> egui::Response {
+/// The word that a button asks with, and how wide that makes the button.
+fn asks(ui: &egui::Ui, word: &str) -> (Arc<egui::Galley>, f32) {
     let word = ui
         .painter()
         .layout_no_wrap(word.to_owned(), bold(SMALL), TEXT);
-    let size = egui::vec2(word.size().x + 2.0 * PILL, SMALL_BUTTON);
+    let width = word.size().x + 2.0 * PILL;
+    (word, width)
+}
+
+/// How wide the button is that asks with `word`.
+pub fn confirm_width(ui: &egui::Ui, word: &str) -> f32 {
+    asks(ui, word).1
+}
+
+/// A button that asks to be pressed, to close what a press before it would not,
+/// lest programs end by a slip. Its trailing edge is at `edge`, where that press was.
+pub fn confirm(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: &str) -> egui::Response {
+    let (word, width) = asks(ui, word);
+    let size = egui::vec2(width, SMALL_BUTTON);
     let rect = Rect::from_min_size(edge - egui::vec2(size.x, size.y / 2.0), size);
     let response = ui.interact(rect, id, Sense::click());
     ui.painter().rect_filled(rect, RADIUS, DANGER);

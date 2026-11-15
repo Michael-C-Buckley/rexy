@@ -39,8 +39,8 @@ pub fn at(frame: &Frame, x: usize, y: usize) -> Option<Link> {
     followed(&target).then_some(Link { target, spans })
 }
 
-/// An address written out in the text, which may run over rows that wrap. One
-/// that runs on below the last row shown is not all there, and is no link.
+/// An address written out in the text, which may run over rows that wrap, and
+/// on past the rows shown: the frame holds what of it is out of sight there.
 fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
     let wraps = |row: usize| frame.lines.get(row).is_some_and(|row| row.wrapped);
     let first = (0..y)
@@ -48,9 +48,25 @@ fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
         .take_while(|row| wraps(*row))
         .last()
         .unwrap_or(y);
-    let last = (y..frame.lines.len()).find(|row| !wraps(*row))?;
-    // Every character of the line, with the row and the column it is shown at.
-    let mut line = Vec::new();
+    let rows = y..frame.lines.len();
+    let last = rows.clone().find(|row| !wraps(*row)).or(rows.last())?;
+    // What of the line is out of sight, before the rows shown and after them:
+    // none of it where it begins or ends among them, and None where it is more
+    // than the frame holds.
+    let [above, below] = &frame.beyond;
+    let above = if first == 0 {
+        above.as_deref()
+    } else {
+        Some("")
+    };
+    let below = if wraps(last) {
+        below.as_deref()
+    } else {
+        Some("")
+    };
+    // Every character of the line, and for one on show its row and its column.
+    let unseen = |c: char| (c, None);
+    let mut line: Vec<_> = above.unwrap_or_default().chars().map(unseen).collect();
     for (row, cells) in frame.lines.iter().enumerate().take(last + 1).skip(first) {
         for (column, cell) in cells.cells.iter().enumerate() {
             if cell.spacer_tail || cell.spacer_head {
@@ -60,18 +76,21 @@ fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
                 "" => " ",
                 text => text,
             };
-            line.extend(text.chars().map(|c| (c, row, column)));
+            line.extend(text.chars().map(|c| (c, Some((row, column)))));
         }
     }
-    let here = line
-        .iter()
-        .position(|&(_, row, column)| (row, column) == (y, x))?;
+    line.extend(below.unwrap_or_default().chars().map(unseen));
+    let here = line.iter().position(|&(_, at)| at == Some((y, x)))?;
     // Blanks end an address, and so do the lines a program draws around its text.
-    let part = |&(c, ..): &(char, usize, usize)| {
+    let part = |&(c, _): &(char, Option<(usize, usize)>)| {
         !c.is_whitespace() && !c.is_control() && !"<>\"`".contains(c) && !('─'..='▟').contains(&c)
     };
     let start = here - line[..here].iter().rev().take_while(|c| part(c)).count();
     let end = here + line[here..].iter().take_while(|c| part(c)).count();
+    // One that runs on out of sight further than is held is not all there.
+    if (start == 0 && above.is_none()) || (end == line.len() && below.is_none()) {
+        return None;
+    }
     let word: String = line[start..end].iter().map(|c| c.0).collect();
     // It begins where its kind is named, which may be after a bracket or a quote.
     let begin = SCHEMES
@@ -96,7 +115,7 @@ fn written(frame: &Frame, x: usize, y: usize) -> Option<Link> {
         return None;
     }
     let mut spans: Vec<(usize, usize, usize)> = Vec::new();
-    for &(_, row, column) in shown {
+    for (row, column) in shown.iter().filter_map(|c| c.1) {
         match spans.last_mut() {
             Some(span) if span.0 == row => span.2 = column + 1,
             _ => spans.push((row, column, column + 1)),

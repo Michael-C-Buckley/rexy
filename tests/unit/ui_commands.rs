@@ -60,7 +60,7 @@ fn plan(view: &View, focused: &str, name: &str, args: Value) -> Result<String, &
         Deed::Ask(Action::Key { code, .. }) => format!("press {code}"),
         Deed::Focus(pane) => format!("focus {pane}"),
         Deed::Close(_, spared, _) => format!("close, spared: {spared}"),
-        Deed::CloseTab(_, tab, spared, _) => format!("close {tab}, spared: {spared}"),
+        Deed::CloseTab(_, tab, spared) => format!("close {tab}, spared: {spared}"),
         Deed::Rename(_, tab, name) => format!("rename {tab:?} from {name}"),
         Deed::Font(size) => format!("font {size}"),
         _ => "other".into(),

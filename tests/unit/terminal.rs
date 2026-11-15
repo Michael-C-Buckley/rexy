@@ -746,16 +746,36 @@ fn links_are_those_marked_and_those_written_out() {
     assert_eq!((link(4, 1), link(10, 2), link(11, 2)), (None, None, None));
     // A file is never followed, and a name without its kind is no address.
     assert_eq!((link(0, 3), link(5, 3)), (None, None));
-    // An address that runs on below the last row shown is not all there.
-    let mut terminal = self::terminal(20, 2);
-    terminal.vt_write(b"https://example.com/a/long/way/down/and/then/some");
+    // An address that runs on past the rows shown is known whole: here its
+    // first row is out of sight above, and then its last below. Only the part
+    // on show is marked.
     let whole = "https://example.com/a/long/way/down/and/then/some".to_owned();
-    let shown = |frame: Arc<Frame>| crate::link::at(&frame, 3, 0).map(|link| link.target);
-    terminal.scroll_viewport(libghostty_vt::terminal::ScrollViewport::Top);
-    assert_eq!(shown(render(&terminal)), None);
-    let mut terminal = self::terminal(20, 3);
+    let shown = |frame: Arc<Frame>, x, y| {
+        crate::link::at(&frame, x, y).map(|link| (link.target, link.spans))
+    };
+    let mut terminal = self::terminal(20, 2);
     terminal.vt_write(whole.as_bytes());
-    assert_eq!(shown(render(&terminal)), Some(whole));
+    let low = Some((whole.clone(), vec![(0, 0, 20), (1, 0, 9)]));
+    assert_eq!(shown(render(&terminal), 3, 0), low);
+    terminal.scroll_viewport(ScrollViewport::Top);
+    let high = Some((whole.clone(), vec![(0, 0, 20), (1, 0, 20)]));
+    assert_eq!(shown(render(&terminal), 3, 1), high);
+    // Not what runs on further than any address is long: that is not all held.
+    let mut terminal = self::terminal(20, 2);
+    terminal.vt_write(format!("{whole}{}", "/more".repeat(500)).as_bytes());
+    terminal.scroll_viewport(ScrollViewport::Top);
+    assert_eq!(shown(render(&terminal), 3, 0), None);
+    // And nothing is taken from beyond a blank, or from a line that ended.
+    let mut terminal = self::terminal(20, 2);
+    terminal.vt_write(b"x https://example.com/a\r\nb\r\nc");
+    terminal.scroll_viewport(ScrollViewport::Top);
+    let frame = render(&terminal);
+    assert_eq!(frame.beyond, [Some(String::new()), Some(String::new())]);
+    let short = Some((
+        "https://example.com/a".to_owned(),
+        vec![(0, 2, 20), (1, 0, 3)],
+    ));
+    assert_eq!(shown(frame, 2, 0), short);
 }
 
 /// Counts what each thread asks of the allocator, for the benchmarks.
@@ -859,7 +879,7 @@ fn clustered(line: usize) -> String {
 pub(crate) type Program = fn(usize) -> String;
 
 /// The screens the benchmarks draw, 200 columns by 60 rows, each with its name.
-pub(crate) const SCREENS: [(&str, Program); 4] = [
+pub(crate) const SCREENS: [(&str, Program); 5] = [
     ("coloured text, all redrawn", |frame| {
         let rows: Vec<String> = (frame * 60..frame * 60 + 60).map(coloured).collect();
         format!("\x1b[H{}", rows.join("\r\n"))
@@ -876,6 +896,11 @@ pub(crate) const SCREENS: [(&str, Program); 4] = [
         let line = |line: usize| format!("{prompt} make {:x}\x1b[K", line * 2_654_435_761);
         let rows: Vec<String> = (frame * 60..frame * 60 + 60).map(line).collect();
         format!("\x1b[H{}", rows.join("\r\n"))
+    }),
+    // Its first row goes on from a word longer than any address, out of sight
+    // above it, which is read every frame for as far as an address may go.
+    ("unbroken text, two rows scroll", |frame| {
+        format!("{:x}", frame * 2_654_435_761).repeat(40)
     }),
 ];
 

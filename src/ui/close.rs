@@ -12,6 +12,8 @@ use crate::model::Action;
 /// What a button says that has been pressed to close something busy, and asks to
 /// be pressed again.
 pub const CLOSE: &str = "Close?";
+/// The same of a tab, asked where it might be taken for something else's.
+pub const CLOSE_TAB: &str = "Close tab?";
 
 /// What was asked to close while it may have had programs running, if anything,
 /// and so waits to be asked again: once is easily a slip.
@@ -45,11 +47,18 @@ impl Closing {
     /// What pressing something that closes `what` will do. `spared` says that
     /// nothing would be lost by closing it.
     pub fn ask(&self, what: egui::Id, spared: bool) -> Ask {
-        match &self.0 {
-            Some(asked) if asked.what == what => Ask::Again,
-            _ if spared => Ask::No,
-            _ => Ask::First,
+        if self.waits(what) {
+            Ask::Again
+        } else if spared {
+            Ask::No
+        } else {
+            Ask::First
         }
+    }
+
+    /// Whether this is what waits to be asked again.
+    pub fn waits(&self, what: egui::Id) -> bool {
+        self.0.as_ref().is_some_and(|asked| asked.what == what)
     }
 
     /// Take a press of something that closes `what`, and say whether to close it.

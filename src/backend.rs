@@ -14,7 +14,7 @@ use crate::{
     program::Program,
     ssh,
     terminal::{Notify, Request, Scroll, TerminalHandle},
-    wire::{self, Control, ENDED, Ended, Event, News, Rpc},
+    wire::{self, Answer, Control, Ended, Event, Failed, News, Rpc},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
@@ -422,8 +422,15 @@ async fn run_connected(
         let (tunnel, mut control) = connect(endpoints, link).await?;
         link.token = control.reconnect_token.take();
         link.target = Some(control.target.clone());
-        let connection = Connection::open(&control, link, shared).await?;
-        anyhow::Ok((tunnel, control, connection))
+        let opened = Connection::open(&control, link, shared).await;
+        // What the server would not answer is reason enough. Of a connection
+        // that ended meanwhile, its worker alone knows why.
+        if let Err(error) = &opened
+            && !error.is::<Failed>()
+        {
+            return Err(wire::ended(&mut control.task).await);
+        }
+        anyhow::Ok((tunnel, control, opened?))
     };
     // A client that goes while its connection is being made has no use for it.
     // Nothing else is asked of one that is yet to be made but to make it.
@@ -432,7 +439,9 @@ async fn run_connected(
         opened = opened => opened?,
         () = gone => return Ok(()),
     };
-    let mut connected = false;
+    // What other clients ask of a window still connecting waits here, for the
+    // window to be told of once it can do it.
+    let (mut connected, mut waiting) = (false, Vec::new());
     loop {
         // The UI is told of the connection once the tabs of every session have come,
         // so that it is never shown half a server.
@@ -446,6 +455,7 @@ async fn run_connected(
                 state.picks
             };
             connection.show().await;
+            waiting.drain(..).for_each(|asked| connection.pass(asked));
         }
         tokio::select! {
             // In this order: the server's news is taken before its answers, as it
@@ -454,11 +464,11 @@ async fn run_connected(
             biased;
             // Its worker alone knows why a connection has ended. Nothing else here
             // ends one, so that this is what is said of it.
-            result = &mut control.task => {
-                result.context("Rex control worker stopped")??;
-                bail!(ENDED);
-            }
-            Some(event) = control.events.recv() => connection.event(event).await,
+            error = wire::ended(&mut control.task) => return Err(error),
+            Some(event) = control.events.recv() => match event {
+                Event::Asked(asked) if !connected => waiting.push(asked),
+                event => connection.event(event).await,
+            },
             // Nothing comes of what was asked of a connection that has ended.
             Some(Some((reply, answer))) = connection.replies.next() => {
                 connection.answered(reply, answer).await;
@@ -479,8 +489,6 @@ async fn run_connected(
         }
     }
 }
-
-type Answer = Result<Value, String>;
 
 /// What an answer on its way from the server is to.
 enum Reply {
@@ -522,6 +530,8 @@ struct Held {
     heard: u64,
     /// A view has been asked for and has yet to come.
     asking: bool,
+    /// How many times running a view asked for has not come.
+    failures: usize,
 }
 
 impl Held {
@@ -849,33 +859,7 @@ impl<'a> Connection<'a> {
                 }
                 return;
             }
-            Event::Asked(asked) => {
-                let (shared, rpc, call) =
-                    (self.shared.clone(), self.rpc.clone(), asked.call.clone());
-                // A window still connecting can do nothing, and says so at once.
-                if !shared.lock().view.connected {
-                    if let Some(call) = call {
-                        let _ = rpc
-                            .enqueue("client.reply", reply(&call, Some("refused")))
-                            .await;
-                    }
-                    return;
-                }
-                // A window that is out of sight takes nothing. What it has not
-                // taken after a while is refused for it, and so never done late.
-                self.shared.change(|s| s.view.asked.push(asked));
-                tokio::spawn(async move {
-                    tokio::time::sleep(UNTAKEN).await;
-                    let waits = |held: &mut model::Asked| held.call == call;
-                    let untaken = shared.lock().view.asked.extract_if(.., waits).count() > 0;
-                    if let Some(call) = call.filter(|_| untaken) {
-                        let _ = rpc
-                            .enqueue("client.reply", reply(&call, Some("refused")))
-                            .await;
-                    }
-                });
-                return;
-            }
+            Event::Asked(asked) => return self.pass(asked),
             Event::Block { block, news } => {
                 return match news {
                     News::Bell => self.rang(block),
@@ -902,6 +886,24 @@ impl<'a> Connection<'a> {
         }
         self.shared.change(|s| list(&mut s.view.sessions, &event));
         self.show().await;
+    }
+
+    /// Tell the window of something another client asks of it. A window that is out
+    /// of sight takes nothing. What it has not taken after a while is refused for
+    /// it, and so never done late.
+    fn pass(&self, asked: model::Asked) {
+        let (shared, rpc, call) = (self.shared.clone(), self.rpc.clone(), asked.call.clone());
+        self.shared.change(|s| s.view.asked.push(asked));
+        tokio::spawn(async move {
+            tokio::time::sleep(UNTAKEN).await;
+            let waits = |held: &mut model::Asked| held.call == call;
+            let untaken = shared.lock().view.asked.extract_if(.., waits).count() > 0;
+            if let Some(call) = call.filter(|_| untaken) {
+                let _ = rpc
+                    .enqueue("client.reply", reply(&call, Some("refused")))
+                    .await;
+            }
+        });
     }
 
     /// Take the server's answer to something asked of it.
@@ -954,7 +956,7 @@ impl<'a> Connection<'a> {
                 let asked: Vec<_> = asked.collect();
                 return self.shared.change(|s| s.view.asked.extend(asked));
             }
-            (Reply::Performed, Err(error)) => return self.shared.fail(error),
+            (Reply::Performed, Err(error)) => return self.shared.fail(error.to_string()),
             (Reply::Learned { block, known }, answer) => {
                 // Unless the terminal has gone meanwhile.
                 let Some(held) = self.asking.get_mut(&block).and_then(Option::take) else {
@@ -994,30 +996,37 @@ impl<'a> Connection<'a> {
                     }
                     // What was put on show in hope of it goes back, in `show`, to
                     // what the server has.
-                    Err(error) => self.shared.fail(error),
+                    Err(error) => self.shared.fail(error.to_string()),
                 }
             }
             (Reply::View(session), answer) => {
+                // A session that has ended has none, as the news says or will say.
                 if let Some(held) = self.views.get_mut(&session) {
                     held.asking = false;
-                }
-                match answer {
-                    Ok(view) => {
-                        self.view(&session, &view).await;
-                        // A newer one may have been heard of while this was on its way.
-                        self.want(&session, 0).await;
-                    }
-                    // A session that ended a moment ago has none, as the news will say.
-                    Err(error) if error.starts_with("session_not_found") => {}
-                    // Its tabs are not known for any other reason: say so, and ask
-                    // again in a while, if nothing has asked by then.
-                    Err(error) => {
-                        self.shared
-                            .fail(format!("A session's tabs were not read: {error}"));
-                        self.replies.push(Box::pin(async move {
-                            tokio::time::sleep(RETRY[1]).await;
-                            Some((Reply::Unseen(session), Ok(Value::Null)))
-                        }));
+                    // How many times running its view had not come before this.
+                    let failures = std::mem::take(&mut held.failures);
+                    match answer {
+                        Ok(view) => {
+                            self.view(&session, &view).await;
+                            // A newer one may have been heard of while this was on its way.
+                            self.want(&session, 0).await;
+                        }
+                        Err(error) if error.is("session_not_found") => {}
+                        // Its tabs are not known for any other reason. That is said
+                        // once, and they are asked for again, soon and then seldom,
+                        // if nothing else has asked by then.
+                        Err(error) => {
+                            held.failures = failures + 1;
+                            if failures == 0 {
+                                self.shared
+                                    .fail(format!("A session's tabs were not read: {error}"));
+                            }
+                            let wait = RETRY[failures.min(RETRY.len() - 1)];
+                            self.replies.push(Box::pin(async move {
+                                tokio::time::sleep(wait).await;
+                                Some((Reply::Unseen(session), Ok(Value::Null)))
+                            }));
+                        }
                     }
                 }
             }
@@ -1033,7 +1042,7 @@ impl<'a> Connection<'a> {
                             if s.view.selected_session.as_ref() == Some(&session) {
                                 s.view.selected_session = None;
                             }
-                            s.view.error = Some(error);
+                            s.view.error = Some(error.to_string());
                         });
                     }
                 }
@@ -1767,7 +1776,7 @@ fn divide(rpc: Rpc, shared: Shared) -> watch::Sender<Vec<Value>> {
                 // What the server would not do is said. That the connection ended
                 // is said already, above its last screen.
                 if let Err(error) = rpc.call("session.resize_pane", request).await
-                    && error.to_string() != ENDED
+                    && error.is::<Failed>()
                 {
                     shared.fail(format!("{error:#}"));
                 }

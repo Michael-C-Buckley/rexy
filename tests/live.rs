@@ -760,7 +760,10 @@ fn live_keymap_actions_and_requests() {
     // One there is not is said to have failed.
     send(&client, perform("no_such_action"));
     let failed = wait(&client, "an action that failed", |v| v.error.is_some());
-    assert!(failed.error.unwrap().contains("not_found"));
+    // In the server's words for it, which name the action, and not by its code.
+    let said = failed.error.unwrap();
+    assert!(said.contains("no_such_action"), "{said}");
+    assert!(!said.contains("not_found"), "{said}");
     assert_eq!(session, client.snapshot().selected_session.unwrap());
     // The configuration is left as it was found.
     std::fs::write(path, "").unwrap();

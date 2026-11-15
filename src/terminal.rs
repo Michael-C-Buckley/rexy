@@ -163,6 +163,11 @@ pub struct Frame {
     pub found: Option<(usize, usize)>,
     /// The pictures on show, in the order they are drawn.
     pub pictures: Arc<[Placed]>,
+    /// What of a word is out of sight where the rows shown begin or end in the
+    /// middle of one: the part of it above the first row, and the part below
+    /// the last, on a line that wraps there. An address may be written across
+    /// such an edge. None where there is more of it than an address may be long.
+    pub beyond: [Option<String>; 2],
 }
 
 impl Frame {
@@ -948,6 +953,7 @@ impl Renderer {
             lines.push(row);
         }
         self.known = known;
+        let beyond = beyond(terminal, &lines, cols, scrollbar.offset, scrollbar.total)?;
         let old = self.previous.as_ref().map(|old| &old.pictures);
         let pictures = match old {
             Some(old) if !repictured => old.clone(),
@@ -975,12 +981,96 @@ impl Renderer {
             selected,
             found: self.found,
             pictures,
+            beyond,
         });
         snapshot.clean()?;
         self.previous = Some(frame.clone());
         self.colors = Some(colors);
         Ok(Some(frame))
     }
+}
+
+/// What of a word is out of sight above the rows shown, and below them, as
+/// `Frame::beyond` has it. `top` is the first of those rows among all the
+/// `total` rows the screen holds, its history with it.
+fn beyond(
+    terminal: &Terminal<'static, '_>,
+    lines: &[Arc<Row>],
+    cols: u16,
+    top: u64,
+    total: u64,
+) -> Result<[Option<String>; 2]> {
+    let at = |x: u16, y: u64| {
+        let y = u32::try_from(y)?;
+        anyhow::Ok(terminal.grid_ref(Point::Screen(Coordinate { x, y }))?)
+    };
+    let wraps = |y: u64| anyhow::Ok(at(0, y)?.row()?.is_wrapped()?);
+    // What a cell shows, as so many characters of `cluster`: none for the idle
+    // half of a wide character, and None for a blank, where a word ends.
+    let mut cluster = ['\0'; 8];
+    let shown = |x: u16, y: u64, cluster: &mut [char; 8]| {
+        let cell = at(x, y)?;
+        let length = cell.graphemes(cluster).unwrap_or(0);
+        // Only a cell with nothing in it is asked whether it is such a half.
+        if length == 0 {
+            let wide = cell.cell()?.wide()?;
+            let half = matches!(wide, CellWide::SpacerTail | CellWide::SpacerHead);
+            return anyhow::Ok(half.then_some(0));
+        }
+        let blank = cluster[..length].iter().all(|c| c.is_whitespace());
+        Ok((!blank).then_some(length))
+    };
+    let blank = |row: &Row, x: usize| {
+        let half = |cell: &Cell| cell.spacer_tail || cell.spacer_head;
+        row.text(x, x + 1).trim().is_empty() && !row.cells.get(x).is_some_and(half)
+    };
+    let held = |text: Vec<char>| (text.len() <= MAX_LINK_BYTES).then(|| String::from_iter(text));
+    // Back from the first row's first cell, over the rows that wrap into it.
+    let mut above = Some(String::new());
+    if let Some(first) = lines.first()
+        && !blank(first, 0)
+    {
+        let (mut text, mut x, mut y) = (Vec::new(), 0, top);
+        while text.len() <= MAX_LINK_BYTES {
+            if x == 0 {
+                if y == 0 || !wraps(y - 1)? {
+                    break;
+                }
+                (x, y) = (cols, y - 1);
+            }
+            x -= 1;
+            let Some(length) = shown(x, y, &mut cluster)? else {
+                break;
+            };
+            text.extend(cluster[..length].iter().rev());
+        }
+        text.reverse();
+        above = held(text);
+    }
+    // On from the last row's last cell, over the rows it wraps into.
+    let mut below = Some(String::new());
+    if let Some(last) = lines.last()
+        && last.wrapped
+        && !blank(last, last.cells.len().saturating_sub(1))
+    {
+        let (mut text, mut x, mut y) = (Vec::new(), 0, top + lines.len() as u64);
+        while text.len() <= MAX_LINK_BYTES && y < total {
+            if x == cols {
+                if !wraps(y)? {
+                    break;
+                }
+                (x, y) = (0, y + 1);
+                continue;
+            }
+            let Some(length) = shown(x, y, &mut cluster)? else {
+                break;
+            };
+            text.extend(&cluster[..length]);
+            x += 1;
+        }
+        below = held(text);
+    }
+    Ok([above, below])
 }
 
 #[cfg(test)]

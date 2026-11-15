@@ -354,8 +354,10 @@ async fn answers_reach_their_askers_and_news_its_readers() {
     let refusal = json!({"type": "response", "id": "1", "error": error});
     link.answer(refusal).await;
     assert_eq!(second.await.unwrap(), Ok(json!({"for": "2"})));
-    let refused = Err("not_found: No such session".into());
-    assert_eq!(first.await.unwrap(), refused);
+    let refused = first.await.unwrap().unwrap_err();
+    assert!(refused.is("not_found") && !refused.is("not"));
+    // Its words are for the user, and its code is not.
+    assert_eq!(refused.to_string(), "No such session");
     let hash = "h".to_owned();
     assert_eq!(link.events.recv().await, Some(Event::Hosts { hash }));
     assert!(link.events.try_recv().is_err());
@@ -392,7 +394,7 @@ async fn a_request_never_answered_fails_alone() {
         link.tick().await;
     }
     let error = slow.await.unwrap().unwrap_err();
-    assert!(error.contains("took too long to answer slow"), "{error}");
+    assert_eq!(error, Failed::Unanswered("slow".into()));
     assert!(!link.sent());
     // Its answer comes after all, and is passed over. The connection carries on.
     link.answer(json!({"type": "response", "id": id})).await;
