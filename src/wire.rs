@@ -1,6 +1,9 @@
 //! Rex WebSocket transport and bounded, pipelined control requests.
 // Protocol interoperability informed by rexrs and rex-rune (MIT); see THIRD_PARTY.md.
-use crate::{model::Asked, program::Program};
+use crate::{
+    model::Asked,
+    program::{self, Program},
+};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, Stream, StreamExt, stream};
@@ -635,12 +638,11 @@ pub struct Running {
 pub fn running(process: &Value) -> Running {
     let named = ["script", "argv0", "name"].map(|key| process[key].as_str());
     let named = named.into_iter().flatten();
-    let last = |path: &str| path.rsplit('/').next().unwrap_or(path).trim_start_matches('-').into();
     Running {
         pid: process["pid"].as_u64(),
         program: Program::named(named.clone()),
-        name: named.clone().next().map(last).unwrap_or_default(),
-        folder: process["cwd"].as_str().map(str::to_owned),
+        name: named.clone().next().map(program::base).unwrap_or_default().into(),
+        folder: process["cwd"].as_str().filter(|at| !at.is_empty()).map(str::to_owned),
     }
 }
 

@@ -248,22 +248,25 @@ pub fn resolve<'a>(
     first(None).unwrap_or(Step::Pass)
 }
 
-/// The same, where a key that goes on no sequence is taken as itself: it may
-/// be bound alone, or begin a sequence of its own. With the step, whether it
-/// was so taken, and the keys before it count for nothing.
+/// The same of the last of the keys `pending`, which are left as the keys the
+/// next one comes after. One that goes on no sequence is taken as itself, and
+/// the keys before it count for nothing: it may be bound alone, or begin a
+/// sequence of its own.
 pub fn press<'a>(
     map: &'a Keymap,
     modes: &[(String, bool)],
-    pressed: &[Vec<String>],
+    pending: &mut Vec<Vec<String>>,
     can: impl Fn(&Binding) -> bool,
-) -> (Step<'a>, bool) {
-    let step = resolve(map, modes, pressed, &can);
-    match pressed {
-        [.., last] if step == Step::Pass && pressed.len() > 1 => {
-            (resolve(map, modes, std::slice::from_ref(last), can), true)
-        }
-        _ => (step, false),
+) -> Step<'a> {
+    let mut step = resolve(map, modes, pending, &can);
+    if step == Step::Pass && pending.len() > 1 {
+        pending.drain(..pending.len() - 1);
+        step = resolve(map, modes, pending, can);
     }
+    if step != Step::Wait {
+        pending.clear();
+    }
+    step
 }
 
 /// Where the keyboard stands with the keymap in force.

@@ -33,7 +33,7 @@ fn plan(view: &View, focused: &str, name: &str, args: Value) -> Result<String, &
         Deed::Server(Action::SelectTab { tab, .. }) => format!("show {tab}"),
         Deed::Server(Action::SelectSession(session)) => format!("show {session}"),
         Deed::Server(Action::Edit { edit, .. }) => format!("{edit:?}"),
-        Deed::Server(Action::Split { pane, direction }) => format!("split {pane} {direction:?}"),
+        Deed::Server(Action::Split { pane, toward }) => format!("split {pane} {toward:?}"),
         Deed::Server(Action::Swap { pane, with }) => format!("swap {pane} {with}"),
         Deed::Server(Action::Zoom { pane }) => format!("zoom {pane}"),
         Deed::Server(Action::Key { code, .. }) => format!("press {code}"),
@@ -78,8 +78,8 @@ fn an_action_with_a_direction_goes_by_a_name_of_its_own() {
     assert_eq!(named("pane.zoom", &right), "pane.zoom");
     let mut view = view();
     let split = |view: &View, way: &str| plan(view, "b", "pane.split", json!({"direction": way}));
-    assert_eq!(split(&view, "right").as_deref(), Ok("split b Right"));
-    assert_eq!(split(&view, "up").as_deref(), Ok("split b Up"));
+    assert_eq!(split(&view, "right").as_deref(), Ok("split b [1.0, 0.0]"));
+    assert_eq!(split(&view, "up").as_deref(), Ok("split b [0.0, -1.0]"));
     // One this client lacks is not among its actions.
     assert_eq!(split(&view, "auto"), Err("not_supported"));
     // A pane changes places with the one on that side of it, where there is one.

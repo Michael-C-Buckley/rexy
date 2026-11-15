@@ -1,7 +1,7 @@
 use super::*;
 use crate::terminal::{
     Request, select,
-    tests::{encode, long, render, row, terminal, until, worker, write},
+    tests::{encode, lined, long, render, row, terminal, until, worker, write},
 };
 
 /// What is selected, which a match found is.
@@ -56,10 +56,7 @@ fn text_is_found_through_all_of_history_and_its_matches_walked() {
 
 #[test]
 fn a_match_is_shown_clear_of_the_field_that_looks_for_it() {
-    let mut terminal = terminal(20, 12);
-    for line in 0..100 {
-        terminal.vt_write(format!("line {line}\r\n").as_bytes());
-    }
+    let mut terminal = lined(12, 100);
     let mut finding = Finding::default();
     let shown = |terminal: &Terminal<'static, '_>| {
         render(terminal).selected.iter().position(Option::is_some)

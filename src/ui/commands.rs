@@ -14,7 +14,7 @@ use super::{
     style::{Icon, icon_button},
 };
 use crate::{
-    model::{Action, Direction, Edit, Tab, View},
+    model::{Action, Edit, Tab, View},
     terminal::{Request, Scroll},
 };
 
@@ -236,10 +236,12 @@ pub(super) enum Deed {
     Font(f32),
     Sidebar,
     /// Turning the sidebar to the list of what is at work, or back.
-    Agents,
+    Activity,
     /// Opening the palette, or putting it away: on what can be done, or else
     /// on the sessions and the tabs.
-    Palette(bool),
+    Palette {
+        commands: bool,
+    },
     /// Letting a server's other clients have this window do things, or no longer.
     Remote,
     /// Something for a pane's own terminal to do, which no server is told of:
@@ -326,9 +328,9 @@ impl Standing<'_> {
         // First what needs no server.
         Some(match name {
             "client.sidebar.toggle" => Deed::Sidebar,
-            "client.sidebar.activity.toggle" => Deed::Agents,
-            "client.palette.toggle" => Deed::Palette(true),
-            "session.switch" => Deed::Palette(false),
+            "client.sidebar.activity.toggle" => Deed::Activity,
+            "client.palette.toggle" => Deed::Palette { commands: true },
+            "session.switch" => Deed::Palette { commands: false },
             REMOTE => Deed::Remote,
             "client.font.increase" => Deed::Font(self.font_size + 1.0),
             "client.font.decrease" => Deed::Font(self.font_size - 1.0),
@@ -402,14 +404,7 @@ impl Standing<'_> {
             // Before the one after the next, or last of all.
             "client.tab.move.forward" if at? + 1 < tabs.len() => moved(tabs.get(at? + 2))?,
             "pane.split.left" | "pane.split.right" | "pane.split.up" | "pane.split.down" => {
-                let direction = match toward(name)? {
-                    [-1.0, _] => Direction::Left,
-                    [1.0, _] => Direction::Right,
-                    [_, -1.0] => Direction::Up,
-                    _ => Direction::Down,
-                };
-                let pane = pane?.id.clone();
-                Deed::Server(Action::Split { pane, direction })
+                Deed::Server(Action::Split { pane: pane?.id.clone(), toward: toward(name)? })
             }
             // It changes places with the pane on that side of it.
             "pane.move.left" | "pane.move.right" | "pane.move.up" | "pane.move.down" => {
@@ -492,13 +487,13 @@ impl App {
             }
             Deed::Sidebar => self.remembered.kept.sidebar ^= true,
             // The list is the sidebar's, which is brought out for it.
-            Deed::Agents => {
+            Deed::Activity => {
                 self.activity ^= true;
                 self.remembered.kept.sidebar |= self.activity;
             }
             // It opens with nothing typed. Asked for the list it is not showing,
             // it turns to that one, and is put away only by the one it shows.
-            Deed::Palette(commands) => {
+            Deed::Palette { commands } => {
                 let other = Popup::is_id_open(ctx, palette::id()) && self.commands != commands;
                 (self.commands, self.cursor) = (commands, None);
                 self.filter.clear();

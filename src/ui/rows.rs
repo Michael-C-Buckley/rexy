@@ -251,16 +251,18 @@ impl App {
         let muted = self.remembered.kept.muted.contains(&tab.id);
         // Along the top a tab has one line. Down the sidebar it says under its
         // name what it does, or its terminal's title where it has another name.
-        let (said, under, mut word, tip) = match across {
+        let (said, under, word, tip) = match across {
             true => {
                 let (said, word, tip) = speaks(tab);
-                (said, String::new(), word.filter(|_| !muted), tip)
+                (said, String::new(), word, tip)
             }
             false => {
                 let title = tab.top().map_or("", |pane| &pane.title);
                 self.lines(ui.ctx(), tab, tab.name(), title)
             }
         };
+        // One that is muted says nothing in words.
+        let mut word = word.filter(|_| !muted);
         // Along the top a tab is as wide as its name, up to the size given: its
         // icon and the room for its mark or its button come to as much again as
         // the row's own edges. What it says in words stands after the name
@@ -274,9 +276,9 @@ impl App {
                 };
                 let name = wide(tab.name(), BODY) + 70.0;
                 let both = word.as_deref().map(|word| name + wide(word, SMALL));
-                word = word.filter(|_| both.is_some_and(|both| both <= size.x));
-                let width = both.filter(|_| word.is_some()).unwrap_or(name);
-                Vec2::new(width.clamp(96.0, size.x), size.y)
+                let both = both.filter(|both| *both <= size.x);
+                word = word.filter(|_| both.is_some());
+                Vec2::new(both.unwrap_or(name).clamp(96.0, size.x), size.y)
             }
             false => size,
         };
@@ -292,7 +294,7 @@ impl App {
             selected,
             mark: if muted { Some((Icon::Muted, DIM)) } else { dot(ui.ctx(), said) },
             under: &under,
-            word: word.as_deref().filter(|_| !muted),
+            word: word.as_deref(),
             buttons: &[(Icon::Close, "Close tab")],
             confirm: (ask == Ask::Again).then_some(CLOSE),
             tip: &tip,
@@ -314,7 +316,7 @@ impl App {
         } else {
             ["Move Up", "Move Down", "Close Tab"]
         };
-        let at = |index: usize| session.tabs.get(index).map(|w| w.id.clone());
+        let at = |index: usize| session.tabs.get(index).map(|tab| tab.id.clone());
         match (button, menu(&response, labels, Some(muted), index, at, ask)) {
             (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
                 self.shut(target, spared, true);
@@ -351,7 +353,8 @@ impl App {
         }
     }
 
-    /// Do what a session's or a tab's menu was asked. `name` is the one it goes by.
+    /// Do what a session's or a tab's menu was asked. `name` is what the field
+    /// that renames it opens on.
     pub(super) fn choose(&mut self, target: Target, name: &str, choice: Choice) {
         match choice {
             Choice::Rename => {

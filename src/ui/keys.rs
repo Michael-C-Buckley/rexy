@@ -140,18 +140,15 @@ impl App {
             self.keys.held = bound.map(|bound| (chord, again(bound)));
             return bound.is_some();
         }
-        self.keys.pending.push(spelled);
+        let mut pending = std::mem::take(&mut self.keys.pending);
+        pending.push(spelled);
         // A key that a function on the server answers to can always be sent there.
         let can = |bound: &Binding| {
             let own = self.standing(view).keeps(&bound.name, &bound.args);
             own || bound.name == FORWARD || map.served(&bound.name).is_some()
         };
-        let (step, alone) = keymap::press(&map, &self.keys.modes, &self.keys.pending, can);
-        match step {
-            Step::Wait if alone => _ = self.keys.pending.drain(..self.keys.pending.len() - 1),
-            Step::Wait => {}
-            _ => self.keys.pending.clear(),
-        }
+        let step = keymap::press(&map, &self.keys.modes, &mut pending, can);
+        self.keys.pending = pending;
         let (mut taken, mut repeated) = (true, None);
         match step {
             Step::Pass => taken = false,

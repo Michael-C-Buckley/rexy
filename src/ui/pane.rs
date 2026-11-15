@@ -250,7 +250,7 @@ impl App {
             // through. Both are as of this frame.
             if frame.scroll_offset > 0 {
                 let (rows, back) = (f32::from(frame.rows), frame.scroll_offset as f32);
-                let history = frame.history.max(frame.scroll_offset) as f32;
+                let history = frame.history as f32;
                 let track = grid.rect.y_range();
                 let length = (track.span() * rows / (history + rows)).max(24.0);
                 let top = track.min + (track.span() - length) * (1.0 - back / history);

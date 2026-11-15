@@ -213,7 +213,7 @@ fn a_terminal_is_what_the_news_of_it_last_said() {
     block.note(News::Title("vim".into()));
     let (program, pid) = (Program::named(["claude"]), Some(7));
     block.note(News::Program(wire::Running { program, pid, ..Default::default() }));
-    assert_eq!((block.title.as_str(), block.foreground), ("vim", Some(7)));
+    assert_eq!((block.title.as_str(), block.running.pid), ("vim", Some(7)));
     let report = |block: &mut Block, id: &str, record: Option<Value>| {
         let before = block.says().0;
         block.note(News::Status(vec![(id.into(), record)]));
@@ -240,7 +240,7 @@ fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at
     let block = Block {
         title: "ada@studio: /home/ada/code".into(),
         shell: Some(7),
-        foreground: Some(7),
+        running: wire::Running { pid: Some(7), ..Default::default() },
         prompt: "zsh".into(),
         home: "/home/ada".into(),
         ..Block::default()
@@ -265,7 +265,7 @@ fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at
     let less = json!({"pid": 9, "name": "less", "argv0": "/usr/bin/less"});
     note(&mut blocks, News::Program(wire::running(&less)));
     assert_eq!(pane(&blocks).title, "ada@studio: /home/ada/code");
-    assert_eq!(blocks["p"].folder, "/home/ada/code");
+    assert_eq!(blocks["p"].running.folder.as_deref(), Some("/home/ada/code"));
     // What it is at and how far along, by the record that speaks for it, or
     // failing that as the terminal itself was told.
     note(&mut blocks, News::Progress(Some(10)));
@@ -820,10 +820,9 @@ async fn a_server_that_closes_while_a_client_begins_is_said_to_have_and_why() {
     assert_eq!(method, "session.bootstrap");
     let frame = CloseFrame { code: CloseCode::from(1008), reason: "event backlog exceeded".into() };
     socket.close(Some(frame)).await.unwrap();
-    // It is said why, and that it will be tried again.
-    let lost = |view: &View| view.retrying;
+    // It is said that it will be tried again, and why.
+    let lost = |view: &View| view.status.starts_with("Retrying · ");
     let view = served::until(&client, "its end", lost).await;
-    assert!(view.trouble().starts_with("Retrying · "), "{}", view.trouble());
     assert!(view.status.contains("fell too far behind"), "{}", view.status);
 }
 

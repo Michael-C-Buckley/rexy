@@ -6,10 +6,7 @@
 //! of it newer than the one held. Nothing asked is waited for where input is taken:
 //! each answer is dealt with when it comes.
 use crate::{
-    model::{
-        self, Action, Activity, Border, Direction, Division, Edit, Host, Pane, Session, Tab, View,
-        Wait,
-    },
+    model::{self, Action, Activity, Border, Division, Edit, Host, Pane, Session, Tab, View, Wait},
     notify::Herald,
     program::Program,
     ssh,
@@ -113,7 +110,6 @@ impl Shared {
         self.change(|s| {
             s.view.status = message.into();
             s.view.connected = connected;
-            s.view.retrying = false;
         });
     }
     fn fail(&self, error: String) {
@@ -344,10 +340,12 @@ async fn run(
                 pane.owner = false;
             }
             s.view.connected = false;
-            s.view.retrying = result.is_err() && delay.is_some();
-            s.view.status = match result {
-                Ok(()) => "Reconnecting…".into(),
-                Err(error) => format!("{error:#}"),
+            // Whether it will be tried again unasked comes first: there is not
+            // always room for all of why.
+            s.view.status = match (result, delay) {
+                (Ok(()), _) => "Reconnecting…".into(),
+                (Err(error), Some(_)) => format!("Retrying · {error:#}"),
+                (Err(error), None) => format!("{error:#}"),
             };
         });
         while actions.try_recv().is_ok() {} // Commands belong to the failed connection.
@@ -588,18 +586,14 @@ struct Connection<'a> {
 struct Block {
     session: String,
     title: String,
-    /// The icon of the program in its foreground, if it has one.
-    process: Option<Program>,
-    /// The process of the shell it started with, if it started with one, and of
-    /// what is in its foreground. Where they are one, the shell is at its prompt.
+    /// The process of the shell it started with, if it started with one, and
+    /// that shell's name. Where it is the one in the foreground, the shell is at
+    /// its prompt.
     shell: Option<u64>,
-    foreground: Option<u64>,
-    /// That shell's name.
     prompt: String,
-    /// What is in its foreground goes by this, and is in this directory, as far
-    /// as the server can tell. `home` is the directory its user starts in.
-    running: String,
-    folder: String,
+    /// What is in its foreground, in the directory last known of it. `home` is
+    /// the directory its user starts in.
+    running: wire::Running,
     home: String,
     /// How far along a program in it says it is, by the terminal's own means.
     progress: Option<u8>,
@@ -626,11 +620,8 @@ impl Block {
     /// Take in what is now in its foreground. A process whose directory cannot
     /// be read, as another user's cannot, leaves the one last known.
     fn run(&mut self, running: wire::Running) {
-        (self.process, self.foreground, self.running) =
-            (running.program, running.pid, running.name);
-        if let Some(folder) = running.folder {
-            self.folder = folder;
-        }
+        let last = self.running.folder.take();
+        self.running = wire::Running { folder: running.folder.or(last), ..running };
     }
 
     /// Take in news of it.
@@ -1047,7 +1038,7 @@ impl<'a> Connection<'a> {
             let State { view, awaited, .. } = &mut *state;
             let listed = |(session, tab): &mut (String, Option<String>)| {
                 let has = |held: &Session| {
-                    tab.as_ref().is_none_or(|tab| held.tabs.iter().any(|w| &w.id == tab))
+                    tab.as_ref().is_none_or(|tab| held.tabs.iter().any(|open| &open.id == tab))
                 };
                 view.sessions.iter().any(|held| held.id == *session && has(held))
             };
@@ -1141,6 +1132,9 @@ impl<'a> Connection<'a> {
             }
             let selected = view.selected_session.clone();
             state.terminals.retain(|id, _| kept.contains_key(id));
+            for (id, terminal) in &state.terminals {
+                terminal.show(kept[id].1);
+            }
             state.last.retain(|id, _| kept.contains_key(id));
             (selected, shown, kept)
         };
@@ -1169,12 +1163,7 @@ impl<'a> Connection<'a> {
         let mut others = Vec::new();
         for (pane, (session, on_show, owner)) in kept {
             match self.streams.get(&pane) {
-                Some((_, shown)) => {
-                    shown.store(on_show, Ordering::Relaxed);
-                    if let Some(terminal) = self.shared.terminal(&pane) {
-                        terminal.show(on_show);
-                    }
-                }
+                Some((_, shown)) => shown.store(on_show, Ordering::Relaxed),
                 None => {
                     // Its colours are this client's while the terminal is: the
                     // server takes them up whenever this client comes to own it.
@@ -1309,8 +1298,8 @@ impl<'a> Connection<'a> {
     fn shell(&self, from: Option<&str>) -> Value {
         let mut options = json!({});
         let block = from.and_then(|pane| self.link.blocks.get(pane));
-        if let Some(block) = block.filter(|block| !block.folder.is_empty()) {
-            options["cwd"] = json!(block.folder);
+        if let Some(folder) = block.and_then(|block| block.running.folder.as_ref()) {
+            options["cwd"] = json!(folder);
         }
         if let Some(theme) = &self.link.theme {
             options["theme"] = theme.clone();
@@ -1348,15 +1337,12 @@ impl<'a> Connection<'a> {
                 (session, "session.focus_window", payload, None)
             }
             Action::CreateTab(session) => {
-                // It starts where the pane with the keyboard is, in the tab of that
-                // session that this window shows, or else the server.
+                // It starts where the pane with the keyboard is, in the tab on
+                // show: asking for a tab has put its session on show already.
                 let from = {
-                    let state = self.shared.lock();
-                    let held = state.view.sessions.iter().find(|held| held.id == session);
-                    let tabs = || held.into_iter().flat_map(|held| &held.tabs);
-                    let tab = |id: Option<&String>| tabs().find(|tab| Some(&tab.id) == id);
-                    let shown = tab(state.view.selected_tab.as_ref());
-                    let shown = shown.or_else(|| tab(held?.active.as_ref()));
+                    let view = &self.shared.lock().view;
+                    let here = view.selected_session.as_ref() == Some(&session);
+                    let shown = view.current_tab().filter(|_| here);
                     shown.and_then(Tab::front).map(|pane| pane.id.clone())
                 };
                 let payload = json!({"layout": self.shell(from.as_deref()), "focus": true});
@@ -1382,17 +1368,11 @@ impl<'a> Connection<'a> {
                 }
                 (session, method, payload, None)
             }
-            Action::Split { pane, direction } => {
-                let (direction, side) = match direction {
-                    Direction::Left => ("horizontal", "before"),
-                    Direction::Right => ("horizontal", "after"),
-                    Direction::Up => ("vertical", "before"),
-                    Direction::Down => ("vertical", "after"),
-                };
+            Action::Split { pane, toward: [x, y] } => {
                 let payload = json!({
                     "anchor_id": pane,
-                    "direction": direction,
-                    "side": side,
+                    "direction": if y == 0.0 { "horizontal" } else { "vertical" },
+                    "side": if x + y < 0.0 { "before" } else { "after" },
                     "layout": self.shell(Some(&pane)),
                     "focus": true,
                 });
@@ -1912,18 +1892,19 @@ fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
     let tabs = sessions.iter_mut().flat_map(|s| &mut s.tabs);
     for pane in tabs.flat_map(Tab::every_mut) {
         if let Some(block) = blocks.get(&pane.id) {
-            pane.idle = block.shell.is_some() && block.shell == block.foreground;
+            let running = &block.running;
+            pane.idle = block.shell.is_some() && block.shell == running.pid;
             // At its shell's prompt it goes by the shell and where that is: the
             // title a prompt sets tells who is at what machine first, and at
             // length. A program that gives itself no title goes by its own name,
             // and a terminal of which nothing is known by its label.
-            if pane.idle && !block.folder.is_empty() {
-                let folder = model::folder(&block.folder, &block.home);
+            if let Some(folder) = running.folder.as_ref().filter(|_| pane.idle) {
+                let folder = model::folder(folder, &block.home);
                 format!("{} {folder}", block.prompt).trim_start().clone_into(&mut pane.title);
             } else if !block.title.is_empty() {
                 pane.title.clone_from(&block.title);
-            } else if !block.running.is_empty() {
-                pane.title.clone_from(&block.running);
+            } else if !running.name.is_empty() {
+                pane.title.clone_from(&running.name);
             } else {
                 pane.title.clone_from(&pane.label);
             }
@@ -1932,7 +1913,7 @@ fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
             // terminal itself was told.
             let (activity, record, app) = reported(block.records.values());
             let said = |key: &str| record[key].as_str().unwrap_or_default();
-            pane.program = app.or(block.process).unwrap_or_default();
+            pane.program = app.or(running.program).unwrap_or_default();
             pane.activity = activity;
             said("msg").clone_into(&mut pane.message);
             said("title").clone_into(&mut pane.task);
@@ -2046,7 +2027,7 @@ pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
         ensure!(
             started.elapsed() < timeout,
             "Probe timed out: {} · {}",
-            view.trouble(),
+            view.status,
             pane_statuses
         );
         std::thread::sleep(Duration::from_millis(25));

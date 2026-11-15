@@ -268,7 +268,7 @@ impl App {
                 return;
             }
             ui.heading("Not Connected");
-            ui.add(egui::Label::new(RichText::new(view.trouble()).color(DIM)).wrap());
+            ui.add(egui::Label::new(RichText::new(&view.status).color(DIM)).wrap());
             // Home's address is the one typed here. Another server's comes from home.
             if self.current == 0 {
                 ui.add_space(12.0);
@@ -317,13 +317,12 @@ impl App {
                     let room = room - said.size().x;
                     let said = ui.add(egui::Label::new(said).selectable(false));
                     // Whether it is being tried again, and why it was lost.
-                    let why = view.trouble();
-                    if room > 60.0 && !why.is_empty() {
+                    if room > 60.0 && !view.status.is_empty() {
                         let font = FontId::proportional(BODY);
-                        let why = fitted(ui, &why, font, DIM, room);
+                        let why = fitted(ui, &view.status, font, DIM, room);
                         ui.add(egui::Label::new(why).selectable(false));
                     }
-                    said.on_hover_text(why);
+                    said.on_hover_text(&view.status);
                     let button = egui::Button::new("Reconnect").min_size(Vec2::new(0.0, 26.0));
                     again = ui.add(button).clicked();
                 });
@@ -382,7 +381,7 @@ impl eframe::App for App {
             self.visited = [here, self.visited[0].take()];
         }
         let tab = view.current_tab();
-        let panes = tab.map_or(&[][..], |w| &w.panes);
+        let panes = tab.map_or(&[][..], |tab| &tab.panes);
         // A pane this window has just made or brought out takes the keyboard. One
         // made from elsewhere does not: that would take it from under the user's hands.
         if made.is_some() {

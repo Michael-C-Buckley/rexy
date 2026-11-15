@@ -128,7 +128,7 @@ impl App {
         // All that can be done just now, but to put this list away.
         for (name, title, _) in COMMANDS.iter().filter(|c| deeds && found(&[c.1, c.0])) {
             let plan = self.standing(view).plan(name, &Value::Null, None);
-            if plan.is_ok_and(|deed| !matches!(deed, Deed::Palette(_))) {
+            if plan.is_ok_and(|deed| !matches!(deed, Deed::Palette { .. })) {
                 let remote = self.remembered.kept.remote;
                 rows.push(command(label(name, title, remote), name));
             }

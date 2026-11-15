@@ -126,6 +126,12 @@ impl Default for Program {
     }
 }
 
+/// A program's name without the directories that lead to it, or the dash a
+/// login shell is started with.
+pub fn base(name: &str) -> &str {
+    name.rsplit(['/', '\\']).next().unwrap_or(name).trim_start_matches('-')
+}
+
 impl Program {
     /// The icon of the first of a program's names to have one, if any has.
     pub fn named<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Self> {
@@ -141,9 +147,7 @@ impl Program {
         if let Some((_, icon)) = SCRIPTS.iter().find(script) {
             return Self::icon(icon);
         }
-        let name = name.rsplit(['/', '\\']).next()?;
-        // A login shell is started as its name after a dash.
-        let name = name.trim_start_matches('-').to_lowercase().replace(' ', "-");
+        let name = base(name).to_lowercase().replace(' ', "-");
         let name = name.strip_suffix(".exe").unwrap_or(&name);
         let bare = name.trim_end_matches(|c: char| c.is_ascii_digit() || ".-".contains(c));
         [name, bare].into_iter().find_map(|name| {

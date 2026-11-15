@@ -24,12 +24,18 @@ pub(crate) fn encode(terminal: &mut Terminal) -> Vec<u8> {
 /// A terminal restored with a long history: more of Ghostty's pages than the
 /// one the screen is on, and most of them compressed.
 pub(crate) fn long() -> Terminal<'static, 'static> {
-    let mut original = terminal(20, 3);
-    configure(&mut original).unwrap();
-    for line in 0..10_000 {
-        original.vt_write(format!("line {line}\r\n").as_bytes());
+    restore(encode(&mut lined(3, 10_000)).as_slice()).unwrap()
+}
+
+/// A terminal of so many rows that has had so many lines written to it, each
+/// with its number.
+pub(crate) fn lined(rows: u16, lines: usize) -> Terminal<'static, 'static> {
+    let mut terminal = terminal(20, rows);
+    configure(&mut terminal).unwrap();
+    for line in 0..lines {
+        terminal.vt_write(format!("line {line}\r\n").as_bytes());
     }
-    restore(encode(&mut original).as_slice()).unwrap()
+    terminal
 }
 
 pub(crate) const WAIT: Duration = Duration::from_secs(3);
@@ -37,11 +43,16 @@ pub(crate) const QUIET: Duration = Duration::from_millis(80);
 
 /// A worker fed these bytes, and the moment each of its frames was published.
 pub(crate) fn worker(bytes: Vec<u8>) -> (TerminalHandle, flume::Receiver<Instant>) {
+    worker_of(bytes, true)
+}
+
+/// The same, of a pane that is on show or is not.
+fn worker_of(bytes: Vec<u8>, shown: bool) -> (TerminalHandle, flume::Receiver<Instant>) {
     let (wake, wakes) = flume::unbounded();
     let notify = move || {
         let _ = wake.send(Instant::now());
     };
-    let handle = TerminalHandle::new(7, Arc::new(notify), true).unwrap();
+    let handle = TerminalHandle::new(7, Arc::new(notify), shown).unwrap();
     write(&handle, &bytes);
     (handle, wakes)
 }
@@ -118,11 +129,7 @@ fn restored_history_is_compressed_and_opens_when_scrolled_to() {
 
 #[test]
 fn a_screen_is_drawn_before_its_history_has_come() {
-    let mut original = terminal(20, 3);
-    configure(&mut original).unwrap();
-    for line in 0..10_000 {
-        original.vt_write(format!("line {line}\r\n").as_bytes());
-    }
+    let mut original = lined(3, 10_000);
     original.vt_write(b"now");
     let mut bytes = encode(&mut original);
     let rest = bytes.split_off(bytes.len() - 64);
@@ -140,10 +147,7 @@ fn a_screen_is_drawn_before_its_history_has_come() {
 
 #[test]
 fn a_pane_out_of_sight_draws_its_first_frame_and_then_only_once_it_is_on_show() {
-    let (wake, wakes) = flume::unbounded();
-    let notify = move || _ = wake.send(Instant::now());
-    let handle = TerminalHandle::new(7, Arc::new(notify), false).unwrap();
-    write(&handle, &encode(&mut terminal(20, 3)));
+    let (handle, wakes) = worker_of(encode(&mut terminal(20, 3)), false);
     until(&wakes, || handle.latest().is_some());
     write(&handle, b"unseen");
     assert!(wakes.recv_timeout(QUIET).is_err());
@@ -154,25 +158,29 @@ fn a_pane_out_of_sight_draws_its_first_frame_and_then_only_once_it_is_on_show() 
 
 #[test]
 fn history_written_to_a_terminal_is_packed_once_it_is_quiet() {
-    let mut terminal = terminal(20, 3);
-    configure(&mut terminal).unwrap();
-    for line in 0..20_000 {
-        terminal.vt_write(format!("line {line}\r\n").as_bytes());
-    }
+    let mut terminal = lined(3, 20_000);
     let packed = |terminal: &Terminal| terminal.memory_usage().unwrap().primary_compressed_pages;
     assert_eq!(packed(&terminal), 0);
-    // Not while it is being written to.
-    let mut done = None;
-    let wait = pack(&mut terminal, &mut done, Duration::ZERO).unwrap();
-    assert_eq!((wait, packed(&terminal)), (Some(super::QUIET), 0));
-    // Then a step at a time, to the end, and no more until more is written.
-    while pack(&mut terminal, &mut done, super::QUIET).unwrap().is_some() {}
+    // Not until it has been left alone a while.
+    let (mut packing, now) = (None, Instant::now());
+    let wait = pack(&mut terminal, &mut packing, now).unwrap();
+    assert_eq!((wait, packed(&terminal)), (Some(PACK_AFTER), 0));
+    // Then a step at a time, to the end, and no more while it is left alone.
+    let then = now + PACK_AFTER;
+    let steps = (0..10_000).map(|_| pack(&mut terminal, &mut packing, then).unwrap());
+    assert!(steps.take_while(|wait| *wait == Some(Duration::ZERO)).count() > 0);
     assert!(packed(&terminal) > 0);
+    assert_eq!(pack(&mut terminal, &mut packing, then).unwrap(), None);
+    // Scrolling through it unpacks what is come to, and that waits its while
+    // again from then, as does what is written.
     terminal.scroll_viewport(ScrollViewport::Top);
     assert_eq!(row(&render(&terminal), 0), "line 0");
+    assert_eq!(pack(&mut terminal, &mut packing, then).unwrap(), Some(PACK_AFTER));
+    let later = then + PACK_AFTER;
+    while pack(&mut terminal, &mut packing, later).unwrap().is_some() {}
     terminal.scroll_viewport(ScrollViewport::Bottom);
     terminal.vt_write(b"more\r\n");
-    assert!(pack(&mut terminal, &mut done, Duration::ZERO).unwrap().is_some());
+    assert_eq!(pack(&mut terminal, &mut packing, later).unwrap(), Some(PACK_AFTER));
 }
 
 /// A terminal that knows the size of its cells, without which no picture has

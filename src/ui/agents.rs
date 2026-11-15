@@ -103,18 +103,18 @@ impl App {
             for (_, server, session, tab, pane) in panes {
                 // It goes by its session, and by its tab where the session has
                 // others to tell it from.
-                let name = match session.tabs.len() {
-                    0 | 1 => session.name.clone(),
-                    _ => format!("{} › {}", session.name, tab.name()),
+                let (name, last) = match session.tabs.len() {
+                    1 => (session.name.clone(), session.name.as_str()),
+                    _ => (format!("{} › {}", session.name, tab.name()), tab.name()),
                 };
-                // With nothing said of it, its title, unless that is what its
-                // tab goes by. It is under the pointer otherwise.
+                // With nothing said of it, its title, unless it goes by that
+                // already. It is under the pointer otherwise.
                 let (said, word) = self.told(ui.ctx(), pane);
-                let title = Some(pane.title.as_str()).filter(|title| !name.ends_with(title));
                 let (under, tip) = match said.is_empty() {
-                    true => (title.unwrap_or_default(), ""),
+                    true => (pane.title.as_str(), ""),
                     false => (said.as_str(), pane.title.as_str()),
                 };
+                let under = if under == last { "" } else { under };
                 let shown = server == self.current && self.focused.as_ref() == Some(&pane.id);
                 let host = &self.servers[server].host.label;
                 let row = Item {

@@ -5,11 +5,9 @@ use std::{cmp::Reverse, collections::HashSet, sync::Arc};
 
 #[derive(Clone, Default)]
 pub struct View {
-    /// Why it is not connected, or what is being done to be. Empty while connected.
+    /// Why it is not connected, after what is being done to be. Empty while connected.
     pub status: String,
     pub connected: bool,
-    /// It is not, and will be tried again unasked.
-    pub retrying: bool,
     /// An action that failed, reported by one snapshot only.
     pub error: Option<String>,
     /// A pane this client has just made by a split, or brought out from out of
@@ -33,15 +31,6 @@ pub struct View {
 }
 
 impl View {
-    /// Why it is not connected, after whether that is being seen to: the first
-    /// thing to know of it, where there is not room for it all.
-    pub fn trouble(&self) -> String {
-        match self.retrying {
-            true => format!("Retrying · {}", self.status),
-            false => self.status.clone(),
-        }
-    }
-
     pub fn session(&self) -> Option<&Session> {
         let selected = self.selected_session.as_ref()?;
         self.sessions.iter().find(|s| &s.id == selected)
@@ -54,7 +43,7 @@ impl View {
 
     pub fn current_tab(&self) -> Option<&Tab> {
         let selected = self.selected_tab.as_ref()?;
-        self.tabs().iter().find(|w| &w.id == selected)
+        self.tabs().iter().find(|tab| &tab.id == selected)
     }
 
     /// Every tab of every session, with its session.
@@ -73,7 +62,7 @@ impl View {
 
     /// The panes of the session on show.
     pub fn panes(&self) -> impl Iterator<Item = &Pane> {
-        self.tabs().iter().flat_map(|w| &w.panes)
+        self.tabs().iter().flat_map(|tab| &tab.panes)
     }
 
     pub fn panes_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
@@ -82,7 +71,7 @@ impl View {
         sessions
             .filter(move |s| Some(&s.id) == selected)
             .flat_map(|s| &mut s.tabs)
-            .flat_map(|w| &mut w.panes)
+            .flat_map(|tab| &mut tab.panes)
     }
 
     pub fn pane(&self, id: &str) -> Option<&Pane> {
@@ -497,14 +486,6 @@ pub struct Size {
     pub cell_height: u16,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum Direction {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
 /// Bits of the `modifiers` fields below.
 pub const SHIFT: u8 = 1;
 pub const CTRL: u8 = 2;
@@ -594,10 +575,11 @@ pub enum Action {
     CreateSession(Option<String>),
     /// A new tab in a session.
     CreateTab(String),
-    /// A new pane on one side of a pane, which gives it half its room.
+    /// A new pane on one side of a pane, which gives it half its room: the
+    /// side one step along x or y is `toward`.
     Split {
         pane: String,
-        direction: Direction,
+        toward: [f32; 2],
     },
     /// Have two panes change places.
     Swap {

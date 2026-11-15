@@ -103,9 +103,9 @@ impl App {
                 // On as many as three lines, broken between words. In full under
                 // the pointer, if that was not enough.
                 let font = FontId::proportional(SMALL);
-                let mut status = LayoutJob::simple(view.trouble(), font, DIM, 0.0);
+                let mut status = LayoutJob::simple(view.status.clone(), font, DIM, 0.0);
                 status.wrap.max_rows = 3;
-                ui.add(egui::Label::new(status).wrap()).on_hover_text(view.trouble());
+                ui.add(egui::Label::new(status).wrap()).on_hover_text(&view.status);
             });
         }
         let mut sessions = Vec::new();

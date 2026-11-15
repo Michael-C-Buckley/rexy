@@ -1,7 +1,7 @@
 //! Run only against a disposable server, never the default personal socket.
 use rex_lite::{
     backend::Client,
-    model::{self, Action, Activity, Direction, Edit, Size, Tab, View, Wait},
+    model::{self, Action, Activity, Edit, Size, Tab, View, Wait},
     notify::Herald,
     terminal::Frame,
 };
@@ -37,7 +37,7 @@ fn screen(view: &View, pane: &str) -> String {
 }
 
 fn find<'a>(view: &'a View, id: &str) -> Option<&'a Tab> {
-    view.tabs().iter().find(|window| window.id == id)
+    view.tabs().iter().find(|tab| tab.id == id)
 }
 
 fn send(client: &Client, action: Action) {
@@ -118,7 +118,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     send(&client, listed.unshown().unwrap());
     let initial = wait(&client, "initial Ghostty snapshot", drawn);
     let session = initial.selected_session.clone().unwrap();
-    let window = initial.selected_tab.clone().unwrap();
+    let tab = initial.selected_tab.clone().unwrap();
     let pane = initial.current_tab().unwrap().panes[0].id.clone();
     // The pane was made by a client that has left the server. Shown here, it
     // becomes this client's without being touched.
@@ -191,25 +191,25 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let at_tmp = |v: &View, pane: &str| v.pane(pane).is_some_and(|p| p.title.ends_with(" /tmp"));
     run("cd /tmp");
     wait(&client, "a shell's directory", |v| at_tmp(v, &pane));
-    let split = Action::Split { pane: pane.clone(), direction: Direction::Right };
+    let split = Action::Split { pane: pane.clone(), toward: [1.0, 0.0] };
     send(&client, split);
     let split = wait(&client, "split layout and streams", |v| {
-        find(v, &window)
+        find(v, &tab)
             .is_some_and(|w| w.panes.len() == 2 && w.panes.iter().all(|p| p.frame.is_some()))
     });
-    let mut others = find(&split, &window).unwrap().panes.iter();
+    let mut others = find(&split, &tab).unwrap().panes.iter();
     let other = others.find(|p| p.id != pane).unwrap().id.clone();
     wait(&client, "a split starting where its pane is", |v| at_tmp(v, &other));
     // Two panes change places, and change back.
-    let first = |v: &View| find(v, &window).and_then(|w| Some(w.borders.first()?.before.clone()));
-    for (with, then) in [(&other, &other), (&other, &pane)] {
-        send(&client, Action::Swap { pane: pane.clone(), with: with.clone() });
+    let first = |v: &View| find(v, &tab).and_then(|w| Some(w.borders.first()?.before.clone()));
+    for then in [&other, &pane] {
+        send(&client, Action::Swap { pane: pane.clone(), with: other.clone() });
         wait(&client, "two panes changing places", |v| first(v).as_ref() == Some(then));
     }
     // The border between the two moves where it is asked to, and the server gives
     // each side its share. Asked faster than the server answers, as a drag asks,
     // it comes to rest where it was last asked to go.
-    let [border] = &find(&split, &window).unwrap().borders[..] else {
+    let [border] = &find(&split, &tab).unwrap().borders[..] else {
         panic!("a split of two has one border");
     };
     let sides = (&border.before, &border.after, border.upright);
@@ -218,7 +218,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let divided = |ratio: f32| {
         wait(&client, "a border moved", |v| {
             let near = |at: f32| (at - ratio).abs() < 0.01;
-            find(v, &window).is_some_and(|w| near(w.borders[0].at) && near(w.panes[0].width))
+            find(v, &tab).is_some_and(|w| near(w.borders[0].at) && near(w.panes[0].width))
         });
     };
     send(&client, divide(0.3));
@@ -240,7 +240,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
             let shown = |w: &Tab| {
                 w.panes.len() == panes && w.panes[0].id == pane && w.borders.len() == panes - 1
             };
-            find(v, &window).is_some_and(|w| w.zoomed == zoomed && shown(w))
+            find(v, &tab).is_some_and(|w| w.zoomed == zoomed && shown(w))
         });
         if !zoomed {
             continue;
@@ -249,7 +249,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         let report = "printf '\\033]7501;state=done\\007'\n";
         rex(&["send", "-s", &session, "-b", &other, report]);
         wait(&client, "a pane out of sight heard", |v| {
-            let behind = find(v, &window).and_then(|w| w.hidden.first());
+            let behind = find(v, &tab).and_then(|w| w.hidden.first());
             behind.is_some_and(|p| p.id == other && p.activity == Activity::Done)
         });
         let note = notes.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -261,57 +261,57 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let layout = json!({"block": {"flavor": "com.superlogical.terminal.shell"}});
     let bounds = [0.2, 0.2, 0.5, 0.5];
     let layer =
-        json!({"session_id": session, "window_id": window, "bounds": bounds, "layout": layout});
+        json!({"session_id": session, "window_id": tab, "bounds": bounds, "layout": layout});
     let layer = call("session.new_layer", layer);
     let floating = layer["block_ids"][0].as_str().unwrap().to_owned();
     let away = json!({"session_id": session, "layer_id": layer["layer_id"], "state": "minimized"});
     call("session.set_layer_state", away);
-    let tab = |v: &View, shown: usize, hidden: &[&str]| {
+    let holds = |v: &View, shown: usize, hidden: &[&str]| {
         let hides = |w: &Tab| w.hidden.iter().map(|p| p.id.as_str()).eq(hidden.iter().copied());
-        find(v, &window).is_some_and(|w| w.panes.len() == shown && hides(w))
+        find(v, &tab).is_some_and(|w| w.panes.len() == shown && hides(w))
     };
-    wait(&client, "a pane put away", |v| tab(v, 2, &[&floating]));
+    wait(&client, "a pane put away", |v| holds(v, 2, &[&floating]));
     let reveal = Action::Reveal { pane: floating.clone() };
     send(&client, reveal);
     // Nor is there one to drag under a pane that floats over it.
-    let borders = |v: &View| find(v, &window).unwrap().borders.len();
+    let borders = |v: &View| find(v, &tab).unwrap().borders.len();
     let back = wait(&client, "a pane brought back", |v| {
-        v.made.as_ref() == Some(&floating) && tab(v, 3, &[])
+        v.made.as_ref() == Some(&floating) && holds(v, 3, &[])
     });
     assert_eq!(borders(&back), 0);
     send(&client, Action::ClosePane { pane: floating });
-    let closed = wait(&client, "a floating pane closed", |v| tab(v, 2, &[]));
+    let closed = wait(&client, "a floating pane closed", |v| holds(v, 2, &[]));
     assert_eq!(borders(&closed), 1);
     send(&client, Action::CreateTab(session.clone()));
     let next = wait(&client, "new tab", |v| {
         v.tabs().len() == initial.tabs().len() + 1
-            && v.selected_tab.as_ref() != Some(&window)
+            && v.selected_tab.as_ref() != Some(&tab)
             && v.current_tab().is_some_and(|w| w.panes.iter().all(|p| p.frame.is_some()))
     });
     assert_eq!(next.selected_session.as_ref(), Some(&session));
-    let show = |window: &str| Action::SelectTab { session: session.clone(), tab: window.into() };
-    send(&client, show(&window));
+    let show = |tab: &str| Action::SelectTab { session: session.clone(), tab: tab.into() };
+    send(&client, show(&tab));
     wait(&client, "return to existing tab", |v| {
-        v.selected_tab.as_ref() == Some(&window) && screen(v, &pane).contains("paste-verified")
+        v.selected_tab.as_ref() == Some(&tab) && screen(v, &pane).contains("paste-verified")
     });
 
     // A tab shown before is kept fed while it is out of sight. Going back to
     // one finds it drawn, with nothing to wait for.
-    let tab = next.selected_tab.clone().unwrap();
-    send(&client, show(&tab));
+    let added = next.selected_tab.clone().unwrap();
+    send(&client, show(&added));
     assert!(client.snapshot().panes().all(|pane| pane.frame.is_some()));
-    send(&client, show(&window));
+    send(&client, show(&tab));
     assert!(screen(&client.snapshot(), &pane).contains("paste-verified"));
 
     // A tab goes by its name if it has one, and otherwise by its terminal's title.
-    let edit = |session: &str, window: Option<&str>, edit| Action::Edit {
+    let edit = |session: &str, tab: Option<&str>, edit| Action::Edit {
         session: session.into(),
-        tab: window.map(str::to_owned),
+        tab: tab.map(str::to_owned),
         edit,
     };
-    let rename = |name: &str| edit(&session, Some(&window), Edit::Rename(name.into()));
+    let rename = |name: &str| edit(&session, Some(&tab), Edit::Rename(name.into()));
     send(&client, rename("Named"));
-    wait(&client, "a tab renamed", |v| find(v, &window).is_some_and(|w| w.name() == "Named"));
+    wait(&client, "a tab renamed", |v| find(v, &tab).is_some_and(|w| w.name() == "Named"));
     send(&client, rename(""));
     // Of its panes, the one that typing goes to. A program that gives itself a
     // title goes by it, and a shell back at its prompt by its name and where
@@ -319,10 +319,10 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     send(&client, Action::FocusPane { pane: pane.clone() });
     run("printf '\\033]2;%s\\007' Titled; sleep 2");
     wait(&client, "a tab going by its terminal's title", |v| {
-        find(v, &window).is_some_and(|w| w.name() == "Titled")
+        find(v, &tab).is_some_and(|w| w.name() == "Titled")
     });
     wait(&client, "a tab going by its shell and where that is", |v| {
-        at_tmp(v, &pane) && find(v, &window).is_some_and(|w| w.name().ends_with(" /tmp"))
+        at_tmp(v, &pane) && find(v, &tab).is_some_and(|w| w.name().ends_with(" /tmp"))
     });
     // Programs say what they are doing, and what they wait for or end with is
     // passed on, for whoever is not looking. The message is "Run it?" in base64.
@@ -335,7 +335,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         let heard = notes.recv_timeout(Duration::from_millis(300)).ok();
         assert_eq!(heard.as_ref().map(|note| note.body.as_str()), note);
         // It says which tab, and of which session.
-        let about = heard.map(|note| (note.tab == window, note.summary));
+        let about = heard.map(|note| (note.tab == tab, note.summary));
         let placed = |(tab, summary): &(bool, String)| *tab && summary.ends_with(&of);
         assert!(about.as_ref().is_none_or(placed), "{about:?}");
     };
@@ -371,7 +371,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // A tab has the icon of the program in its foreground, or of the one that
     // reports from it.
     let program = |label: &str, icon: &str| {
-        wait(&client, label, |v| find(v, &window).is_some_and(|w| w.program().name() == icon));
+        wait(&client, label, |v| find(v, &tab).is_some_and(|w| w.program().name() == icon));
     };
     program("a shell", "shell");
     run("sleep 1");
@@ -395,14 +395,14 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     // A pane closed leaves the tab to the others.
     send(&client, Action::ClosePane { pane: other });
     wait(&client, "a pane closed", |v| {
-        find(v, &window).is_some_and(|w| !w.split() && w.panes[0].id == pane)
+        find(v, &tab).is_some_and(|w| !w.split() && w.panes[0].id == pane)
     });
     let order = |v: &View| -> Vec<String> { v.tabs().iter().map(|w| w.id.clone()).collect() };
-    let first = Edit::MoveBefore(Some(window.clone()));
-    send(&client, edit(&session, Some(&tab), first));
-    wait(&client, "a tab moved first", |v| order(v).first() == Some(&tab));
-    send(&client, edit(&session, Some(&tab), Edit::MoveBefore(None)));
-    wait(&client, "a tab moved last", |v| order(v).last() == Some(&tab));
+    let first = Edit::MoveBefore(Some(tab.clone()));
+    send(&client, edit(&session, Some(&added), first));
+    wait(&client, "a tab moved first", |v| order(v).first() == Some(&added));
+    send(&client, edit(&session, Some(&added), Edit::MoveBefore(None)));
+    wait(&client, "a tab moved last", |v| order(v).last() == Some(&added));
 
     // A session made with a name is shown at once, and ending it shows another.
     send(&client, Action::CreateSession(Some("Second".into())));
@@ -425,9 +425,9 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     let again = open(&endpoint, Herald::new().0);
     let opened = wait(&again, "a window opened again", |v| v.connected);
     send(&again, opened.unshown().unwrap());
-    send(&again, show(&window));
+    send(&again, show(&tab));
     wait(&again, "a window back where it was", |v| {
-        v.selected_tab.as_ref() == Some(&window) && drawn(v)
+        v.selected_tab.as_ref() == Some(&tab) && drawn(v)
     });
     drop(again);
     // Its last tab closed, a session remains, empty.
@@ -445,11 +445,11 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         v.selected_session.as_ref() == Some(&session) && drawn(v)
     });
     // A tab of a session shown again is shown with it.
-    send(&client, show(&tab));
-    wait(&client, "a tab chosen", |v| v.selected_tab.as_ref() == Some(&tab));
-    send(&client, edit(&session, Some(&tab), Edit::Close));
+    send(&client, show(&added));
+    wait(&client, "a tab chosen", |v| v.selected_tab.as_ref() == Some(&added));
+    send(&client, edit(&session, Some(&added), Edit::Close));
     wait(&client, "a tab closed", |v| {
-        v.tabs().len() == initial.tabs().len() && v.selected_tab.as_ref() == Some(&window)
+        v.tabs().len() == initial.tabs().len() && v.selected_tab.as_ref() == Some(&tab)
     });
 
     // A second window on the same session takes its panes by showing it: the
@@ -494,7 +494,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     };
     // It stays left when the server next reports a change.
     send(&client, Action::CreateTab(session.clone()));
-    send(&client, show(&window));
+    send(&client, show(&tab));
     stays_left();
     // And when it left before the server had done what it was last asked.
     send(&other, Action::SelectSession(session.clone()));

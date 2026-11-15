@@ -52,8 +52,8 @@ const PICTURE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_LINK_BYTES: usize = 2048;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 const RENDER_HOLD_LIMIT: Duration = Duration::from_secs(1);
-/// How long a terminal is left quiet before the history written to it is packed.
-const QUIET: Duration = Duration::from_secs(2);
+/// How long a terminal's history is left alone before it is packed.
+const PACK_AFTER: Duration = Duration::from_secs(2);
 
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
@@ -514,9 +514,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
     let (mut selecting, mut finding) = (Selecting::new()?, Finding::default());
     // The terminal has been written to since text was last looked for in it.
     let mut wrote = false;
-    // When it was last written to, and what Ghostty called its history when
-    // that was last packed.
-    let (mut written, mut packed) = (Instant::now(), None);
+    let mut packing = None;
     let mut shown = shared.shown.load(Ordering::Relaxed);
     loop {
         // A pane that comes on show is owed what its terminal has come to.
@@ -554,7 +552,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
         let wait = match wait {
             _ if looking => Some(Duration::ZERO),
             _ if selecting.scrolling => Some(wait.unwrap_or(FRAME_INTERVAL).min(FRAME_INTERVAL)),
-            None => pack(&mut terminal, &mut packed, written.elapsed())?,
+            None => pack(&mut terminal, &mut packing, now)?,
             _ => wait,
         };
         let Some(command) = input.next(wait) else {
@@ -563,7 +561,7 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
         let Command::Bytes(bytes) = command else {
             continue;
         };
-        (wrote, written) = (true, Instant::now());
+        wrote = true;
         for part in parser.feed(&bytes)? {
             match part {
                 Part::Output(bytes) => {
@@ -577,25 +575,28 @@ fn run_worker(receiver: flume::Receiver<Command>, shared: &Arc<Shared>, nonce: u
     }
 }
 
-/// Pack the history a terminal has been written since it was last `packed`, once
-/// it has been `quiet` a while with nothing else to do: only what a snapshot
-/// brings comes packed. A step at a time, each of them short, and this says how
-/// long to wait for input before the next. None when there is no more to pack,
-/// until Ghostty calls its history something else.
-fn pack(
-    terminal: &mut Terminal,
-    packed: &mut Option<CompressionActivity>,
-    quiet: Duration,
-) -> Result<Option<Duration>> {
-    if *packed == Some(terminal.compression_activity()?) {
-        return Ok(None);
-    }
-    if quiet >= QUIET
+/// What Ghostty last called a terminal's history, which it calls something else
+/// whenever that is written or scrolled through, and when it is then to be
+/// packed: at no time, once it has been.
+type Packing = Option<(CompressionActivity, Option<Instant>)>;
+
+/// Pack a terminal's history once it has been left alone a while, with nothing
+/// else to do: only what a snapshot brings comes packed. A step at a time, each
+/// of them short, and this says how long to wait for input before the next.
+/// None when there is no more to pack, until its history is touched again.
+fn pack(terminal: &mut Terminal, packing: &mut Packing, now: Instant) -> Result<Option<Duration>> {
+    let history = terminal.compression_activity()?;
+    let mut due = match *packing {
+        Some((packed, due)) if packed == history => due,
+        _ => Some(now + PACK_AFTER),
+    };
+    if due.is_some_and(|due| due <= now)
         && terminal.compress(CompressionMode::Incremental)? != CompressionResult::Pending
     {
-        *packed = Some(terminal.compression_activity()?);
+        due = None;
     }
-    Ok(Some(QUIET.saturating_sub(quiet)))
+    *packing = Some((history, due));
+    Ok(due.map(|due| due.saturating_duration_since(now)))
 }
 
 fn apply_metadata(terminal: &mut Terminal, value: &Value) -> Result<()> {
