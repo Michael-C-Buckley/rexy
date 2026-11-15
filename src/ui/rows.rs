@@ -10,7 +10,7 @@ use super::{
     heard::dot,
     style::{ACCENT, DIM, Icon, Item, entry, item},
 };
-use crate::model::{self, Action, Edit, Session, Window};
+use crate::model::{self, Action, Activity, Edit, Session, Window};
 
 /// A session or, with `window`, one of its tabs.
 #[derive(Clone, PartialEq)]
@@ -128,7 +128,9 @@ impl App {
         }
     }
 
-    /// A session's name, heading its tabs in the sidebar.
+    /// A session in the sidebar: its name, heading its tabs. One with a single
+    /// tab is a row like a tab's, which goes by the session's name and says the
+    /// tab's after it.
     pub(super) fn session(
         &mut self,
         ui: &mut egui::Ui,
@@ -143,16 +145,44 @@ impl App {
             session: session.id.clone(),
             window: None,
         };
-        let size = Vec2::new(ui.available_width(), 28.0);
+        let lone = match session.windows.as_slice() {
+            [tab] => Some(tab),
+            _ => None,
+        };
+        let height = if lone.is_some() { 30.0 } else { 28.0 };
+        let size = Vec2::new(ui.available_width(), height);
         let id = self.row(&target);
         if self.renaming(ui, &target, id, size).is_some() {
             return;
         }
+        // Its one tab has no row of its own for the field that renames it.
+        let tab = lone.map(|tab| Target {
+            window: Some(tab.id.clone()),
+            ..target.clone()
+        });
+        if let Some(tab) = &tab
+            && self.renaming(ui, tab, self.row(tab), size).is_some()
+        {
+            return;
+        }
         let spared = session.windows.iter().all(Window::idle);
         let ask = self.closing.ask(id, spared);
+        // What the tab's own row would say of it.
+        let muted = lone.map(|tab| self.remembered.kept.muted.contains(&tab.id));
+        let (said, message) = lone.map_or((Activity::Idle, ""), Window::says);
+        let tip = model::line(said.word().unwrap_or_default(), message);
         let row = Item {
             id: Some(id),
-            caption: true,
+            caption: lone.is_none(),
+            icon: lone.map(Window::program),
+            more: lone.map_or("", Window::name),
+            selected: lone.is_some() && shown,
+            mark: match muted {
+                Some(true) => Some((Icon::Muted, DIM)),
+                _ => dot(said),
+            },
+            word: said.word(),
+            tip: &tip,
             buttons: &[(Icon::Plus, "New tab"), (Icon::Close, "Close session")],
             confirm: (ask == Ask::Again).then_some(CLOSE),
             movable: true,
@@ -160,6 +190,9 @@ impl App {
             ..Default::default()
         };
         let (response, button) = item(ui, size, row);
+        if lone.is_some() {
+            self.follow(id, shown, &response);
+        }
         self.picked(&response, &target, shown);
         self.wait(ui, response.rect, &response, ask);
         if response.drag_started_by(PointerButton::Primary) {
@@ -167,14 +200,30 @@ impl App {
         }
         let labels = ["Move Up", "Move Down", "Close Session"];
         let at = |index: usize| sessions.get(index).map(|s| s.id.clone());
-        match (button, menu(&response, labels, None, index, at, ask)) {
+        match (button, menu(&response, labels, muted, index, at, ask)) {
             (Some(0), _) => self.open(server, Action::CreateWindow(session.id.clone())),
             // This ends every program in the session.
             (Some(_), _) | (None, Some(Choice::Edit(Edit::Close))) => {
                 self.close(id, spared, true, server, target.edit(Edit::Close));
             }
+            // Only a tab is muted.
+            (None, Some(Choice::Mute)) => {
+                if let Some((tab, window)) = tab.zip(lone) {
+                    self.choose(tab, window.name(), Choice::Mute);
+                }
+            }
             (None, Some(choice)) => self.choose(target, &session.name, choice),
             (None, None) => {}
+        }
+    }
+
+    /// The list turns to the row on show when another comes to be it, by
+    /// whatever means, and stays where the user turns it otherwise.
+    fn follow(&mut self, row: egui::Id, shown: bool, response: &egui::Response) {
+        let list = row.with(self.remembered.kept.sidebar);
+        if shown && self.followed != Some(list) {
+            self.followed = Some(list);
+            response.scroll_to_me(None);
         }
     }
 
@@ -243,16 +292,12 @@ impl App {
             tip: &tip,
             movable: true,
             label: window.name(),
+            // Down the sidebar it stands in from the session's name over it.
+            inset: if across { 0.0 } else { 10.0 },
             ..Default::default()
         };
         let (response, button) = item(ui, size, row);
-        // The list turns to the tab on show when another comes to be it, by
-        // whatever means, and stays where the user turns it otherwise.
-        let list = id.with(self.remembered.kept.sidebar);
-        if selected && self.followed != Some(list) {
-            self.followed = Some(list);
-            response.scroll_to_me(None);
-        }
+        self.follow(id, selected, &response);
         self.picked(&response, &target, selected);
         self.wait(ui, response.rect, &response, ask);
         if response.drag_started_by(PointerButton::Primary) {

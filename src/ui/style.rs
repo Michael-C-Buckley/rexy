@@ -19,6 +19,8 @@ pub const POPOVER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
 pub const TEXT: Color32 = Color32::WHITE;
 pub const DIM: Color32 = white(150);
 pub const BORDER: Color32 = white(16);
+/// The line around the window, which has to part it from whatever lies behind.
+pub const EDGE_LINE: Color32 = white(34);
 /// What marks the one in use: light enough to be a line or a dot on the ground.
 pub const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x9c, 0xf5);
 /// Darker, to carry white text.
@@ -29,20 +31,31 @@ pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x2e);
 pub const RED: Color32 = Color32::from_rgb(0xf6, 0x61, 0x51);
 /// Something has finished.
 pub const GREEN: Color32 = Color32::from_rgb(0x57, 0xe3, 0x89);
-/// Fills of flat controls: under the pointer, selected, and pressed.
-pub const HOVER: Color32 = white(18);
+/// What follows a name and says more of the same thing: fainter than `DIM`.
+const FAINT: Color32 = white(110);
+/// Fills of flat controls: selected, and pressed. Under the pointer one is as
+/// white as `HOVER` says, of 255.
+const HOVER: f32 = 18.0;
 pub const ACTIVE: Color32 = white(28);
 pub const PRESSED: Color32 = white(46);
 /// Fills of rows, which lie many together: faint under the pointer, so that the
 /// one selected is plain among them.
-const OVER: Color32 = white(12);
-const SELECTED: Color32 = white(26);
+const OVER: f32 = 12.0;
+const SELECTED: f32 = 26.0;
+/// How long a fill takes to come and to go, and a menu to appear, in seconds.
+pub const EASE: f32 = 0.1;
 /// The fill of what ends programs if pressed. Darker than `RED`, to carry white text.
 pub const DANGER: Color32 = Color32::from_rgb(0xc0, 0x1c, 0x28);
 
 /// Translucent white, for text and fills that sit on any ground.
 const fn white(alpha: u8) -> Color32 {
     Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha)
+}
+
+/// How far a fill has come, from none to all of it, that is there while `on`:
+/// it takes a moment over it either way. `id` is whose fill it is.
+pub fn eased(ui: &egui::Ui, id: egui::Id, on: bool) -> f32 {
+    ui.ctx().animate_bool_with_time(id, on, EASE)
 }
 
 pub const TOOLBAR: f32 = 40.0;
@@ -162,7 +175,7 @@ pub fn apply(ctx: &egui::Context) {
             (egui::TextStyle::Heading, bold(24.0)),
         ]
         .into();
-        style.animation_time = 0.0;
+        style.animation_time = EASE;
     });
     // A terminal owns Ctrl+/- itself. Avoid a second, implicit zoom of the whole UI.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -190,6 +203,8 @@ pub enum Icon {
     /// The window's own: out of the way, and over the whole screen or back.
     Minimize,
     Maximize,
+    /// A glass to find things with.
+    Search,
 }
 
 impl Icon {
@@ -258,6 +273,10 @@ impl Icon {
             Icon::Muted => {
                 painter.circle_stroke(center, 3.5, stroke);
                 line([-5.0, 5.0], [5.0, -5.0]);
+            }
+            Icon::Search => {
+                painter.circle_stroke(center + egui::vec2(-1.5, -1.5), 4.5, stroke);
+                line([2.0, 2.0], [6.0, 6.0]);
             }
             Icon::Minimize => line([-4.0, 3.5], [4.0, 3.5]),
             Icon::Maximize => {
@@ -349,12 +368,10 @@ fn button(ui: &mut egui::Ui, side: f32, icon: Icon, tip: &str) -> egui::Response
 }
 
 fn paint_button(ui: &egui::Ui, rect: Rect, response: &egui::Response, icon: Icon) {
-    let fill = if response.is_pointer_button_down_on() {
-        PRESSED
-    } else if response.hovered() {
-        HOVER
-    } else {
-        Color32::TRANSPARENT
+    let lit = eased(ui, response.id.with("over"), response.hovered());
+    let fill = match response.is_pointer_button_down_on() {
+        true => PRESSED,
+        false => white((HOVER * lit) as u8),
     };
     ui.painter().rect_filled(rect, RADIUS, fill);
     let color = if ui.is_enabled() { DIM } else { white(56) };
@@ -364,12 +381,10 @@ fn paint_button(ui: &egui::Ui, rect: Rect, response: &egui::Response, icon: Icon
 /// One of the window's own buttons: round, and always there to be seen.
 pub fn round_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(SMALL_BUTTON), Sense::click());
-    let fill = if response.is_pointer_button_down_on() {
-        PRESSED
-    } else if response.hovered() {
-        white(38)
-    } else {
-        white(20)
+    let lit = eased(ui, response.id.with("over"), response.hovered());
+    let fill = match response.is_pointer_button_down_on() {
+        true => PRESSED,
+        false => white((20.0 + HOVER * lit) as u8),
     };
     ui.painter()
         .circle_filled(rect.center(), SMALL_BUTTON / 2.0, fill);
@@ -409,6 +424,9 @@ pub fn confirm(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: &str) -> egui::Res
 #[derive(Default)]
 pub struct Item<'a> {
     pub label: &'a str,
+    /// What else there is to say of it, after its name and fainter, in whatever
+    /// room the name leaves.
+    pub more: &'a str,
     /// A name of its own, for a row that must stay itself while the rows before
     /// it come and go: its menu and its buttons go by it.
     pub id: Option<egui::Id>,
@@ -440,6 +458,8 @@ pub struct Item<'a> {
     pub movable: bool,
     /// It waits to be chosen a second time, to close what may be busy.
     pub danger: bool,
+    /// How far in what it says starts, for a row that belongs to the one above.
+    pub inset: f32,
 }
 
 /// Draw a row. Returns its response, and which of its buttons was pressed.
@@ -463,12 +483,17 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let over = response.dragged() || (!dragging && ui.rect_contains_pointer(rect));
     // One that cannot be taken now does not answer the pointer.
     let over = over && ui.is_enabled();
-    let (fill, color) = match (item.selected, over, item.caption) {
-        _ if item.danger => (DANGER, TEXT),
-        (true, ..) => (SELECTED, TEXT),
-        (_, true, _) => (OVER, TEXT),
-        (_, _, true) => (Color32::TRANSPARENT, DIM),
-        _ => (Color32::TRANSPARENT, white(190)),
+    // Its fill comes and goes over a moment.
+    let lit = eased(ui, response.id.with("over"), over);
+    let chosen = eased(ui, response.id.with("selected"), item.selected);
+    let fill = match item.danger {
+        true => DANGER,
+        false => white((SELECTED * chosen).max(OVER * lit) as u8),
+    };
+    let color = match (item.selected || over || item.danger, item.caption) {
+        (true, _) => TEXT,
+        (_, true) => DIM,
+        _ => white(190),
     };
     ui.painter().rect_filled(rect, RADIUS, fill);
     // Room at the trailing edge is the label's to lose, so that it never moves.
@@ -477,25 +502,12 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         let font = FontId::proportional(SMALL);
         ui.painter().layout_no_wrap(word.to_owned(), font, color)
     });
-    let keys = item.keys.map_or_else(Vec::new, |keys| {
-        let mut keys: Vec<_> = keys.split('+').filter(|key| !key.is_empty()).collect();
-        // The plus key itself, which is also what joins the others.
-        if item.keys.is_some_and(|keys| keys.ends_with('+')) {
-            keys.push("+");
-        }
-        let font = FontId::proportional(11.0);
-        let key = |key: &str| {
-            ui.painter()
-                .layout_no_wrap(key.to_owned(), font.clone(), white(205))
-        };
-        keys.into_iter().map(key).collect()
-    });
-    let key = |name: &Arc<egui::Galley>| egui::vec2(name.size().x + 12.0, 18.0);
+    let keys = caps(ui, item.keys.unwrap_or_default());
     let marks = f32::from(u8::from(item.mark.is_some()) + u8::from(item.menu));
     let marks = word
         .as_ref()
         .map_or(14.0 * marks, |word| word.size().x + 8.0);
-    let marks = marks + keys.iter().map(|name| key(name).x + 4.0).sum::<f32>();
+    let marks = marks + keys.iter().map(|name| cap(name).x + 4.0).sum::<f32>();
     // The button that asks is where the last one was, and goes by its name: the
     // pointer is on it already.
     let last = item.buttons.len().checked_sub(1);
@@ -508,6 +520,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         .as_ref()
         .map_or(room, |asks| room.max(asks.rect.width() + 10.0));
     let mut text = rect.shrink2(egui::vec2(12.0, 0.0));
+    text.min.x += item.inset;
     text.max.x = rect.right() - room;
     let lead = if item.icon.is_some() { ICON } else { 0.0 };
     // A name too long for its row ends in an ellipsis.
@@ -517,6 +530,11 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         _ => FontId::proportional(BODY),
     };
     let label = fitted(ui, item.label, font, color, text.width() - lead);
+    // What else it has to say has the room its name leaves, if that is any.
+    let left = text.width() - lead - label.size().x - 8.0;
+    let more = (left > 24.0 && !item.more.is_empty())
+        .then(|| fitted(ui, item.more, FontId::proportional(BODY), FAINT, left));
+    let lost = !item.more.is_empty() && more.as_ref().is_none_or(|more| more.elided);
     let cut = label.elided;
     let needs = label.size() + egui::vec2(lead, 0.0);
     // A centred name is at the middle of its row while it fits there, and has
@@ -532,8 +550,12 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         let ink = if item.selected { ACCENT } else { DIM };
         tile(ui.painter(), program, left, ink);
     }
-    ui.painter()
-        .galley(place.min + egui::vec2(lead, 0.0), label, color);
+    let name = place.min + egui::vec2(lead, 0.0);
+    if let Some(more) = more {
+        let after = name + egui::vec2(label.size().x + 8.0, 0.0);
+        ui.painter().galley(after, more, FAINT);
+    }
+    ui.painter().galley(name, label, color);
     let mut pressed = None;
     if let Some(asks) = asks {
         pressed = last.filter(|_| asks.clicked());
@@ -564,20 +586,15 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         } else if let Some((mark, color)) = item.mark {
             mark.paint(ui.painter(), center, color);
         }
-        let mut right = rect.right() - 10.0;
-        for name in keys.into_iter().rev() {
-            let size = key(&name);
-            let cap = Rect::from_min_size(egui::pos2(right - size.x, rect.center().y - 9.0), size);
-            ui.painter().rect_filled(cap, 5, white(22));
-            let at = cap.center() - name.size() / 2.0;
-            ui.painter().galley(at, name, TEXT);
-            right -= size.x + 4.0;
-        }
+        paint_caps(ui, keys, egui::pos2(rect.right() - 10.0, rect.center().y));
     }
-    let response = if cut || !item.tip.is_empty() {
+    let response = if cut || lost || !item.tip.is_empty() {
         response.on_hover_ui(|ui| {
             if cut {
                 ui.label(item.label);
+            }
+            if lost {
+                ui.label(item.more);
             }
             if !item.tip.is_empty() {
                 ui.label(item.tip);
@@ -587,6 +604,61 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         response
     };
     (response, pressed)
+}
+
+/// The keys of a shortcut, each to go on a key of its own, as Rex joins them:
+/// `Ctrl+Shift+D`.
+fn caps(ui: &egui::Ui, keys: &str) -> Vec<Arc<egui::Galley>> {
+    let mut names: Vec<_> = keys.split('+').filter(|key| !key.is_empty()).collect();
+    // The plus key itself, which is also what joins the others.
+    if keys.ends_with('+') {
+        names.push("+");
+    }
+    let font = FontId::proportional(11.0);
+    let key = |key: &str| {
+        ui.painter()
+            .layout_no_wrap(key.to_owned(), font.clone(), white(205))
+    };
+    names.into_iter().map(key).collect()
+}
+
+/// The room a key takes.
+fn cap(name: &egui::Galley) -> Vec2 {
+    egui::vec2(name.size().x + 12.0, 18.0)
+}
+
+/// Draw the keys of a shortcut, the last of them ending at `right`.
+fn paint_caps(ui: &egui::Ui, keys: Vec<Arc<egui::Galley>>, mut right: Pos2) {
+    for name in keys.into_iter().rev() {
+        let size = cap(&name);
+        let key = Rect::from_min_size(right - egui::vec2(size.x, 9.0), size);
+        ui.painter().rect_filled(key, 5, white(22));
+        ui.painter()
+            .galley(key.center() - name.size() / 2.0, name, TEXT);
+        right.x -= size.x + 4.0;
+    }
+}
+
+/// What opens the palette, for the pointer: as wide as the room there is, it
+/// says what it is for, and the keys that do the same where they fit.
+pub fn search(ui: &mut egui::Ui, keys: &str) -> egui::Response {
+    let size = Vec2::new(ui.available_width(), 28.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let lit = eased(ui, response.id.with("over"), response.hovered());
+    ui.painter()
+        .rect_filled(rect, RADIUS, white((OVER + OVER * lit) as u8));
+    let left = rect.left_center();
+    Icon::Search.paint(ui.painter(), left + egui::vec2(16.0, 0.0), DIM);
+    let font = FontId::proportional(BODY);
+    let word = ui.painter().layout_no_wrap("Search".to_owned(), font, DIM);
+    let keys = caps(ui, keys);
+    let wide = keys.iter().map(|name| cap(name).x + 4.0).sum::<f32>();
+    if 32.0 + word.size().x + 12.0 + wide <= rect.width() {
+        paint_caps(ui, keys, rect.right_center() - egui::vec2(5.0, 0.0));
+    }
+    let at = left + egui::vec2(32.0, -word.size().y / 2.0);
+    ui.painter().galley(at, word, DIM);
+    response
 }
 
 /// An entry of a menu: a row as wide as the menu, with the keys that do the same

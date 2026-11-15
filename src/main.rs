@@ -91,6 +91,8 @@ fn main() -> eframe::Result {
             .with_title("Rex Lite")
             // The window draws its own frame, in the row its tabs and buttons have.
             .with_decorations(false)
+            // Its corners are round, and what lies behind the window shows past them.
+            .with_transparent(true)
             .with_inner_size(remembered.kept.window)
             .with_min_inner_size(rex_lite::ui::LEAST_WINDOW)
             .with_app_id(rex_lite::notify::APP_ID)

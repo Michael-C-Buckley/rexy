@@ -316,6 +316,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Nothing, where the window draws nothing: past its round corners.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     /// This runs whether or not the window can be seen, as it cannot when the
     /// user picks one of its notes from the desktop: show the pane the note was about.
     /// On Wayland the window has been brought forward by now, if it is to be.
@@ -391,51 +396,50 @@ impl eframe::App for App {
         if ctx.global_style().visuals.window_fill != popover {
             ctx.all_styles_mut(|style| style.visuals.window_fill = popover);
         }
+        frame::ground(root_ui, ground);
         // With the sidebar, tabs are listed in it. Without, they run along the top.
         let sidebar = self.remembered.kept.sidebar;
         if sidebar {
-            self.sidebar(root_ui, &views, ground);
+            self.sidebar(root_ui, &views);
         }
         // The panel's work, and the space it has for terminals.
-        let shown = egui::CentralPanel::no_frame()
-            .frame(egui::Frame::new().fill(ground))
-            .show(root_ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                match sidebar {
-                    true => self.header(ui, view),
-                    false => self.toolbar(ui, &views),
-                }
-                let Some(window) = window.filter(|window| !window.panes.is_empty()) else {
-                    let area = ui.available_rect_before_wrap();
-                    self.empty(ui, view);
-                    return area;
-                };
-                // The terminals are cards on the window's ground, a gutter apart
-                // and a gutter from its edges: but for the row above them, and the
-                // sidebar, which keep their own distance. Each card gives up half
-                // a gutter all round, so the space they share reaches half a
-                // gutter past where the outermost of them end.
-                let mut within = ui.available_rect_before_wrap();
-                within.max -= Vec2::splat(GUTTER);
-                if !sidebar {
-                    within.min.x += GUTTER;
-                }
-                let area = within.expand(GUTTER / 2.0);
-                // Healthy needs no words.
-                if !view.connected {
-                    self.lost(ui.ctx(), view, within);
-                }
-                for pane in panes {
-                    let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
-                    let size = area.size() * egui::vec2(pane.width, pane.height);
-                    let rect = Rect::from_min_size(min, size).shrink(GUTTER / 2.0);
-                    self.terminal_pane(ui, view, window, pane, rect);
-                }
-                if view.connected {
-                    self.borders(ui, window, area);
-                }
-                within
-            });
+        let shown = egui::CentralPanel::no_frame().show(root_ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            match sidebar {
+                true => self.header(ui, view),
+                false => self.toolbar(ui, &views),
+            }
+            let Some(window) = window.filter(|window| !window.panes.is_empty()) else {
+                let area = ui.available_rect_before_wrap();
+                self.empty(ui, view);
+                return area;
+            };
+            // The terminals are cards on the window's ground, a gutter apart
+            // and a gutter from its edges: but for the row above them, and the
+            // sidebar, which keep their own distance. Each card gives up half
+            // a gutter all round, so the space they share reaches half a
+            // gutter past where the outermost of them end.
+            let mut within = ui.available_rect_before_wrap();
+            within.max -= Vec2::splat(GUTTER);
+            if !sidebar {
+                within.min.x += GUTTER;
+            }
+            let area = within.expand(GUTTER / 2.0);
+            // Healthy needs no words.
+            if !view.connected {
+                self.lost(ui.ctx(), view, within);
+            }
+            for pane in panes {
+                let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
+                let size = area.size() * egui::vec2(pane.width, pane.height);
+                let rect = Rect::from_min_size(min, size).shrink(GUTTER / 2.0);
+                self.terminal_pane(ui, view, window, pane, rect);
+            }
+            if view.connected {
+                self.borders(ui, window, area);
+            }
+            within
+        });
         if sidebar {
             self.edge(root_ui);
         }

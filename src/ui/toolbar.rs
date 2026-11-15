@@ -9,14 +9,16 @@ use super::{
     heard::dot,
     style::{BODY, DIM, Icon, Item, TEXT, TOOLBAR, bold, fitted, icon_button, item},
 };
-use crate::model::{Action, View};
+use crate::model::{Action, View, Window};
 
 impl App {
-    /// The buttons that split the focused pane, laid out from the right.
-    pub(super) fn splits(&mut self, ui: &mut egui::Ui, view: &View) {
+    /// The buttons that make another terminal: in a tab of its own, or beside
+    /// the focused pane or below it. They stand together, apart from the window's own.
+    fn makers(&mut self, ui: &mut egui::Ui, view: &View) {
+        self.button(ui, view, Icon::Plus, "New tab", "client.tab.new");
         let splits = [
-            (Icon::SplitDown, "pane.split.down"),
             (Icon::SplitRight, "pane.split.right"),
+            (Icon::SplitDown, "pane.split.down"),
         ];
         for (icon, name) in splits {
             self.button(ui, view, icon, title(name), name);
@@ -73,7 +75,6 @@ impl App {
         bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
             controls(ui);
             ui.add_space(8.0);
-            self.splits(ui, view);
             self.hidden(ui, view);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(4.0);
@@ -88,8 +89,8 @@ impl App {
                     drag: egui::scroll_area::DragScroll::Never,
                     ..Default::default()
                 };
-                // Room is kept at the end for the button that makes another.
-                let room = (ui.available_width() - 40.0).max(0.0);
+                // Room is kept at the end for the buttons that make another.
+                let room = (ui.available_width() - 108.0).max(0.0);
                 egui::ScrollArea::horizontal()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .scroll_source(wheel)
@@ -100,43 +101,62 @@ impl App {
                         let shown = view.selected_window.as_deref();
                         self.tabs(ui, self.current, session, shown, size);
                     });
-                self.button(ui, view, Icon::Plus, "New tab", "client.tab.new");
+                self.makers(ui, view);
             });
         });
     }
 
-    /// With the sidebar, the row over the terminals names the tab on show and
-    /// what is at the keyboard in it, and holds the buttons the sidebar has no
-    /// room for.
+    /// With the sidebar, the row over the terminals holds the buttons the
+    /// sidebar has no room for, and says where the window is: the server, if it
+    /// is not home, the session, its tab, and what is at the keyboard in it.
+    /// The sidebar's rows say the same in less room, and cut short.
     pub(super) fn header(&mut self, ui: &mut egui::Ui, view: &View) {
         let mut bar = titlebar(ui, TOOLBAR, 8.0);
         bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
             controls(ui);
             ui.add_space(8.0);
-            self.splits(ui, view);
             self.hidden(ui, view);
-            // The names are drawn, not laid out: nothing of them takes the pointer
-            // from the handle they lie on.
-            let room = ui
-                .available_rect_before_wrap()
-                .shrink2(egui::vec2(4.0, 0.0));
-            let Some(tab) = view.current_window() else {
-                return;
-            };
-            let name = fitted(ui, tab.name(), bold(BODY), TEXT, room.width());
-            let at = room.left_center() - egui::vec2(0.0, name.size().y / 2.0);
-            let after = name.size().x + 10.0;
-            ui.painter().galley(at, name, TEXT);
-            // A tab that was given a name has more to say: what is running where
-            // the keyboard is.
-            let focused = self.focused.as_deref().and_then(|id| view.pane(id));
-            let title = focused.map(|pane| pane.title.as_str());
-            if let Some(title) = title.filter(|title| *title != tab.name()) {
-                let font = FontId::proportional(BODY);
-                let title = fitted(ui, title, font, DIM, room.width() - after);
-                let at = at + egui::vec2(after, 0.0);
-                ui.painter().galley(at, title, DIM);
-            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                self.makers(ui, view);
+                let tab = view.current_window();
+                let focused = self.focused.as_deref().and_then(|id| view.pane(id));
+                let title = focused.map(|pane| pane.title.as_str());
+                let plain = FontId::proportional(BODY);
+                let names = [
+                    (
+                        (self.current > 0).then(|| self.servers[self.current].label()),
+                        &plain,
+                        DIM,
+                    ),
+                    (
+                        view.session().map(|session| session.name.as_str()),
+                        &bold(BODY),
+                        TEXT,
+                    ),
+                    (tab.map(Window::name), &plain, DIM),
+                    // A tab that was given a name has this to add.
+                    (
+                        title.filter(|title| Some(*title) != tab.map(Window::name)),
+                        &plain,
+                        DIM,
+                    ),
+                ];
+                // They are drawn, not laid out: nothing of them takes the pointer
+                // from the handle they lie on.
+                let room = ui.available_rect_before_wrap();
+                let mut at = room.left_center() + egui::vec2(8.0, 0.0);
+                for (name, font, color) in names {
+                    let left = room.right() - 4.0 - at.x;
+                    let Some(name) = name.filter(|_| left > 24.0) else {
+                        continue;
+                    };
+                    let name = fitted(ui, name, font.clone(), color, left);
+                    let size = name.size();
+                    ui.painter()
+                        .galley(at - egui::vec2(0.0, size.y / 2.0), name, color);
+                    at.x += size.x + 10.0;
+                }
+            });
         });
     }
 }

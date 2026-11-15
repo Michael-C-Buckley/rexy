@@ -108,3 +108,33 @@ fn what_lies_over_the_window_is_lighter_than_its_ground_and_of_its_hue() {
     assert!(over.r() > over.g() && over.g() > over.b());
     assert_eq!(popover(Color32::WHITE), POPOVER);
 }
+
+#[test]
+fn a_menu_entry_that_cannot_be_taken_does_not_answer_a_click() {
+    let ctx = window();
+    let draw = |enabled: bool, events: Vec<egui::Event>| {
+        let input = egui::RawInput {
+            screen_rect: Some(SCREEN),
+            events,
+            ..Default::default()
+        };
+        let mut drawn = None;
+        let output = ctx.run_ui(input, |ui| {
+            let row = Item {
+                label: "Paste",
+                keys: Some("Ctrl+Shift+V"),
+                ..Default::default()
+            };
+            drawn = Some(entry(ui, enabled, row));
+        });
+        output.drop_without_applying_deltas();
+        drawn.expect("the entry was drawn")
+    };
+    for enabled in [false, true] {
+        let at = draw(enabled, vec![]).rect.center();
+        draw(enabled, vec![egui::Event::PointerMoved(at)]);
+        let [press, release] = click(at);
+        draw(enabled, press);
+        assert_eq!(draw(enabled, release).clicked(), enabled);
+    }
+}

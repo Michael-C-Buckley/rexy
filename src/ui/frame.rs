@@ -6,7 +6,7 @@ use eframe::egui::{
     StrokeKind, UiBuilder, Vec2, ViewportCommand,
 };
 
-use super::style::{BORDER, Icon, round_button};
+use super::style::{CARD_RADIUS, EDGE_LINE, GUTTER, Icon, round_button};
 
 /// How near an edge of the window the pointer sizes it, and how near a corner.
 const EDGE: f32 = 5.0;
@@ -18,6 +18,22 @@ fn spread(ctx: &egui::Context) -> bool {
         let window = i.viewport();
         window.maximized == Some(true) || window.fullscreen == Some(true)
     })
+}
+
+/// How round the window's corners are: as round as lets a card's corner lie
+/// evenly within, a gutter in. A window that fills its screen has square ones.
+fn corners(ctx: &egui::Context) -> f32 {
+    match spread(ctx) {
+        true => 0.0,
+        false => f32::from(CARD_RADIUS) + GUTTER,
+    }
+}
+
+/// The window's ground, which everything in it lies on.
+pub fn ground(ui: &egui::Ui, fill: egui::Color32) {
+    let ctx = ui.ctx();
+    ui.painter()
+        .rect_filled(ctx.content_rect(), corners(ctx), fill);
 }
 
 /// A row of controls along the top of the window. Where none of them is under
@@ -70,9 +86,9 @@ pub fn edges(ui: &egui::Ui) {
         return;
     }
     let window = ctx.content_rect();
-    let line = Stroke::new(1.0, BORDER);
+    let line = Stroke::new(1.0, EDGE_LINE);
     ui.painter()
-        .rect_stroke(window, 0, line, StrokeKind::Inside);
+        .rect_stroke(window, corners(ctx), line, StrokeKind::Inside);
     use ResizeDirection::*;
     // The corners come after the sides they lie over.
     let (x, y) = (window.x_range(), window.y_range());

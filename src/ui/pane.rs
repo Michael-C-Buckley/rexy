@@ -14,7 +14,7 @@ use super::{
     render::{Grid, rgb},
     style::{
         ACCENT, BODY, BORDER, CARD, CARD_RADIUS, DIM, Icon, Item, SMALL, SMALL_BUTTON, TEXT,
-        confirm, entry, fitted, small_button,
+        confirm, eased, entry, fitted, small_button,
     },
 };
 use crate::{
@@ -274,10 +274,12 @@ impl App {
             }
             // And goes dim, halfway to its background. One of several that is
             // not the one typed in steps back a little, too.
-            let away = match (live, active || !window.split()) {
-                (false, _) => LAST,
-                (true, false) => AWAY,
-                (true, true) => 0.0,
+            // It steps back and comes forward over a moment.
+            let aside = egui::Id::unique(("aside", &pane.id));
+            let aside = eased(ui, aside, !active && window.split());
+            let away = match live {
+                false => LAST,
+                true => AWAY * aside,
             };
             if away > 0.0 {
                 let veil = rgb(frame.bg).gamma_multiply(away);
@@ -306,10 +308,9 @@ impl App {
         }
         // A line around the card: faint, or in the colour of the one in use where
         // there are several to tell it from.
-        let line = match active && window.split() {
-            true => Stroke::new(1.0, ACCENT),
-            false => Stroke::new(1.0, BORDER),
-        };
+        let own = egui::Id::unique(("own", &pane.id));
+        let own = eased(ui, own, active && window.split());
+        let line = Stroke::new(1.0, BORDER.lerp_to_gamma(ACCENT, own));
         ui.painter()
             .rect_stroke(rect, CARD_RADIUS, line, StrokeKind::Inside);
         if !tracking {
