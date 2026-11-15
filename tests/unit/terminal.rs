@@ -148,7 +148,10 @@ fn a_screen_is_drawn_before_its_history_has_come() {
 #[test]
 fn a_pane_out_of_sight_draws_its_first_frame_and_then_only_once_it_is_on_show() {
     let (handle, wakes) = worker_of(encode(&mut terminal(20, 3)), false);
-    until(&wakes, || handle.latest().is_some());
+    // The wake itself is waited for: the frame is there a moment before it is
+    // said to be, and that wake would otherwise be taken for a later one.
+    wakes.recv_timeout(WAIT).unwrap();
+    assert!(handle.latest().is_some());
     write(&handle, b"unseen");
     assert!(wakes.recv_timeout(QUIET).is_err());
     assert_eq!(top(&handle), "");
