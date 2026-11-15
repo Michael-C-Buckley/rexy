@@ -166,3 +166,15 @@ fn a_command_is_refused_where_it_has_nothing_to_act_on() {
     assert_eq!(plan(&view, "d", "client.font.reset", Value::Null).as_deref(), Ok("font 15"));
     assert!(plan(&view, "d", "session.refresh", Value::Null).is_ok());
 }
+
+#[test]
+fn other_clients_may_only_have_a_session_shown_until_they_are_let_do_more() {
+    let off = false;
+    assert!(allowed("session.select", off) && !allowed("pane.paste", off));
+    // Nor may they let themselves.
+    assert!(!allowed(REMOTE, off) && allowed("pane.paste", true));
+    // The palette says what choosing it does, as things stand.
+    assert_eq!(label(REMOTE, title(REMOTE), off), "Allow Remote Control");
+    assert_eq!(label(REMOTE, title(REMOTE), true), "Refuse Remote Control");
+    assert_eq!(label("pane.zoom", title("pane.zoom"), true), "Zoom Pane");
+}

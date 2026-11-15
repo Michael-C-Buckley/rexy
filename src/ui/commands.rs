@@ -24,6 +24,28 @@ pub type Command = (&'static str, &'static str, bool);
 const ONCE: bool = false;
 const HELD: bool = true;
 
+/// The command that lets a server's other clients have this window do things,
+/// or lets them no longer.
+pub const REMOTE: &str = "client.remote_control.toggle";
+/// The code of the error another client is answered with while they may not.
+pub const BARRED: &str = "remote_control_off";
+
+/// Whether a server's other clients may ask this of the window, as remote
+/// control stands. With it off they may still have a session shown, which
+/// gives nothing away and changes nothing.
+pub fn allowed(name: &str, remote: bool) -> bool {
+    remote || name == "session.select"
+}
+
+/// What the palette calls a command, where that goes by how the window stands.
+pub fn label(name: &str, title: &'static str, remote: bool) -> &'static str {
+    match (name == REMOTE, remote) {
+        (true, true) => "Refuse Remote Control",
+        (true, false) => "Allow Remote Control",
+        _ => title,
+    }
+}
+
 /// Rex has no name for the two scrolls to an end. Theirs are this client's own.
 pub const COMMANDS: &[Command] = &[
     ("session.new", "New Session", ONCE),
@@ -76,6 +98,8 @@ pub const COMMANDS: &[Command] = &[
     ("client.sidebar.toggle", "Toggle Sidebar", ONCE),
     ("client.sidebar.activity.toggle", "Show What Is at Work", ONCE),
     ("client.palette.toggle", "Command Palette…", ONCE),
+    // Rex has no name for this either. Its own app keeps it among its settings.
+    (REMOTE, "Toggle Remote Control", ONCE),
     ("client.mode.enter", "Enter Mode", ONCE),
     ("client.mode.exit", "Exit Mode", ONCE),
     ("client.mode.exit_all", "Exit All Modes", ONCE),
@@ -207,6 +231,8 @@ pub(super) enum Deed {
     /// Turning the sidebar to the list of what is at work, or back.
     Agents,
     Palette,
+    /// Letting a server's other clients have this window do things, or no longer.
+    Remote,
     /// Asking something of a pane's own terminal, which no server is told of:
     /// about what is selected or looked for in it, or to move through its history.
     Tell(String, Request),
@@ -293,6 +319,7 @@ impl Standing<'_> {
             "client.sidebar.toggle" => Deed::Sidebar,
             "client.sidebar.activity.toggle" => Deed::Agents,
             "client.palette.toggle" | "session.switch" => Deed::Palette,
+            REMOTE => Deed::Remote,
             "client.font.increase" => Deed::Font(self.font_size + 1.0),
             "client.font.decrease" => Deed::Font(self.font_size - 1.0),
             "client.font.reset" => Deed::Font(DEFAULT_FONT_SIZE),
@@ -455,6 +482,15 @@ impl App {
                 self.filter.clear();
                 self.cursor = None;
                 Popup::toggle_id(ctx, palette::id());
+            }
+            Deed::Remote => {
+                let remote = &mut self.remembered.kept.remote;
+                *remote ^= true;
+                let said = match *remote {
+                    true => "Other clients of a server may now control this window.",
+                    false => "Other clients may no longer control this window.",
+                };
+                self.toast.say(said.into());
             }
             Deed::Tell(pane, request) => self.ask(&pane, request),
             Deed::Find(pane) => self.find(&pane),

@@ -1526,6 +1526,10 @@ fn reply(call: &str, error: Option<&str>) -> Value {
     };
     let message = match code {
         "refused" => "Rex Lite cannot do that just now",
+        "remote_control_off" => {
+            "Remote Control is off in this Rex Lite window. To allow it, choose \
+             Allow Remote Control in the window's command palette."
+        }
         _ => "Rex Lite has no such action",
     };
     json!({"call_id": call, "error": {"code": code, "message": message}})

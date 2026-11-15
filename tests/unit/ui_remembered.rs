@@ -28,6 +28,9 @@ fn what_changed_is_saved_after_a_moment_and_read_back() {
     assert_eq!(first.settle(start).unwrap(), Some(PAUSE));
     // What changes meanwhile is saved with it, at the time first set.
     first.kept.sidebar = false;
+    // Other clients have no say over the window until they are given it.
+    assert!(!first.kept.remote);
+    first.kept.remote = true;
     first.kept.muted.insert("window:a".into());
     let place = ["session:s".to_owned(), "window:a".to_owned()];
     first.kept.shown.insert("unix:/a".into(), place);

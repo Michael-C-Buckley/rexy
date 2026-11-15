@@ -636,6 +636,49 @@ mod served {
         views
     }
 
+    /// What a client asks next by `method`, for the test to answer. What it asks
+    /// before that is answered with nothing, and noted in `seen`.
+    pub async fn next(
+        socket: &mut Socket,
+        method: &str,
+        seen: &mut Vec<(String, Value)>,
+    ) -> (String, Value) {
+        loop {
+            let asked = asked(socket).await;
+            let (id, asked, payload) = asked.unwrap_or_else(|| panic!("{method} was not asked"));
+            if asked == method {
+                return (id, payload);
+            }
+            answer(socket, &id, json!({})).await;
+            seen.push((asked, payload));
+        }
+    }
+
+    /// A session's view at a revision: its tabs, each with the terminal that
+    /// fills it and that terminal's owner, if it has either, and the tab the
+    /// server shows.
+    pub fn view(revision: u64, active: &str, tabs: &[(&str, Option<(&str, &str)>)]) -> Value {
+        let tab = |(id, terminal): &(&str, Option<(&str, &str)>)| {
+            let layer = terminal.map(|(block, owner)| {
+                json!({
+                    "kind": "tiled",
+                    "layout": {"rect": [0, 0, 1, 1], "block_id": block},
+                    "blocks": [{"block_id": block, "creator_name": TERMINAL, "owner": owner}],
+                })
+            });
+            json!({"window_id": id, "layers": layer.into_iter().collect::<Vec<_>>()})
+        };
+        let tabs: Vec<_> = tabs.iter().map(tab).collect();
+        json!({"revision": revision, "active_window_id": active, "windows": tabs})
+    }
+
+    /// News that a session's view has come to a revision.
+    pub fn viewed(session: &str, revision: u64) -> Value {
+        let event = json!({"type": "session_view_changed", "payload": {"revision": revision}});
+        let within = json!({"session_id": session, "event": event});
+        json!({"type": "event", "payload": {"type": "session_event", "payload": within}})
+    }
+
     /// Wait for a client to be as a test would have it.
     pub async fn until(client: &Client, what: &str, ready: impl Fn(&View) -> bool) -> View {
         for _ in 0..200 {
@@ -776,4 +819,74 @@ async fn a_server_that_closes_while_a_client_begins_is_said_to_have_and_why() {
     let lost = |view: &View| view.status.starts_with("Disconnected");
     let view = served::until(&client, "its end", lost).await;
     assert!(view.status.contains("fell too far behind"), "{}", view.status);
+}
+
+#[tokio::test]
+async fn a_tab_picked_is_shown_at_once_and_the_servers_tab_once_it_has_answered() {
+    use served::{answer, next, say, until, view, viewed};
+    let server = served::Server::at("tabs");
+    let (client, _notes) = server.client();
+    let mut socket = server.welcome().await.unwrap();
+    let views = served::listed(&mut socket, &["s1"]).await;
+    let tabs = [("w1", None), ("w2", None)];
+    answer(&mut socket, &views["s1"], view(1, "w1", &tabs)).await;
+    until(&client, "a connection", |view| view.connected).await;
+    let seen = &mut Vec::new();
+    // Its session is joined when it is asked to be shown, with the server's tab.
+    client.try_send(Action::SelectSession("s1".into())).unwrap();
+    let (id, joined) = next(&mut socket, "session.attach", seen).await;
+    assert_eq!(joined["session_id"], "s1");
+    answer(&mut socket, &id, json!({"view": view(1, "w1", &tabs)})).await;
+    let shown = |tab: &'static str| move |view: &View| view.selected_window.as_deref() == Some(tab);
+    until(&client, "the server's tab", shown("w1")).await;
+    // Another tab is shown as soon as it is picked, and the server is told.
+    let (session, window) = ("s1".to_owned(), "w2".to_owned());
+    client.try_send(Action::SelectWindow { session, window }).unwrap();
+    assert!(shown("w2")(&client.snapshot()));
+    let (id, picked) = next(&mut socket, "session.focus_window", seen).await;
+    assert_eq!((&picked["session_id"], &picked["window_id"]), (&json!("s1"), &json!("w2")));
+    answer(&mut socket, &id, json!({"revision": 2})).await;
+    let (id, _) = next(&mut socket, "session.view", seen).await;
+    answer(&mut socket, &id, view(2, "w2", &tabs)).await;
+    until(&client, "the tab picked", shown("w2")).await;
+    // Another client has the server show the first again, and so does this one.
+    say(&mut socket, viewed("s1", 3)).await;
+    let (id, _) = next(&mut socket, "session.view", seen).await;
+    answer(&mut socket, &id, view(3, "w1", &tabs)).await;
+    until(&client, "the server's tab again", shown("w1")).await;
+}
+
+#[tokio::test]
+async fn the_panes_of_a_tab_on_show_are_fed_and_asked_for_and_given_up_when_it_is_left() {
+    use served::{answer, next, until, view};
+    let server = served::Server::at("panes");
+    let (client, _notes) = server.client();
+    let mut socket = server.welcome().await.unwrap();
+    let views = served::listed(&mut socket, &["s1"]).await;
+    // Its one terminal is another client's, which is on the server no longer.
+    let tabs = [("w1", Some(("b1", "client:2")))];
+    answer(&mut socket, &views["s1"], view(1, "w1", &tabs)).await;
+    until(&client, "a connection", |view| view.connected).await;
+    let seen = &mut Vec::new();
+    client.try_send(Action::SelectSession("s1".into())).unwrap();
+    let (id, _) = next(&mut socket, "session.attach", seen).await;
+    answer(&mut socket, &id, json!({"view": view(1, "w1", &tabs)})).await;
+    // The terminal is asked for, and taken once its owner is found to have gone.
+    let (id, asked) = next(&mut socket, "session.own_block", seen).await;
+    let ask = |mode: &str| json!({"session_id": "s1", "block_ids": ["b1"], "mode": mode});
+    assert_eq!(asked, ask("request"));
+    answer(&mut socket, &id, json!({"blocks": [{"block_id": "b1", "owner": "client:2"}]})).await;
+    let (id, _) = next(&mut socket, "client.list", seen).await;
+    answer(&mut socket, &id, json!({"clients": [{"client_id": "client:1"}]})).await;
+    let (_, taken) = next(&mut socket, "session.own_block", seen).await;
+    assert_eq!(taken, ask("take"));
+    // It is fed meanwhile, whoever it is.
+    let fed = |(method, payload): &(String, Value)| {
+        method == "data.connect" && payload["block_id"] == "b1" && payload["session_id"] == "s1"
+    };
+    assert!(seen.iter().any(fed), "{seen:?}");
+    // Left, its panes are given up for a client that wants them at its own size.
+    client.leave();
+    let (_, left) = next(&mut socket, "session.disown_block", seen).await;
+    assert_eq!(left, json!({"session_id": "s1"}));
 }

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::{
     App,
-    commands::{COMMANDS, Deed},
+    commands::{COMMANDS, Deed, label},
     heard::dot,
     style::{BODY, BORDER, Icon, Item, SMALL, TEXT, bold, caption, item},
 };
@@ -118,7 +118,8 @@ impl App {
         for (name, title, _) in COMMANDS.iter().filter(|c| found(&[c.1, c.0])) {
             let plan = self.standing(view).plan(name, &Value::Null, None);
             if plan.is_ok_and(|deed| !matches!(deed, Deed::Palette)) {
-                rows.push(command(title, name));
+                let remote = self.remembered.kept.remote;
+                rows.push(command(label(name, title, remote), name));
             }
         }
         // And those of the server's own actions that are for showing.

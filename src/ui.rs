@@ -59,26 +59,20 @@ struct Server {
 }
 
 impl Server {
-    fn connect(ctx: &egui::Context, host: Host, herald: &Herald) -> Self {
+    /// Connect to a server. Only `home` is asked for a keymap: the keys are
+    /// home's, whichever server's session is on show.
+    fn connect(ctx: &egui::Context, host: Host, herald: &Herald, home: bool) -> Self {
         let ctx = ctx.clone();
         let wake = Arc::new(move || ctx.request_repaint());
         let herald = herald.of(&host.label);
-        Self {
-            client: Client::spawn(
-                host.endpoints.clone(),
-                wake,
-                herald,
-                Some(commands::request()),
-                crate::theme::ghostty().cloned(),
-            ),
-            host,
-        }
+        let (keymap, theme) = (home.then(commands::request), crate::theme::ghostty().cloned());
+        Self { client: Client::spawn(host.endpoints.clone(), wake, herald, keymap, theme), host }
     }
 
     /// Home, the server this window was opened on, has no label of its own.
     fn home(ctx: &egui::Context, endpoint: &str, herald: &Herald) -> Self {
         let host = Host { label: String::new(), endpoints: vec![endpoint.to_owned()] };
-        Self::connect(ctx, host, herald)
+        Self::connect(ctx, host, herald, true)
     }
 
     /// Home goes by its address, unless that is a socket on this machine.
@@ -105,7 +99,7 @@ pub struct App {
     focused: Option<String>,
     panes: HashMap<String, PaneView>,
     keyboard: Keyboard,
-    /// Where the keyboard stands with the keymap of the server on show.
+    /// Where the keyboard stands with home's keymap.
     keys: Keys,
     /// What the buttons and menus have asked for since the window last drew, each
     /// by its name in the table of commands and the pane it was asked of, if one.
@@ -238,7 +232,7 @@ impl App {
         for host in &home.hosts {
             let server = match known.iter().position(|server| &server.host == host) {
                 Some(index) => known.swap_remove(index),
-                None => Server::connect(ctx, host.clone(), &self.herald),
+                None => Server::connect(ctx, host.clone(), &self.herald, false),
             };
             self.servers.push(server);
         }
@@ -404,7 +398,7 @@ impl eframe::App for App {
         {
             ctx.copy_text(text);
         }
-        self.shortcuts(&ctx, view);
+        self.shortcuts(&ctx, &views[0], view);
         // The window's ground goes by the terminals on it. So do what is laid
         // over it, menus, notes and the palette, and the colours that mark the
         // pane in use and what programs have to say.

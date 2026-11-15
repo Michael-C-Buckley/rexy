@@ -4,7 +4,7 @@ use eframe::egui::{self, Align2, Key, Margin, Modifiers, Popup, Rect};
 use serde_json::Value;
 
 use super::{
-    App, input,
+    App, commands, input,
     keymap::{self, Binding, FORWARD, Step},
     palette,
     style::{BODY, DIM, SMALL, bold, hint},
@@ -57,8 +57,10 @@ impl App {
     }
 
     /// Take this frame's key presses that the keymap binds, and do what they are
-    /// bound to. What is left is the terminal's.
-    pub(super) fn shortcuts(&mut self, ctx: &egui::Context, view: &View) {
+    /// bound to, on the server whose `view` is on show. What is left is the
+    /// terminal's. The keymap is `home`'s, as Rex has it: a device follows its
+    /// home for its keys, wherever the session it shows is.
+    pub(super) fn shortcuts(&mut self, ctx: &egui::Context, home: &View, view: &View) {
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
         // A terminal's programs own Ctrl+C, X and V. In a text field they mean
         // what they usually do.
@@ -72,8 +74,8 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
             }
         }
-        // A server's keymap holds while the server can be asked to act on it.
-        self.keys.follow(view.keymap.as_ref().filter(|_| view.connected));
+        // It holds while home is there. Without home the keys are this client's own.
+        self.keys.follow(home.keymap.as_ref().filter(|_| home.connected));
         self.keyboard.prefix = None;
         let press = |(index, event): (usize, &egui::Event)| match *event {
             egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } => {
@@ -224,7 +226,14 @@ impl App {
                 // shows, nor over a session that is not on show: but to have one shown.
                 let shown = request.session.is_none() || request.session == view.selected_session;
                 let ours = server == self.current && shown;
-                let plan = if request.name == "session.select" || ours {
+                // What another client asks waits on an answer, and is done only
+                // by the user's leave. What an action this client began asks in
+                // its turn is the user's own doing.
+                let remote = self.remembered.kept.remote;
+                let barred = request.call.is_some() && !commands::allowed(&request.name, remote);
+                let plan = if barred {
+                    Err(commands::BARRED)
+                } else if request.name == "session.select" || ours {
                     let (name, pane) = (&request.name, request.pane.as_deref());
                     self.standing(view).plan(name, &request.args, pane)
                 } else {

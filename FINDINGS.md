@@ -48,11 +48,11 @@ Second pass, from 7.6: request errors are now a type (`wire::Failed`: refused wi
 
 The new connection tests use a small fake server added to `tests/unit/backend.rs` (the start of step 3). Each was checked to fail with its fix undone.
 
-**2. Delete what is dead or stale.** *Done, unstaged, except the formatter setting, which is commit `ba10b86` (54 files, 1,116 fewer lines).* The `winit` line is gone and `resvg` is at 0.50: eight fewer packages in the lock file, and on a private headless GNOME Wayland session the window comes up undecorated with no helper processes. The `winit` dependency (4.1, 8.1) and then the `resvg` pin (8.2); `Item.more` and `Item.align` (section 3); the three README statements that contradict the code (section 8). Add `rustfmt.toml` in a commit of its own.
+**2. Delete what is dead or stale.** *Done: commit `7363806`, and the formatter setting in `ba10b86` (54 files, 1,116 fewer lines).* The `winit` line is gone and `resvg` is at 0.50: eight fewer packages in the lock file, and on a private headless GNOME Wayland session the window comes up undecorated with no helper processes. The `winit` dependency (4.1, 8.1) and then the `resvg` pin (8.2); `Item.more` and `Item.align` (section 3); the three README statements that contradict the code (section 8). Add `rustfmt.toml` in a commit of its own.
 
-**3. Add the fake-server test for the connection state machine (7.1)** before touching anything in step 4. The harness already exists in `work/review/`.
+**3. Add the fake-server test for the connection state machine (7.1)** before touching anything in step 4. *Two tests are in, unstaged: picking a tab, and feeding, taking and giving up the panes of a tab on show. They state today's behaviour and will change with the two decisions that rewrite it.* The harness already exists in `work/review/`.
 
-**4. Decide the five behaviour questions.** These are yours to call, and each one removes machinery:
+**4. Decide the five behaviour questions.** *Decided on 2026-11-14, as recommended: shortcuts follow home (done, unstaged); pane focus stays the window's own (no change); a tab's panes are taken when it comes on show (to do); a picked tab stays picked (to do); remote control sits behind a setting, off at first (done, unstaged).* Each one removes machinery:
 
 | Decision | Ref | Removes |
 |---|---|---|

@@ -39,6 +39,8 @@ pub struct Kept {
     pub shown: BTreeMap<String, [String; 2]>,
     /// The tabs the user wants to hear nothing from.
     pub muted: HashSet<String>,
+    /// Whether the server's other clients may have this window do things.
+    pub remote: bool,
 }
 
 impl Kept {
@@ -55,6 +57,7 @@ impl Kept {
             window: [0, 1].map(|side| window[side].clamp(LEAST_WINDOW[side], 16384.0)),
             shown: from_value(saved("shown")).unwrap_or_default(),
             muted: from_value(saved("muted")).unwrap_or_default(),
+            remote: from_value(saved("remote")).unwrap_or(false),
         }
     }
 
@@ -66,6 +69,7 @@ impl Kept {
             "window": self.window,
             "shown": self.shown,
             "muted": self.muted,
+            "remote": self.remote,
         })
     }
 
