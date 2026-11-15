@@ -1,50 +1,47 @@
 # Rex Lite
 
-A small native Linux client for [Rex](https://www.superlogical.com/rex). Rust 1.100, egui, and libghostty. Your servers, their sessions and their tabs in a quiet sidebar, or tabs along the top if you would rather, and the terminal, set in Inter and JetBrains Mono.
+A small, fast, native Linux client for [Rex](https://www.superlogical.com/rex), built with Rust, egui and libghostty.
 
-Early working client. Closing the window leaves server sessions running. Connecting never starts or installs a server.
+![Rex Lite showing a split tab: an editor, a chart drawn in the terminal and a training log, beside a sidebar of sessions on three servers](assets/screenshot.png)
 
-## Run
+Every Rex server you use, with its sessions and tabs, in one window: a sidebar that tells you what each agent is doing, split panes, and a Ghostty terminal in each of them. Closing the window leaves your sessions running, and connecting never starts or installs a server.
 
-Start your existing Rex server, then:
+Rex Lite is an unofficial client and is not affiliated with Superlogical. It is early software for Linux, on Wayland and X11.
 
-```sh
-./scripts/dev run --release
-```
+## Features
 
-With no `--server`, the window opens on your Rex home: the server `REX_HOME` names, or the one chosen with `rex home set`. With neither it is this machine's own server, at `$XDG_RUNTIME_DIR/rex/server.sock` (or `/run/user/<uid>/rex/server.sock`). `REX_SERVER` is not read: in a Rex terminal it names that terminal's server, and Rex does not take it for your home either. An explicit endpoint takes precedence:
+- **Every server in one sidebar.** Your home server and every host it knows of, each with its sessions and tabs, reached over a Unix socket, SSH or WebSocket. Prefer tabs along the top? **Ctrl Shift B**.
+- **See what your agents are doing.** Each tab shows its program's icon, a status dot and a line in words: *Working*, *Needs approval*, *Question*, *Done*, *Error*, with progress or how long it has been that way. An activity view lists everything at work on every server under **Needs you**, **Done**, **Working** and **Idle**.
+- **Notifications that take you there.** What a tab reports while you are not looking at it becomes a desktop notification; clicking it shows the pane and focuses it. Any tab can be muted.
+- **Splits.** Split a pane in any direction, move it, drag or key its borders, balance the tab, or zoom one pane to fill it.
+- **A real terminal.** libghostty does the emulation, so programs behave as they do in Ghostty: Kitty graphics, hyperlinks, synchronized output, shell prompt marks, clipboard copies, IME input. Box-drawing characters are drawn as shapes, so frames have no gaps.
+- **Your Ghostty colours.** If Ghostty's configuration is on the machine, terminals take its theme, and the window is tinted to match.
+- **Selection, search and scrollback.** Select by character, word, line or block, find text through a pane's whole history, and jump between shell prompts.
+- **A command palette.** **Ctrl Shift K** finds a session or tab on any server; **Ctrl Shift P** lists every action with its keys.
+- **Rex's own keymap.** Keys come from your home server's `init.lua`, with sequences and modes, and the window can be driven with `rex -C`.
+- **Quick to switch.** The last eight tabs you looked at stay live in the background, so going back to one is instant. A lost connection is retried by itself.
 
-```sh
-./scripts/dev run --release -- --server unix:///path/to/server.sock
-./scripts/dev run --release -- --probe --server unix:///path/to/server.sock
-```
+## Install
 
-Once built, run `target/release/rex-lite` directly. `--probe` checks connection and Ghostty snapshot decoding without opening a window or sending terminal input.
+Rex Lite builds from source. You need:
 
-## Other servers
+- Rust 1.100 (pinned in `rust-toolchain.toml`)
+- Zig 0.17.x, to build libghostty (pinned in `mise.toml`)
+- `git`, which fetches Ghostty's source on the first build
 
-The sidebar lists the server you opened, then every host that server knows of, each with its sessions. Hosts are Rex's own list, shared with the `rex` CLI and other clients:
-
-```sh
-rex hosts add studio ssh://studio
-```
-
-Each window gives a server this machine's hostname as its label, so `rex -C` can tell one machine's window from another's.
-
-An `ssh://[user@]host[:port]` address is reached the way the Rex CLI reaches it: `ssh` asks that machine where its server listens and forwards the socket. It needs `rex` on the other machine and an `ssh` that connects without asking anything. A host's addresses are tried in order. A server that will not connect is tried again for as long as it takes, every fifteen seconds after the first tries, so the window can be opened before the server is started and comes back by itself after a network gap. One reached through `ssh` is tried twice more, then left alone until you press the retry button beside its name, so that a refused login is not repeated until the machine blocks you. A server older than API revision 13, or too new for this client, is refused in words that say what it speaks and what this client needs, and is not tried again. Sessions on other servers are only listed until you open one, and are left again when you open a session elsewhere.
-
-## Build
-
-Rust **1.100.0** is pinned in `rust-toolchain.toml`. libghostty requires **Zig 0.17.x**; `mise.toml` pins 0.17.1. With [mise](https://mise.jdx.dev/):
+With [mise](https://mise.jdx.dev/):
 
 ```sh
 mise install
+./scripts/icons    # optional: program icons, see below
 mise exec -- cargo build --release --locked
 ```
 
-Alternatively install Zig 0.17.x on `PATH` or set `ZIG` to its executable. `scripts/dev` also recognizes the verified local toolchain under the ignored `work/toolchains/` directory. The first build fetches Ghostty's source with `git`, at the commit its Rust bindings name, and builds it for speed whatever the Cargo profile (see `.cargo/config.toml`). No Zig runtime is needed by the finished app.
+Without mise, put Zig 0.17.x on `PATH` or point `ZIG` at it, and run `cargo build --release --locked`. The finished binary does not need Zig.
 
-## Desktop entry
+Program icons are Superlogical's and are not kept in this repository. `./scripts/icons` fetches them before a build; without them every tab shows a prompt icon. See [assets/icons/NOTICE.md](assets/icons/NOTICE.md) before passing on a build that includes them.
+
+To install the binary with a desktop entry and icon:
 
 ```sh
 install -Dm755 target/release/rex-lite ~/.local/bin/rex-lite
@@ -53,84 +50,143 @@ install -Dm644 assets/dev.rex-lite.client.svg -t ~/.local/share/icons/hicolor/sc
 gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 ```
 
-The entry is named for the window's app ID, which is how a Wayland desktop finds the window's icon. The last line matters where another program has left an icon cache in that directory: the desktop trusts the cache, and shows its default icon for one the cache does not list.
+## Usage
 
-## Controls
-
-- The sidebar lists every server, its sessions, and each session's tabs. Each row has two lines. A session with one tab is a single row: its name, and under it what the tab has to say, or the tab's name. The row over the terminals gives both in full, with the server's name if it is not the one you opened. Click a tab to show it, wherever it is. The tab on show is the window's own choice: it stays until you show another or it closes, whatever tab another client or the `rex` CLI has the server show, and a tab or a session made in the window is shown as it is made. `rex -C <client> do session.select` still has the window show a session or a tab. What you have the server do yourself does move it: a key bound in `init.lua` to a function, or an action of the configuration's, that changes the server's tab takes the window there. The server is first told the tab you are looking at, so that such a function acts on that one. `+` beside a server creates a session there, which the server names. Pointing at a session shows `+` for a new tab in it and `×` to close it; pointing at a tab shows `×` to close it. Closing a pane, a tab or a session happens at once when nothing runs in it but shells at their prompts, unless the session has several tabs. Otherwise it asks first, where you clicked: the `×` becomes **Close?**, or the menu's entry turns red, and a second click within a few seconds closes it. Moving the pointer away takes the question back.
-- The window remembers its size, the font size, whether the tabs are in the sidebar and how wide that is, and the session and tab it last showed on each server, in `rex-lite/state.json` under `$XDG_STATE_HOME` or `~/.local/state`. It opens on home where it was, if that session is still there. Its title names the session on show.
-- Drag the sidebar's edge to make it wider or narrower. Both lists of tabs turn to the tab on show when it changes, and a name too long for its place is given in full when pointed at.
-- **Ctrl Shift B** hides the sidebar and puts the tabs along the top instead, where the wheel turns them. The palette is one list to find things in. **Ctrl Shift K**, the **Search** field at the head of the sidebar, or the button at the left of those tabs opens it on the sessions of every server and the tabs of the session on show; **Ctrl Shift P** opens it on what can be done just now, each with its keys. Type, and it finds among all of them, whichever way it was opened. Walk it with the arrow keys or the pointer, and press **Enter** to take the row picked out. Opened on the sessions, that is the session shown before this one, so that **Ctrl Shift K** and **Enter** go back and forth between two. A name that finds no session creates one with that name; `+` beside a server creates it there.
-- Right-click a session or a tab to rename it, move it, or close it. Double-click renames too, in a field that opens on the name it was given, and dragging moves it among its like. A tab nobody has named goes by its terminal's title; renaming one to nothing gives it back that name.
-- The icon before a tab's name is that of the program in its foreground: Claude Code, Neovim, Python and some 150 more, from Rex's own icon set. A shell's prompt stands for shells and for programs without an icon. The set is Superlogical's and is not kept in this repository: run `./scripts/icons` once before building to fetch it, or every tab shows the prompt.
-- A tab says what its program has to say of itself, by a dot on the corner of its program's icon and in words. A blue dot: working. In amber, what it is waiting on you for: **Needs approval**, **Question**, **Needs sign-in**, or just **Waiting**. **Done** in green and **Error** in red are what it ended with, and **Bell** that it rang; these three stay until you have looked at the tab. In the sidebar the words are under the tab's name, with the line the program adds, and at the row's edge is how far along the work is where the program says, as **60%**, or how long the tab has been as it is. A tab with nothing to say gives its terminal's title there, if it goes by another name. A split tab's panes say the same in their headers. Along the top a tab says the same after its name where there is room for both, and where there is not it keeps its name and a dot of the same colour, and tells the rest when pointed at. Programs say all this with OSC 7501, as Rex's own tools do.
-- A picture a program sends with the Kitty graphics protocol, as `kitten icat` does, is shown where the program puts it, over the text or under it, and scrolls with the text. It is there again when the window is next opened. A pane keeps up to 128 MiB of pictures on each of its two screens, and lets the oldest go for new ones.
-- The button beside **Search**, at the head of the sidebar, turns the sidebar to a list of what is at work on every server: each pane whose program has something to say, and each coding agent at rest, under **Needs you**, **Done**, **Working** or **Idle**, with what it says it is doing and how long it has been so. A row goes by its session, and by its tab as well where the session has several. The button wears a dot for the most pressing of them. Click a row to go to its pane. While the list is on show, the session and its tab have no rows of their own: renaming either opens its field in the row over the terminals, in place of the name, and a tab asked to close asks again there.
-- What a tab has to say while you are not looking at it also goes to the desktop as a notification, which says which tab, session and server it is from: the words above, and any notice the program sends for itself (OSC 9 or 777). Looking at the pane takes its notification back, and clicking the notification shows the pane and puts the keyboard in it. A pane counts as looked at only while its tab is on show and the window is the one in use. One that is out of sight there does not count: behind a zoomed pane, or in a floating layer that another client has minimized. Clicking its notification brings it out. So does picking it from the list of the panes out of sight, which a button at the top opens whenever the tab on show has any: getting to a tab never rearranges it. This needs a notification service on the session's D-Bus, as GNOME, KDE and most desktops have; without one, nothing is sent and nothing else changes.
-- **Mute Tab**, in a tab's menu, silences all of that for the tab. Muted tabs are remembered on this computer with the rest, and no server is told.
-- Three buttons stand together at the top, after the tabs or ahead of the session's name: `+` for a new tab, and two that split the focused pane right or down, as **Ctrl Shift D** and **Ctrl Alt D** do. The palette also splits it left or up, and moves it left, right, up or down: it changes places with the pane on that side. Drag the line between two panes to give one room from the other, and double-click it to give both the same. **Ctrl Alt Shift** and an arrow moves the border of the focused pane's split that way, and **Ctrl Alt =** gives every pane of the tab as much room as its neighbours. Panes take a moment to move to a new arrangement. There is none to drag while one pane fills the tab, or while a floating pane is on show.
-- Click a pane or its header to focus it, or press **Ctrl Alt** and an arrow to move to the pane on that side. Each pane of a split tab is a card of its own: the focused one has a blue line around it, and the others step back a little. A pane is the size its owner gives it. The window takes the panes of a tab as the tab comes on show, so that they fit the window you are looking at; another client that shows the tab after that takes them in its turn, and they are this window's again when you click or type in one.
-- The last eight tabs shown on a server are kept fed while they are out of sight, so going back to one, in any session, shows it at once and as it now is; a tab not among them takes a moment to fetch. The window stays in their sessions for that. It gives up the panes of a session when another comes on show, as leaving the session would, so that another client there has them at its own size.
-- **Ctrl Shift Enter** zooms the focused pane, so that it fills the tab, and pressed again restores the others. **Ctrl Shift W** closes it, asking to be pressed again if a program is running in it; a tab closes with its last pane. The focused pane of a split tab has both as buttons in its header, as has any pane pointed at, and the pane menu has them too.
-- **Ctrl Tab** and **Ctrl Shift Tab** show the next and the previous tab of the session, round and round. So do **Ctrl PageDown** and **Ctrl PageUp**. **Ctrl Shift PageUp** and **Ctrl Shift PageDown** move the tab on show back or forward among them.
-- Drag to select; double-click selects a word and triple-click a line, whole where they wrap, and dragging on from either selects by words or by lines. **Shift** and a click reach the selection to there, **Ctrl Alt** and a drag select a block of columns, and a drag held past the top or the bottom of a pane scrolls it and goes on selecting. What is selected stays with its text while the pane goes on, into its history too. **Ctrl Shift C** copies, **Ctrl Shift V** pastes, to and from the desktop's clipboard, and the pane menu offers both. **Esc** lets go of a selection, and so does typing. **Select All in Pane**, in the palette, selects all a pane holds. What you select is also the desktop's selection, which a middle click pastes, here or in any other program. **Shift** overrides a program's mouse capture for selection, the wheel and the middle click.
-- **Ctrl Shift F** finds text in the focused pane, through all of its history: type, and the match nearest the end is selected and brought into view, clear of the field, with a count of them all. **Enter** goes to the match before it, **Shift Enter** to the one after, round and round. **Esc** closes the field and leaves the match selected. Letters match in either case.
-- The wheel moves through a terminal's history, three lines a notch. **Shift PageUp** and **Shift PageDown** move a screen at a time, **Shift Home** and **Shift End** go to the top and the bottom, and **Ctrl Shift Up** and **Ctrl Shift Down** to the previous and the next shell prompt, where the shell marks them (OSC 133). A pane that is scrolled back says so at its foot, and a mark at its edge shows how far back; click the words, or type, to return. A program that fills the screen, such as `less` or an editor, keeps no history: there these keys are the program's, and the wheel sends it arrow keys or, if it tracks the mouse, its own wheel steps.
-- Hold **Ctrl** over a link to underline it and be told where it leads, and click to open it with `xdg-open`. A link is an `http`, `https`, `ftp` or `mailto` address, written out in the text or marked by a program (OSC 8). A `file` link is never opened: the terminal may be showing another machine.
-- A program that asks to be told when it gains and loses the user (DEC mode 1004), as editors and agents do, is told when this window stops being the one in use and when it is again. The server tells it when the keyboard moves from pane to pane.
-- A program can copy to the clipboard (OSC 52) from the pane you are at, while the window is the one you are at. None can read the clipboard.
-- **Ctrl Shift N**: new session. **Ctrl Shift T**: new tab.
-- **Ctrl + / - / 0**: terminal font size. With Alt as well, these go to the terminal's programs. **Ctrl C** still interrupts them.
-- After the first keys of a sequence, and while a mode is entered, the keys that can be pressed next are listed at the foot of the terminals with what each does.
-- These keys are only where they start. They are Rex's: the server's `init.lua` rebinds them with `rex.bind`, frees them for the terminal with `rex.unbind`, and adds sequences such as `ctrl+b>c`, modes, and actions of its own, which the palette lists; `rex config reload` applies it at once. The keymap is your home's, whichever server's session is on show, as Rex has it: no other server is asked for one. An action that home's `init.lua` defines is asked of the server on show, which has it only if its own configuration does. The window's actions go by Rex's names (`pane.split.right`, `client.tab.next`, `client.find.open` and so on; `rex -C <client> actions` lists them), and `rex -C <client> do pane.zoom` performs one from outside, while the window can be seen and Remote Control is on. It is off until you choose **Allow Remote Control** in the palette, as it is in Rex's own app, and that is remembered: until then another client of a server is refused whatever it asks of the window, with words that say why, except to have a session shown. With it on, any client of the server can paste your clipboard into a pane, type into one, or close one. A key held down repeats only where that helps: moving between tabs and panes, scrolling, and font size.
-- Nothing is shown while all is well. A lost connection says so over the last screen, which goes dim, with whether it is being tried again, and offers to reconnect. That screen is still there to be read: it scrolls through its history, and what is on it can be selected, found and copied. Nothing typed or clicked there is sent anywhere. A failed action says so briefly at the top of the terminals, after a red dot; click it to send it away.
-- The cursor of a shell at its prompt is a bar, as Ghostty gives it there. A program has the shape it asks for, or a block if it asks for none: solid, with the character under it in the background's colour. A pane without the keyboard has an outline. The cursor blinks at a prompt, and wherever its program asks that or asks nothing of it, while the window is the one in use.
-- A terminal has Ghostty's colours, where Ghostty's configuration is on this machine: those of the theme it names, and any it sets itself (`theme`, `background`, `foreground`, `cursor-color` and `palette`), read as the window opens. Rex has each client say its colours, and a pane shows its owner's, so one that another client owns keeps that client's until it is this window's. With no such configuration a terminal keeps the colours it has. Each one is a card in those colours, and the window around the cards takes a dark terminal's background, a little lighter. Menus and the palette are of the same hue, and the colours that mark the pane in use and what programs say are the theme's own blue, green, yellow and red, where those stand out from its background.
-- A shell at its prompt goes by its name and the directory it is in, as `zsh ~/code`. The server says where each terminal's program is, so the shell needs no setting up for it. A program in the foreground keeps the title it gives itself, and one that gives itself none goes by its own name. A new tab or split starts in the directory of the pane it is made from, and in this window's colours.
-- The characters that draw lines, rounded corners and blocks are drawn as shapes that fill their cells, so the frames of full-screen programs have no gaps between rows. Double lines and diagonals are still the font's.
-- The window draws its own frame. Drag the row along its top to move it, and click that row twice to spread the window over the screen or bring it back; drag an edge or a corner to size it. The three buttons at the right of the row put it away, spread it and close it. Its corners are round, and square while it fills the screen.
-
-## What is here
-
-Several servers at once, over Unix sockets and SSH. Sessions and tabs can be created, renamed, reordered and closed, and panes split, moved, resized, zoomed and closed. Server-defined tabs and splits, live terminal titles, foreground programs and program status, desktop notifications, links, copies made by programs, terminal snapshot restoration, live output, keyboard and mouse input, IME events, selection that stays with its text, copy/paste, local scrollback and finding text in it, and reconnection with fresh snapshots. Unix sockets have a disposable-server integration test. WebSocket/TLS transports are implemented but need remote-host testing. A host name without a scheme, such as a Tailscale name, is tried as Rex tries it: HTTPS on port 443, HTTPS on 7297, then HTTP on 7297.
-
-This first version does not include adding or editing hosts from the window, installing Rex on another machine, or animated pictures. It follows the Rex keymap, with sequences and modes, but has only the actions it can do: no floating panes, moving panes between tabs, or host dialogs. Keyboard layouts and IMEs need broader hands-on testing. It targets Linux; other platforms are not claimed.
-
-## Small by construction
-
-- Each server has one network runtime for control and terminal transport. Each pane that is kept fed, on show or not, has a separate Ghostty worker; parsing never runs on the UI thread.
-- Ordered terminal bytes use bounded queues with backpressure. Redraw notices coalesce; the UI reads the newest immutable frame.
-- Rows that have not changed are shared between frames, also when a scroll moves them. The renderer caches shaped text by row identity; it does not build widgets for individual cells.
-- Terminal workers sleep when idle, and one whose pane is out of sight takes in its output without drawing it. The last eight tabs shown on a server keep their streams. A tab that is not among them releases its own, and restores a fresh snapshot when it is shown again.
-- A snapshot begins with the screen, which is drawn as soon as it has come: the history behind it follows, and is there to scroll through once it has. Initial limits are 32 MiB scrollback and about 1 MiB queued input per fed pane. History is held compressed until it is scrolled to: what arrives with a snapshot as it arrives, and what is written after once the terminal has been quiet for two seconds.
-- Failed input is reported and never replayed after reconnection. A picture is taken only as pixels sent in its escape: the Kitty protocol's other ways, by which a program names a file, a temporary file or shared memory for the terminal to read, would be read on this machine and are refused.
-
-## Tests
-
-All test code is under `tests/`. Small unit modules in `tests/unit/` retain access to private implementation details without exposing those details as public API.
+Start your Rex server, then run:
 
 ```sh
+rex-lite
+```
+
+With no arguments the window opens on your Rex home: the server named by `REX_HOME`, or the one chosen with `rex home set`, or else this machine's own server at `$XDG_RUNTIME_DIR/rex/server.sock`. To open another:
+
+```sh
+rex-lite --server unix:///path/to/server.sock
+rex-lite --server ssh://studio
+rex-lite --server studio.example.ts.net
+```
+
+`--probe` checks that a server can be reached and its terminals decoded, without opening a window or sending any input.
+
+### Other servers
+
+The sidebar lists the server you opened, then every host that server knows of. Hosts are Rex's own list, shared with the `rex` CLI and its other clients:
+
+```sh
+rex hosts add studio ssh://studio
+```
+
+| Address | How it is reached |
+|---|---|
+| `unix:///path` | The socket directly. |
+| `ssh://[user@]host[:port]` | As the Rex CLI does it: `ssh` asks that machine where its server listens and forwards the socket. Needs `rex` there and an `ssh` that connects without prompting. |
+| `ws://`, `wss://` | WebSocket, with or without TLS. |
+| A bare host name | HTTPS on port 443, then HTTPS on 7297, then HTTP on 7297, as Rex tries it. |
+
+A server that cannot be reached is retried every fifteen seconds, so the window can be opened before the server is up. One reached through `ssh` is tried three times and then waits for the retry button beside its name, so that a refused login is not repeated until the machine blocks you.
+
+## Keys
+
+These are the defaults. They are Rex's keys: `rex.bind` and `rex.unbind` in your home server's `init.lua` change them and add sequences such as `ctrl+b>c`, modes, and actions of your own. `rex config reload` applies a change at once.
+
+| Keys | Action |
+|---|---|
+| **Ctrl Shift K** | Find a session or tab |
+| **Ctrl Shift P** | Command palette |
+| **Ctrl Shift B** | Sidebar, or tabs along the top |
+| **Ctrl Shift N** | New session |
+| **Ctrl Shift T** | New tab |
+| **Ctrl Tab**, **Ctrl Shift Tab** | Next and previous tab (also **Ctrl PageDown**, **Ctrl PageUp**) |
+| **Ctrl Shift PageUp**, **Ctrl Shift PageDown** | Move the tab backward or forward |
+| **Ctrl Shift D**, **Ctrl Alt D** | Split the pane right or down |
+| **Ctrl Alt** + arrow | Focus the pane on that side |
+| **Ctrl Alt Shift** + arrow | Move the pane's border that way |
+| **Ctrl Alt =** | Give every pane equal room |
+| **Ctrl Shift Enter** | Zoom the pane |
+| **Ctrl Shift W** | Close the pane |
+| **Ctrl Shift C**, **Ctrl Shift V** | Copy and paste |
+| **Ctrl Shift F** | Find in the pane (**Enter** and **Shift Enter** step through matches) |
+| **Shift PageUp**, **Shift PageDown** | Scroll a screen |
+| **Shift Home**, **Shift End** | Scroll to the top or the bottom |
+| **Ctrl Shift Up**, **Ctrl Shift Down** | Previous and next shell prompt |
+| **Ctrl +**, **Ctrl -**, **Ctrl 0** | Font size |
+
+After the first keys of a sequence, or inside a mode, the keys that can come next are listed at the foot of the window.
+
+With the mouse:
+
+- Drag to select; double-click a word, triple-click a line. **Ctrl Alt** and a drag selects a block. A selection is also the desktop's primary selection, which a middle click pastes.
+- **Shift** overrides a program's mouse capture.
+- Hold **Ctrl** over a link and click to open it.
+- Drag the line between two panes to resize them; double-click it to even them out.
+- Right-click a session, tab or pane for its menu. Double-click a name to rename it, and drag a session or tab to reorder it.
+
+## Good to know
+
+**Your tab stays put.** The tab on show is the window's own choice. It does not follow what another client or the `rex` CLI has the server show, though a key you bind in `init.lua` to change tabs does move it.
+
+**Panes are sized by their owner.** The window takes the panes of a tab when you show it, so they fit this window. Another client that shows the tab later takes them in turn, and they are this window's again when you click or type in one.
+
+**Closing asks only when it matters.** A pane, tab or session with nothing running but shells at their prompts closes at once. Otherwise the `×` turns into **Close?** and a second click confirms.
+
+**Remote control is off by default.** `rex -C <client> do pane.zoom` and the like work only after you choose **Allow Remote Control** in the palette. With it on, any client of the server can type into a pane, paste your clipboard or close things. Asking the window to show a session is always allowed.
+
+**Programs cannot reach your machine.** A program can copy to the clipboard but never read it. `file` links are never opened, since the terminal may be showing another machine. Pictures are accepted only as pixels sent in the escape itself: the Kitty protocol's file and shared-memory transfers would be read on this machine, and are refused.
+
+**State.** Window size, font size, sidebar layout, muted tabs and the tab last shown on each server are kept in `rex-lite/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
+
+**Notifications** need a notification service on the session's D-Bus, as GNOME, KDE and most desktops provide. Without one, nothing is sent and nothing else changes.
+
+## Not yet
+
+- Adding or editing hosts from the window, or installing Rex on another machine
+- Floating panes, and moving a pane to another tab
+- Animated pictures
+- Platforms other than Linux
+
+Rex Lite speaks revision 13 of Rex's control API. A server that is older, or too new, is refused with a message that says what each side speaks. Keyboard layouts and IMEs need broader testing.
+
+## How it works
+
+- Each server has one network runtime for control and terminal traffic. Each live pane has its own Ghostty worker thread; parsing never runs on the UI thread.
+- Terminal bytes travel through bounded queues with backpressure and are never dropped. Redraw requests coalesce, and the UI reads the newest immutable frame.
+- Rows that have not changed are shared between frames. The renderer caches shaped text by row and never builds a widget per cell.
+- Workers sleep when idle. A pane that is out of sight keeps reading its output but draws nothing. Only the last eight tabs shown on a server keep their streams; any other is restored from a fresh snapshot when shown.
+- A snapshot starts with the screen, which is drawn as soon as it arrives, and the history follows. Each pane keeps up to 32 MiB of scrollback, held compressed until it is scrolled to, and up to 128 MiB of pictures per screen.
+- Input that fails to send is reported and never replayed after a reconnection.
+
+## Development
+
+`scripts/dev` runs `cargo` with the local Zig toolchain found for you:
+
+```sh
+./scripts/dev run --release
 ./scripts/dev test --locked
 ./scripts/dev clippy --locked --all-targets -- -D warnings
 ./scripts/dev fmt --all -- --check
 ```
 
-The complete live/native check creates its own disposable Rex server, Xvfb display, and D-Bus session, then cleans them up:
+All test code lives under `tests/`. Unit modules in `tests/unit/` are compiled into the crate, so they can test private details without making them public.
+
+The end-to-end check starts its own disposable Rex server, Xvfb display and D-Bus session, drives the real window, and cleans up after itself:
 
 ```sh
 ./scripts/dev build --locked
-python3 tests/smoke.py
+python3 tests/smoke.py                                  # the debug build
+python3 tests/smoke.py --binary target/release/rex-lite
 ```
 
-It tries the debug build, which is the quick one to make. Before a release, try that build too, with `--binary target/release/rex-lite`.
+It needs `rex`, `Xvfb`, `dbus-run-session`, `xclip`, ImageMagick's `import` and the X11/XTest libraries. It runs on X11; Wayland is checked by hand.
 
-This additionally needs `rex`, `Xvfb`, `dbus-run-session`, ImageMagick's `import` (for optional screenshots), `xclip`, and the X11/XTest libraries. It checks real typing, Ctrl+C, selection/copy/paste, that copies reach other programs and theirs come back, and typing immediately after clearing a selection. This is X11 validation; Wayland is checked by hand.
-
-For a backend-only run, `tests/live.rs` is opt-in and requires `REX_LITE_TEST_SERVER` pointing to a disposable Unix socket under this project's `work/` directory. It sends input and creates panes/tabs; never aim it at personal sessions.
+`tests/live.rs` exercises the backend alone against a server you name. It sends input and creates tabs and panes, so point it only at a disposable server, never at your own sessions:
 
 ```sh
 REX_LITE_TEST_SERVER="unix://$PWD/work/smoke/server.sock" \
   ./scripts/dev test --test live -- --ignored --nocapture --test-threads=1
 ```
 
-See [THIRD_PARTY.md](THIRD_PARTY.md) for protocol references and adapted terminal code attribution.
+## Credits
+
+Rex is made by [Superlogical](https://www.superlogical.com/rex). Terminal emulation is [Ghostty](https://ghostty.org)'s, through [libghostty-rs](https://github.com/Uzaaft/libghostty-rs), and the interface is [egui](https://github.com/emilk/egui). Parts of the terminal metadata handling are adapted from [rex-rune](https://github.com/shuv1337/rex-rune). The fonts are Inter and JetBrains Mono.
+
+See [THIRD_PARTY.md](THIRD_PARTY.md) for licences and attribution.
