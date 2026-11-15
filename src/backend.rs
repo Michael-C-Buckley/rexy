@@ -1956,7 +1956,9 @@ fn shell() -> Value {
     json!({"block": {"flavor": "com.superlogical.terminal.shell"}})
 }
 
-/// Read-only connectivity probe used by --probe: no sessions are created and no input is sent.
+/// The connectivity probe that `--probe` runs. It makes no session and sends no
+/// input, but it is a client like any other: it joins the first session, as a
+/// window does, and asks there for the panes that no other client has.
 pub fn probe(endpoint: String, timeout: Duration) -> Result<String> {
     let client = Client::spawn(vec![endpoint], Arc::new(|| {}), Herald::new().0, None, None);
     let started = std::time::Instant::now();

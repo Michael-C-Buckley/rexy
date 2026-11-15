@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::program::Program;
 use eframe::egui::{
-    self, Align, Align2, Color32, FontData, FontFamily, FontId, Pos2, Rect, Sense, Stroke,
-    StrokeKind, Vec2,
+    self, Align2, Color32, FontData, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
+    Vec2,
     emath::GuiRounding,
     epaint::FontColorTransferFunction,
     epaint::text::{FontTweak, VariationCoords},
@@ -31,7 +31,7 @@ const AMBER: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x2e);
 const RED: Color32 = Color32::from_rgb(0xf6, 0x61, 0x51);
 /// Something has finished.
 const GREEN: Color32 = Color32::from_rgb(0x57, 0xe3, 0x89);
-/// What follows a name and says more of the same thing: fainter than `DIM`.
+/// What is said under a name: fainter than `DIM`.
 const FAINT: Color32 = white(110);
 /// Fills of flat controls: selected, and pressed. Under the pointer one is as
 /// white as `HOVER` says, of 255.
@@ -534,9 +534,6 @@ pub fn confirm(ui: &egui::Ui, edge: Pos2, id: egui::Id, word: &str) -> egui::Res
 #[derive(Default)]
 pub struct Item<'a> {
     pub label: &'a str,
-    /// What else there is to say of it, after its name and fainter, in whatever
-    /// room the name leaves.
-    pub more: &'a str,
     /// A second line, under its name, smaller and fainter. A row with one keeps
     /// its mark and its buttons beside the name.
     pub under: &'a str,
@@ -546,7 +543,6 @@ pub struct Item<'a> {
     /// The icon of its program, ahead of the label.
     pub icon: Option<Program>,
     pub selected: bool,
-    pub align: Align,
     /// A lesser row that heads the rows beneath it.
     pub caption: bool,
     /// It opens a list.
@@ -608,8 +604,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let lift = if item.under.is_empty() { 0.0 } else { LINE };
     let mid = rect.center().y - lift;
     // Room at the trailing edge is the label's to lose, so that it never moves.
-    let word = item.word.filter(|_| item.align != Align::Center);
-    let word = word.map(|word| {
+    let word = item.word.map(|word| {
         // In the colour of the mark it goes with, where there is one.
         let (font, color) = (FontId::proportional(SMALL), item.mark.map_or(DIM, |mark| mark.1));
         ui.painter().layout_no_wrap(word.to_owned(), font, color)
@@ -644,21 +639,10 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         _ => FontId::proportional(BODY),
     };
     let label = fitted(ui, item.label, font, color, text.width() - lead);
-    // What else it has to say has the room its name leaves, if that is any.
-    let left = text.width() - lead - label.size().x - 8.0;
-    let more = (left > 24.0 && !item.more.is_empty())
-        .then(|| fitted(ui, item.more, FontId::proportional(BODY), FAINT, left));
-    let lost = !item.more.is_empty() && more.as_ref().is_none_or(|more| more.elided);
     let cut = label.elided;
     let needs = label.size() + egui::vec2(lead, 0.0);
-    // A centred name is at the middle of its row while it fits there, and has
-    // all the room there is when it does not.
-    let middle = text.with_min_x(rect.left() + room);
-    if item.align == Align::Center && needs.x <= middle.width() {
-        text = middle;
-    }
-    let anchor = Align2([item.align, Align::Center]);
-    let place = anchor.align_size_within_rect(needs, text).translate(egui::vec2(0.0, -lift));
+    let place = Align2::LEFT_CENTER.align_size_within_rect(needs, text);
+    let place = place.translate(egui::vec2(0.0, -lift));
     if let Some(program) = item.icon {
         let left = egui::pos2(place.left(), rect.center().y);
         let ink = if item.selected { tints(ui.ctx()).accent } else { DIM };
@@ -675,10 +659,6 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         under
     });
     let low = under.is_some_and(|under| under.elided);
-    if let Some(more) = more {
-        let after = name + egui::vec2(label.size().x + 8.0, 0.0);
-        ui.painter().galley(after, more, FAINT);
-    }
     ui.painter().galley(name, label, color);
     let mut pressed = None;
     if let Some(asks) = asks {
@@ -711,13 +691,10 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         }
         paint_caps(ui, keys, egui::pos2(rect.right() - 10.0, mid));
     }
-    let response = if cut || lost || low || !item.tip.is_empty() {
+    let response = if cut || low || !item.tip.is_empty() {
         response.on_hover_ui(|ui| {
             if cut {
                 ui.label(item.label);
-            }
-            if lost {
-                ui.label(item.more);
             }
             if low {
                 ui.label(item.under);

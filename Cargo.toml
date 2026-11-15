@@ -21,8 +21,8 @@ libc = "0.2"
 percent-encoding = "2"
 # The window's own display and surface, for the three below.
 raw-window-handle = "0.6"
-# Draws the program icons. This release shares tiny-skia with the title bar's.
-resvg = { version = "0.46", default-features = false }
+# Draws the program icons.
+resvg = { version = "0.50", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "sync", "io-util", "process"] }
@@ -33,9 +33,6 @@ url = "2"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
-# Not used directly: GNOME on Wayland leaves the title bar to the client, and this draws it.
-winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
-
 # Speaks to the desktop's notification service.
 zbus = { version = "6.3", default-features = false, features = ["tokio"] }
 

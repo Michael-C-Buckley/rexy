@@ -98,11 +98,11 @@ This first version does not include adding or editing hosts from the window, ins
 
 ## Small by construction
 
-- Each server has one network runtime for control and terminal transport. Each visible pane has a separate Ghostty worker; parsing never runs on the UI thread.
+- Each server has one network runtime for control and terminal transport. Each pane that is kept fed, on show or not, has a separate Ghostty worker; parsing never runs on the UI thread.
 - Ordered terminal bytes use bounded queues with backpressure. Redraw notices coalesce; the UI reads the newest immutable frame.
 - Rows that have not changed are shared between frames, also when a scroll moves them. The renderer caches shaped text by row identity; it does not build widgets for individual cells.
-- Terminal workers sleep when idle. Hidden tabs release their streams and restore a fresh snapshot when selected again.
-- The first frame waits for a complete streamed snapshot. Initial limits are 32 MiB scrollback and about 1 MiB queued input per visible pane. History that arrives with a snapshot is held compressed until it is scrolled to.
+- Terminal workers sleep when idle. The last eight tabs shown on a server keep their streams. A tab that is not among them releases its own, and restores a fresh snapshot when it is shown again.
+- The first frame waits for a complete streamed snapshot. Initial limits are 32 MiB scrollback and about 1 MiB queued input per fed pane. History that arrives with a snapshot is held compressed until it is scrolled to.
 - Failed input is reported and never replayed after reconnection. A picture is taken only as pixels sent in its escape: the Kitty protocol's other ways, by which a program names a file, a temporary file or shared memory for the terminal to read, would be read on this machine and are refused.
 
 ## Tests
