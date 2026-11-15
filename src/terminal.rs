@@ -111,6 +111,8 @@ pub struct Frame {
     /// The theme's red, green, yellow and blue.
     pub ansi: [u32; 4],
     pub cursor_shape: CursorShape,
+    /// The cursor blinks: its program asked for that, or asked nothing of it.
+    pub cursor_blink: bool,
     pub mouse_tracking: bool,
     /// The alternate screen is showing, which keeps no history to scroll through.
     pub alternate_screen: bool,
@@ -385,6 +387,14 @@ fn configure(terminal: &mut Terminal) -> Result<()> {
     terminal.set_kitty_image_from_shared_mem_allowed(false)?;
     terminal.set_kitty_image_temp_file_dir(None)?;
     terminal.set_scrollback_max_bytes(Some(SCROLLBACK_BYTES))?;
+    // A cursor its program has asked nothing of blinks, as Ghostty's does. The
+    // server's own is steady, and its snapshot cannot say whether that was asked
+    // for: a steady block is taken for the cursor nobody asked anything of.
+    terminal.set_default_cursor_blink(Some(true))?;
+    let cursor = RenderState::new()?.update(terminal)?.cursor()?;
+    if cursor.visual_style == CursorVisualStyle::Block && !cursor.blinking {
+        terminal.vt_write(b"\x1b[0 q");
+    }
     Ok(())
 }
 
@@ -733,6 +743,7 @@ impl Renderer {
             CursorVisualStyle::BlockHollow => CursorShape::Hollow,
             _ => CursorShape::Block,
         };
+        let cursor_blink = cursor.blinking;
         let cursor = cursor
             .viewport
             .filter(|_| cursor.visible)
@@ -747,7 +758,8 @@ impl Renderer {
         if dirty == Dirty::Clean
             && !recolored
             && self.previous.as_ref().is_some_and(|old| {
-                (old.cursor, old.cursor_shape) == (cursor, cursor_shape)
+                (old.cursor, old.cursor_shape, old.cursor_blink)
+                    == (cursor, cursor_shape, cursor_blink)
                     && (old.scroll_offset == 0) == (scroll_offset == 0)
                     && old.mouse_tracking == mouse_tracking
                     && old.alternate_screen == alternate_screen
@@ -809,6 +821,7 @@ impl Renderer {
             cursor_color: colors.cursor.map(rgb).unwrap_or(fg),
             ansi: [1, 2, 3, 4].map(|index: usize| rgb(colors.palette[index])),
             cursor_shape,
+            cursor_blink,
             selected,
             found: self.found,
         });

@@ -251,7 +251,7 @@ impl App {
             }
             scroll = pointer.wheel(Wheel::of(frame, tracking), state, &mut actions);
             // A screen that is no longer kept up shows a cursor nobody is at.
-            state.paint(ui.painter(), grid, frame, active && live);
+            state.paint(ui.painter(), grid, frame, active && live, pane.idle);
             for &(row, start, end) in link.iter().flat_map(|link| &link.spans) {
                 let span = grid.span(row, start, end).intersect(grid.rect);
                 let line = Stroke::new(1.0, rgb(frame.fg));

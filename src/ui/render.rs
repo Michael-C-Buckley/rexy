@@ -1,5 +1,5 @@
 //! Per-pane view state and painting. Shaped text is cached by row identity.
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use libghostty_vt::style::Underline;
@@ -14,6 +14,8 @@ pub fn rgb(value: u32) -> Color32 {
     Color32::from_rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
 
+/// How long a blinking cursor is lit, and as long unlit, in seconds: Ghostty's own.
+const BLINK: f64 = 0.6;
 /// How far, in points, a glyph may reach past its cells before it is clipped.
 const SPILL: f32 = 1.0;
 
@@ -72,6 +74,8 @@ pub struct PaneView {
     pub wheel: f32,
     pub mouse_button: Option<egui::PointerButton>,
     pub mouse_cell: Option<(u16, u16)>,
+    /// Where the cursor was last drawn, and when it came to be there.
+    cursor: Option<((u16, u16), f64)>,
     /// Shaped rows, by the address of the row each was shaped from, and holds.
     cached_rows: HashMap<usize, CachedRow>,
     /// A galley of egui's own. The cached rows are good while egui still holds it.
@@ -97,7 +101,17 @@ struct GlyphRun {
 }
 
 impl PaneView {
-    pub fn paint(&mut self, painter: &egui::Painter, grid: Grid, frame: &Frame, focused: bool) {
+    /// Draw a terminal's screen. `focused` says the keyboard is in it, and
+    /// `prompt` that its shell is at its prompt. A cursor that blinks asks to
+    /// be drawn again when it next changes.
+    pub fn paint(
+        &mut self,
+        painter: &egui::Painter,
+        grid: Grid,
+        frame: &Frame,
+        focused: bool,
+        prompt: bool,
+    ) {
         // A galley is shaped for one font size and display scale, and points into
         // egui's font atlas. egui drops every galley it holds when the fonts or the
         // atlas are made anew, and gives a new one for a new size or scale. So the
@@ -198,7 +212,30 @@ impl PaneView {
             let rect = grid.span(y.into(), x.into(), usize::from(x) + 1);
             let color = rgb(frame.cursor_color);
             let outline = Stroke::new(1.0, color);
-            match frame.cursor_shape {
+            // A shell at its prompt has a bar, as Ghostty gives it there. A
+            // program has the shape it asks for, and a block if it asks for none.
+            let shape = match frame.cursor_shape {
+                CursorShape::Block if prompt => CursorShape::Bar,
+                shape => shape,
+            };
+            // It blinks where its program asks that or nothing of it, and at a
+            // prompt, while the keyboard and the window are here. It is lit as
+            // it moves.
+            let (now, here) = painter.ctx().input(|i| (i.time, i.focused));
+            let since = match self.cursor {
+                Some((at, since)) if at == (x, y) => since,
+                _ => now,
+            };
+            self.cursor = Some(((x, y), since));
+            let still = now - since;
+            if focused && here && (frame.cursor_blink || prompt) {
+                let left = Duration::from_secs_f64(BLINK - still % BLINK);
+                painter.ctx().request_repaint_after(left);
+                if (still / BLINK) as u64 % 2 == 1 {
+                    return;
+                }
+            }
+            match shape {
                 CursorShape::Bar if focused => {
                     painter.rect_filled(rect.with_max_x(rect.left() + 2.0), 0, color);
                 }

@@ -25,7 +25,7 @@ fn paint(ctx: &egui::Context, view: &mut PaneView, frame: &Frame, scale: f32) ->
     window.native_pixels_per_point = Some(scale);
     let mut output = ctx.run_ui(input, |ui| {
         let grid = Grid::new(ui.ctx(), ui.max_rect(), SIZE);
-        view.paint(ui.painter(), grid, frame, true);
+        view.paint(ui.painter(), grid, frame, true, false);
     });
     output.textures_delta.clear();
     output

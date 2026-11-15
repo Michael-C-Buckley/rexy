@@ -323,8 +323,15 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         v.selected_window.as_ref() == Some(&window) && screen(v, &pane).contains("paste-verified")
     });
 
-    // A tab goes by its name if it has one, and otherwise by its terminal's title.
+    // A tab shown before is kept fed while it is out of sight. Going back to
+    // one finds it drawn, with nothing to wait for.
     let tab = next.selected_window.clone().unwrap();
+    send(&client, show(&tab));
+    assert!(client.snapshot().panes().all(|pane| pane.frame.is_some()));
+    send(&client, show(&window));
+    assert!(screen(&client.snapshot(), &pane).contains("paste-verified"));
+
+    // A tab goes by its name if it has one, and otherwise by its terminal's title.
     let edit = |session: &str, window: Option<&str>, edit| Action::Edit {
         session: session.into(),
         window: window.map(str::to_owned),

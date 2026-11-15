@@ -21,7 +21,7 @@ use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use serde_json::{Value, json};
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     sync::{
         Arc, Mutex, MutexGuard,
@@ -45,6 +45,8 @@ const PROCESS: &str = "com.superlogical.terminal.process";
 const STATUS: &str = "com.superlogical.terminal.program_status";
 const FOLDER: &str = "com.superlogical.terminal.pwd";
 const COPIED: &str = "com.superlogical.terminal.clipboard_read";
+/// How many tabs are kept fed at once, the one on show among them.
+const WARM: usize = 8;
 /// The most a program may copy, and the most of it to ask for at a time.
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
 const COPY_PART_BYTES: usize = 960 * 1024;
@@ -304,9 +306,9 @@ fn retry(error: &anyhow::Error, failures: usize, near: bool) -> Option<Duration>
 struct Link {
     /// The server knows this client again by it, in the session it had joined.
     token: Option<String>,
-    /// The session this client has joined, from asking to until told it has left:
-    /// the one on show.
-    attached: Option<String>,
+    /// The sessions this client has joined, each from asking to until told it has
+    /// left: the one on show, and those of the other tabs kept fed.
+    attached: Vec<String>,
     /// The address that answered last, of the several a host name can stand for.
     target: Option<wire::Target>,
     /// What is known of every terminal on the server, shown or not.
@@ -469,7 +471,7 @@ enum Reply {
     View(String),
     /// Joining a session, and leaving one.
     Joined(String),
-    Left,
+    Left(String),
     /// The host list.
     Hosts,
     /// What this client's keys do.
@@ -544,8 +546,8 @@ struct Connection<'a> {
     hosts: String,
     /// The hash of the configuration that the keymap held came of.
     keys: String,
-    /// A request to join or to leave a session is on its way.
-    joining: bool,
+    /// The session that a request to join or to leave is on its way for.
+    joining: Option<String>,
     /// The number of the last asking to be shown something that the server has
     /// answered, and how many before it are yet to be.
     settled: u64,
@@ -555,8 +557,15 @@ struct Connection<'a> {
     making: Option<(String, u64)>,
     /// A pane this client has made or brought out, reported once it is on show.
     made: Option<String>,
-    /// One stream per terminal of the tab on show.
-    streams: HashMap<String, JoinHandle<()>>,
+    /// The tabs kept fed, the last shown first, each by its session and itself.
+    /// Going back to one finds it as it is, with nothing to fetch.
+    warm: Vec<(String, String)>,
+    /// One stream per terminal of those tabs, and whether its pane is on show.
+    streams: HashMap<String, (JoinHandle<()>, Arc<AtomicBool>)>,
+    /// The session last on show, whose panes are this client's to size.
+    held: Option<String>,
+    /// The panes on show that are another client's, and have been asked for.
+    asked: HashSet<String>,
     /// The fetching of the last text a program copied.
     copying: Option<JoinHandle<()>>,
     /// Where a border was last asked to go, for `divide` to ask of the server.
@@ -621,7 +630,8 @@ impl Block {
 
 impl Drop for Connection<'_> {
     fn drop(&mut self) {
-        for task in self.streams.values().chain(&self.copying) {
+        let streams = self.streams.values().map(|(task, _)| task);
+        for task in streams.chain(&self.copying) {
             task.abort();
         }
         // A terminal whose answers never came is not one the next connection knows.
@@ -636,15 +646,17 @@ impl<'a> Connection<'a> {
     async fn open(control: &Control, link: &'a mut Link, shared: &'a Shared) -> Result<Self> {
         let rpc = control.rpc.clone();
         let shown = shared.lock().view.selected_session.clone();
-        // A client the server knows again is still in the session it had joined,
-        // and owns what it owned there. It leaves that one unless it is still the
-        // one on show. A new client is in none.
-        let before = link.attached.clone().filter(|_| control.resumed);
-        if let Some(before) = before.filter(|before| Some(before) != shown.as_ref()) {
-            rpc.call("session.detach", json!({"session_id": before}))
-                .await?;
+        // A client the server knows again is still in the sessions it had joined,
+        // and owns what it owned there. It leaves each unless it is still the one
+        // on show: no tab is kept fed from one connection to the next. A new
+        // client is in none.
+        let before = std::mem::replace(&mut link.attached, shown.iter().cloned().collect());
+        for before in before.iter().filter(|_| control.resumed) {
+            if Some(before) != shown.as_ref() {
+                rpc.call("session.detach", json!({"session_id": before}))
+                    .await?;
+            }
         }
-        link.attached = shown.clone();
         // Events of the whole server, so that tabs not on show keep their titles too.
         let request =
             json!({"event_scope": "all", "attach_session_ids": shown.iter().collect::<Vec<_>>()});
@@ -683,19 +695,22 @@ impl<'a> Connection<'a> {
             asking: HashMap::new(),
             hosts: String::new(),
             keys: String::new(),
-            joining: false,
+            joining: None,
             settled: 0,
             unsettled: 0,
             making: None,
             made: None,
+            warm: Vec::new(),
             streams: HashMap::new(),
+            held: None,
+            asked: HashSet::new(),
             copying: None,
             borders: divide(control.rpc.clone(), shared.clone()),
         };
         match shown {
             Some(shown) if joined.is_object() => connection.view(&shown, joined).await,
             // The session on show has ended, or there was none.
-            _ => connection.link.attached = None,
+            _ => connection.link.attached.clear(),
         }
         let sessions: Vec<String> = connection.views.keys().cloned().collect();
         for session in sessions {
@@ -959,12 +974,12 @@ impl<'a> Connection<'a> {
                 }
             }
             (Reply::Joined(session), answer) => {
-                self.joining = false;
+                self.joining = None;
                 match answer {
                     Ok(joined) => self.view(&session, &joined["view"]).await,
                     Err(error) => {
                         // Not in it after all, and not to be shown as if it were.
-                        self.link.attached = None;
+                        self.link.attached.retain(|held| *held != session);
                         self.shared.change(|s| {
                             if s.view.selected_session.as_ref() == Some(&session) {
                                 s.view.selected_session = None;
@@ -974,9 +989,9 @@ impl<'a> Connection<'a> {
                     }
                 }
             }
-            (Reply::Left, _) => {
-                self.joining = false;
-                self.link.attached = None;
+            (Reply::Left(session), _) => {
+                self.joining = None;
+                self.link.attached.retain(|held| *held != session);
             }
         }
         self.show().await;
@@ -1013,74 +1028,135 @@ impl<'a> Connection<'a> {
         self.reconcile().await;
     }
 
-    /// Join the session on show and leave any other, a request at a time: asked
-    /// together, a leaving and a joining of one session may be taken in either order.
-    async fn join(&mut self) {
-        let shown = self.shared.lock().view.selected_session.clone();
-        if self.joining || self.link.attached == shown {
-            return;
-        }
-        match (self.link.attached.clone(), shown) {
-            (Some(old), _) => {
-                let request = json!({"session_id": old});
-                self.ask(Reply::Left, "session.detach", request).await;
-            }
-            (None, Some(new)) => {
-                self.link.attached = Some(new.clone());
-                let request = json!({"session_id": new});
-                self.ask(Reply::Joined(new), "session.attach", request)
-                    .await;
-            }
-            (None, None) => return,
-        }
-        self.joining = true;
+    /// Whether this client is in a session: it has asked to join, and been answered.
+    fn joined(&self, session: &str) -> bool {
+        let attached = self.link.attached.iter().any(|held| held == session);
+        attached && self.joining.as_deref() != Some(session)
     }
 
-    /// Stream exactly the terminals of the tab on show, once its session is joined.
-    /// One that is another client's is asked for, to be this client's when that
-    /// one lets it go, as one that has left the server has already.
-    async fn reconcile(&mut self) {
-        let (session, visible) = {
-            let mut state = self.shared.lock();
-            // Only a session this connection has joined can be streamed.
-            let joined = !self.joining && state.view.selected_session == self.link.attached;
-            let window = state.view.current_window().filter(|_| joined);
-            let panes = window.into_iter().flat_map(|w| &w.panes);
-            let terminals = panes.filter(|pane| self.link.blocks.contains_key(&pane.id));
-            let visible: HashMap<String, bool> = terminals
-                .map(|pane| (pane.id.clone(), pane.owner))
-                .collect();
-            state.terminals.retain(|id, _| visible.contains_key(id));
-            state.last.retain(|id, _| visible.contains_key(id));
-            (state.view.selected_session.clone(), visible)
+    /// Join the session on show, and leave each that has no tab kept fed, a
+    /// request at a time: asked together, a leaving and a joining of one session
+    /// may be taken in either order. The joining comes first, which is waited for.
+    async fn join(&mut self) {
+        if self.joining.is_some() {
+            return;
+        }
+        let shown = self.shared.lock().view.selected_session.clone();
+        let attached = &mut self.link.attached;
+        let kept = |session: &String| {
+            Some(session) == shown.as_ref() || self.warm.iter().any(|(held, _)| held == session)
         };
-        self.streams.retain(|id, task| {
-            let keep = visible.contains_key(id);
+        let (reply, method, session) = match shown.as_ref().filter(|new| !attached.contains(new)) {
+            Some(new) => {
+                attached.push(new.clone());
+                (Reply::Joined(new.clone()), "session.attach", new.clone())
+            }
+            None => match attached.iter().find(|held| !kept(held)) {
+                Some(old) => (Reply::Left(old.clone()), "session.detach", old.clone()),
+                None => return,
+            },
+        };
+        self.joining = Some(session.clone());
+        self.ask(reply, method, json!({"session_id": session}))
+            .await;
+    }
+
+    /// Stream the terminals of the tab on show, once its session is joined, and
+    /// go on streaming those of the tabs shown before it, up to `WARM` in all.
+    /// One on show that is another client's is asked for, to be this client's
+    /// when that one lets it go, as one that has left the server has already.
+    async fn reconcile(&mut self) {
+        let (selected, shown, kept) = {
+            let mut state = self.shared.lock();
+            let view = &state.view;
+            // Only a session this connection has joined can be streamed.
+            let tab = view.current_window().map(|tab| tab.id.clone());
+            let shown = view.selected_session.clone().zip(tab);
+            let shown = shown.filter(|(session, _)| self.joined(session));
+            if let Some(shown) = &shown {
+                self.warm.retain(|held| held != shown);
+                self.warm.insert(0, shown.clone());
+            }
+            // A tab that has closed is kept no more, nor one of a session left.
+            let attached = &self.link.attached;
+            let open = |session: &String, tab: &String| {
+                let there =
+                    |(held, window): (&Session, &Window)| held.id == *session && window.id == *tab;
+                attached.contains(session) && view.tabs().any(there)
+            };
+            self.warm.retain(|(session, tab)| open(session, tab));
+            self.warm.truncate(WARM);
+            // Each terminal of theirs, with its session, whether it is on show,
+            // and whether it is this client's.
+            let mut kept = HashMap::new();
+            for (session, tab) in view.tabs() {
+                let held = (session.id.clone(), tab.id.clone());
+                if self.warm.contains(&held) {
+                    let on_show = shown.as_ref() == Some(&held);
+                    let terminals = tab
+                        .panes
+                        .iter()
+                        .filter(|pane| self.link.blocks.contains_key(&pane.id));
+                    kept.extend(
+                        terminals
+                            .map(|pane| (pane.id.clone(), (held.0.clone(), on_show, pane.owner))),
+                    );
+                }
+            }
+            let selected = view.selected_session.clone();
+            state.terminals.retain(|id, _| kept.contains_key(id));
+            state.last.retain(|id, _| kept.contains_key(id));
+            (selected, shown, kept)
+        };
+        // The panes of a session that is on show no longer are given up, as
+        // leaving it would give them up: another client that wants them has
+        // them at its own size, though this one stays to keep its tabs fed.
+        if self.held != selected
+            && let Some(left) = self.held.take()
+            && self.joined(&left)
+        {
+            let request = json!({"session_id": left});
+            let _ = self.rpc.enqueue("session.disown_block", request).await;
+        }
+        if let Some((session, _)) = &shown {
+            self.held = Some(session.clone());
+        }
+        self.asked.retain(|pane| kept.contains_key(pane));
+        self.streams.retain(|id, (task, _)| {
+            let keep = kept.contains_key(id);
             if !keep {
                 task.abort();
             }
             keep
         });
-        let Some(session) = session else {
+        // Those on show that are another client's, and not yet asked for.
+        let mut others = Vec::new();
+        for (pane, (session, on_show, owner)) in kept {
+            match self.streams.get(&pane) {
+                Some((_, shown)) => shown.store(on_show, Ordering::Relaxed),
+                None => {
+                    let shown = Arc::new(AtomicBool::new(on_show));
+                    let stream = stream_pane(
+                        self.target.clone(),
+                        self.rpc.clone(),
+                        self.shared.clone(),
+                        session,
+                        pane.clone(),
+                        shown.clone(),
+                    );
+                    self.streams
+                        .insert(pane.clone(), (tokio::spawn(stream), shown));
+                }
+            }
+            if !on_show || owner {
+                self.asked.remove(&pane);
+            } else if self.asked.insert(pane.clone()) {
+                others.push(pane);
+            }
+        }
+        let Some((session, _)) = shown else {
             return;
         };
-        let mut others = Vec::new();
-        for (pane, owner) in visible {
-            if self.streams.contains_key(&pane) {
-                continue;
-            }
-            if !owner {
-                others.push(pane.clone());
-            }
-            let stream = stream_pane(
-                self.target.clone(),
-                self.rpc.clone(),
-                self.shared.clone(),
-                session.clone(),
-                pane.clone(),
-            );
-            self.streams.insert(pane, tokio::spawn(stream));
-        }
         if !others.is_empty() {
             // Apart from all else that goes on here, which does not wait for it.
             let rpc = self.rpc.clone();
@@ -1140,7 +1216,8 @@ impl<'a> Connection<'a> {
     /// else that goes on here, which does not wait for it. A later copy takes the
     /// place of one still being asked for.
     fn copied(&mut self, pane: String, text: Option<String>, id: u64) {
-        let shown = |_: &&Block| self.streams.contains_key(&pane);
+        let shown = |(_, shown): &(JoinHandle<()>, Arc<AtomicBool>)| shown.load(Ordering::Relaxed);
+        let shown = |_: &&Block| self.streams.get(&pane).is_some_and(shown);
         let Some(block) = self.link.blocks.get(&pane).filter(shown) else {
             return;
         };
@@ -1166,7 +1243,7 @@ impl<'a> Connection<'a> {
     /// says the pane is taken, which does no harm. Only one who has joined the
     /// session may ask.
     async fn claim(&mut self, session: &str, pane: &str) {
-        let joined = !self.joining && self.link.attached.as_deref() == Some(session);
+        let joined = self.joined(session);
         let another = |held: &Pane| joined && !held.owner;
         if self.shared.lock().view.pane(pane).is_some_and(another) {
             let request = json!({"session_id": session, "block_ids": [pane], "mode": "take"});
@@ -1470,19 +1547,21 @@ async fn copy(rpc: &Rpc, session: &str, pane: &str, id: u64) -> Result<String> {
     }
 }
 
-/// Keep one pane's terminal fed for as long as it is on show, restoring a fresh
-/// snapshot whenever its stream fails: soon at first, and seldom if it keeps failing.
+/// Keep one pane's terminal fed for as long as its tab is kept so, restoring a
+/// fresh snapshot whenever its stream fails: soon at first, and seldom if it
+/// keeps failing. Only while it is `shown` does what it draws wake the window.
 async fn stream_pane(
     target: wire::Target,
     rpc: Rpc,
     shared: Shared,
     session: String,
     pane: String,
+    shown: Arc<AtomicBool>,
 ) {
     let mut failures = 0;
     loop {
         let began = std::time::Instant::now();
-        let Err(error) = stream(&target, &rpc, &shared, &session, &pane).await;
+        let Err(error) = stream(&target, &rpc, &shared, &session, &pane, &shown).await;
         // One that lasted was working. One that draws and fails, over and over, is not.
         if began.elapsed() > RETRY[1] {
             failures = 0;
@@ -1513,6 +1592,7 @@ async fn stream(
     shared: &Shared,
     session: &str,
     pane: &str,
+    shown: &Arc<AtomicBool>,
 ) -> Result<Infallible> {
     let request = json!({
         "session_id": session,
@@ -1530,9 +1610,11 @@ async fn stream(
     // stops while its terminal is quiet would otherwise go unnoticed here, and
     // its pane take no input, until the next output came.
     let (wake, drawn) = (shared.wake.clone(), Arc::new(tokio::sync::Notify::new()));
-    let said = drawn.clone();
+    let (said, shown) = (drawn.clone(), shown.clone());
     let repaint = move || {
-        wake.notify();
+        if shown.load(Ordering::Relaxed) {
+            wake.notify();
+        }
         said.notify_one();
     };
     let terminal = TerminalHandle::new(nonce, Arc::new(repaint))?;
