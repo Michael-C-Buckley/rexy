@@ -6,10 +6,11 @@ use eframe::egui::{
 use super::{
     App,
     frame::titlebar,
-    style::{BODY, BORDER, DIM, Icon, ROW, SMALL, TOOLBAR, bold, icon_button, search},
+    heard::dot,
+    style::{BODY, BORDER, DIM, Icon, ROW, SMALL, TOOLBAR, bold, fold, icon_button, search},
     toolbar::bar,
 };
-use crate::model::{Action, View};
+use crate::model::{Action, Session, View};
 
 pub const SIDEBAR_WIDTH: f32 = 240.0;
 /// The least and the most its edge can be dragged to.
@@ -93,9 +94,17 @@ impl App {
     }
 
     /// A server in the sidebar: its name, its sessions, and under each its tabs.
+    /// All that is under its name folds away, and so do the tabs under a
+    /// session's. What is made in either is brought back out with it.
     fn server(&mut self, ui: &mut egui::Ui, server: usize, view: &View) {
-        if self.heading(ui, server, view) {
+        // One with nothing under its name has nothing to fold.
+        let folds = !view.connected || !view.sessions.is_empty();
+        if self.heading(ui, server, view, folds) {
+            self.remembered.kept.folded.remove(self.servers[server].address());
             self.open(server, Action::CreateSession(None));
+        }
+        if folds && self.remembered.kept.folded.contains(self.servers[server].address()) {
+            return;
         }
         if !view.connected {
             ui.horizontal(|ui| {
@@ -116,7 +125,7 @@ impl App {
             self.session(ui, server, &view.sessions, index, shown);
             // A session's one tab is the session's own row. Several are listed
             // under its name.
-            if session.tabs.len() != 1 {
+            if session.tabs.len() != 1 && !self.remembered.kept.folded.contains(&session.id) {
                 // The tab on show, if it is one of this session's.
                 let shown = view.selected_tab.as_deref().filter(|_| shown);
                 let size = Vec2::new(ui.available_width(), ROW);
@@ -130,15 +139,34 @@ impl App {
     }
 
     /// A server's name, beside a button that tries it again if it is not connected.
-    /// True if its other button, for a new session, was pressed.
-    pub(super) fn heading(&mut self, ui: &mut egui::Ui, server: usize, view: &View) -> bool {
+    /// True if its other button, for a new session, was pressed. Where it
+    /// `folds`, a press anywhere on it but its buttons folds away what is under
+    /// it, or brings that back: folded, it wears the most pressing thing any of
+    /// its sessions says.
+    pub(super) fn heading(
+        &mut self,
+        ui: &mut egui::Ui,
+        server: usize,
+        view: &View,
+        folds: bool,
+    ) -> bool {
         let mut create = false;
+        let address = self.servers[server].address().to_owned();
+        let folded = folds && self.remembered.kept.folded.contains(&address);
         let mut heading = bar(ui, 32.0, 0.0);
+        let row = heading.max_rect();
         heading.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if view.connected {
                 create = icon_button(ui, Icon::Plus, "New session").clicked();
             } else if icon_button(ui, Icon::Retry, "Try again").clicked() {
                 self.tell(server, Action::Reconnect);
+            }
+            // All of it that the buttons leave.
+            let rest = ui.available_rect_before_wrap();
+            let said = view.sessions.iter().map(Session::activity).max().unwrap_or_default();
+            if let Some((_, color)) = dot(ui.ctx(), said).filter(|_| folded) {
+                let (mark, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                ui.painter().circle_filled(mark.center(), 3.5, color);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(12.0);
@@ -150,6 +178,17 @@ impl App {
                 };
                 ui.add(egui::Label::new(label).truncate());
             });
+            if folds {
+                fold(ui, row, folded);
+                // Asked after the name, so that the press is not the name's own.
+                let id = egui::Id::unique(("fold", &address));
+                if ui.interact(rest, id, Sense::click()).clicked() {
+                    let folded = &mut self.remembered.kept.folded;
+                    if !folded.remove(&address) {
+                        folded.insert(address);
+                    }
+                }
+            }
         });
         create
     }

@@ -10,7 +10,7 @@ Rex Lite is an unofficial client and is not affiliated with Superlogical. It is 
 
 ## Features
 
-- **Every server in one sidebar.** Your home server and every host it knows of, each with its sessions and tabs, reached over a Unix socket, SSH or WebSocket. Prefer tabs along the top? **Ctrl Shift B**.
+- **Every server in one sidebar.** Your home server and every host it knows of, each with its sessions and tabs, reached over a Unix socket, SSH or WebSocket. Fold away a server or a session you are not using, and it keeps a dot for the most pressing thing inside. Prefer tabs along the top? **Ctrl Shift B**.
 - **See what your agents are doing.** Each tab shows its program's icon, a status dot and a line in words: *Working*, *Needs approval*, *Question*, *Done*, *Error*, with progress or how long it has been that way. An activity view lists everything at work on every server under **Needs you**, **Done**, **Working** and **Idle**.
 - **Notifications that take you there.** What a tab reports while you are not looking at it becomes a desktop notification; clicking it shows the pane and focuses it. Any tab can be muted.
 - **Splits.** Split a pane in any direction, move it, drag or key its borders, balance the tab, or zoom one pane to fill it.
@@ -119,6 +119,7 @@ With the mouse:
 - **Shift** overrides a program's mouse capture.
 - Hold **Ctrl** over a link and click to open it.
 - Drag the line between two panes to resize them; double-click it to even them out.
+- Click a server's heading to fold its sessions away, and a session's heading, anywhere but its name, to fold its tabs.
 - Right-click a session, tab or pane for its menu. Double-click a name to rename it, and drag a session or tab to reorder it.
 
 ## Good to know
@@ -133,7 +134,7 @@ With the mouse:
 
 **Programs cannot reach your machine.** A program can copy to the clipboard but never read it. `file` links are never opened, since the terminal may be showing another machine. Pictures are accepted only as pixels sent in the escape itself: the Kitty protocol's file and shared-memory transfers would be read on this machine, and are refused.
 
-**State.** Window size, font size, sidebar layout, muted tabs and the tab last shown on each server are kept in `rex-lite/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
+**State.** Window size, font size, sidebar layout, what is folded, muted tabs and the tab last shown on each server are kept in `rex-lite/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
 
 **Notifications** need a notification service on the session's D-Bus, as GNOME, KDE and most desktops provide. Without one, nothing is sent and nothing else changes.
 

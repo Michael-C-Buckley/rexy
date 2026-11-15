@@ -762,6 +762,21 @@ pub fn hint(ui: &mut egui::Ui, keys: &str, title: &str) {
     ui.painter().galley(at, title, TEXT);
 }
 
+/// The mark in the margin of a row that heads others, which fold away under
+/// it. It points at the row while they are `folded`, and down at them while
+/// they are not and the pointer is on the row.
+pub fn fold(ui: &egui::Ui, row: Rect, folded: bool) {
+    if folded || ui.rect_contains_pointer(row) {
+        let at = egui::pos2(row.left() + 5.0, row.center().y);
+        let points = match folded {
+            true => [[-1.5, -3.0], [1.5, 0.0], [-1.5, 3.0]],
+            false => [[-3.0, -1.5], [0.0, 1.5], [3.0, -1.5]],
+        };
+        let points = points.map(|point| at + Vec2::from(point));
+        ui.painter().line(points.to_vec(), Stroke::new(1.5, DIM));
+    }
+}
+
 /// Words that are no row: what heads the rows under them, or stands where
 /// there are none.
 pub fn caption(ui: &mut egui::Ui, words: egui::RichText) {

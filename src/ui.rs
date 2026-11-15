@@ -75,9 +75,14 @@ impl Server {
         Self::connect(ctx, host, herald, true)
     }
 
+    /// The first of its addresses, by which what is remembered of it goes.
+    fn address(&self) -> &str {
+        self.host.endpoints.first().map_or("", String::as_str)
+    }
+
     /// Home goes by its address, unless that is a socket on this machine.
     fn label(&self) -> &str {
-        let address = self.host.endpoints.first().map_or("", String::as_str);
+        let address = self.address();
         match self.host.label.as_str() {
             "" if address.starts_with('/') || address.starts_with("unix:") => "This Computer",
             "" => address.split_once("://").map_or(address, |(_, machine)| machine),
@@ -510,6 +515,13 @@ impl eframe::App for App {
             let tabs = || views.iter().flat_map(View::every_tab);
             let open = |tab: &str| tabs().any(|(_, open)| open.id == tab);
             self.remembered.kept.muted.retain(|tab| open(tab));
+            // Nor does a session that has, or a server no longer listed.
+            let servers = &self.servers;
+            let held = |key: &str| {
+                let session = |view: &View| view.sessions.iter().any(|held| held.id == key);
+                servers.iter().any(|server| server.address() == key) || views.iter().any(session)
+            };
+            self.remembered.kept.folded.retain(|key| held(key));
         }
         self.remember(&ctx, &views);
         // The window is named for the session it shows.

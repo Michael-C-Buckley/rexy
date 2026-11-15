@@ -32,6 +32,7 @@ fn what_changed_is_saved_after_a_moment_and_read_back() {
     assert!(!first.kept.remote);
     first.kept.remote = true;
     first.kept.muted.insert("window:a".into());
+    first.kept.folded.extend(["session:s".to_owned(), "unix:/a".to_owned()]);
     let place = ["session:s".to_owned(), "window:a".to_owned()];
     first.kept.shown.insert("unix:/a".into(), place);
     let soon = start + PAUSE / 2;
@@ -57,13 +58,14 @@ fn a_damaged_file_starts_afresh() {
     assert_eq!(open(), fresh());
     // What a file has wrong is as at first, and what it has right is kept.
     let odd = r#"{"font_size": 500, "sidebar": "yes", "sidebar_width": 300,
-        "window": [10, 1e9], "shown": [], "muted": ["window:c"]}"#;
+        "window": [10, 1e9], "shown": [], "muted": ["window:c"], "folded": {"a": 1}}"#;
     write(odd);
     let kept = open();
     assert_eq!((kept.font_size, kept.sidebar), (32.0, true));
     assert_eq!((kept.sidebar_width, kept.window), (300.0, [640.0, 16384.0]));
     assert!(kept.shown.is_empty());
     assert_eq!(kept.muted, HashSet::from(["window:c".to_owned()]));
+    assert!(kept.folded.is_empty());
     std::fs::remove_dir_all(directory).unwrap();
     // With nowhere to keep anything, the window still opens, and says so on saving.
     let mut nowhere = Remembered::open(None);

@@ -8,7 +8,7 @@ use super::{
     App,
     close::{Ask, CLOSE, CLOSE_TAB, asking, closer},
     heard::dot,
-    style::{BODY, DIM, Icon, Item, ROW, SMALL, entry, item, tints},
+    style::{BODY, DIM, Icon, Item, ROW, SMALL, bold, entry, fold, item, tints},
 };
 use crate::model::{self, Action, Activity, Edit, Session, Tab};
 
@@ -136,6 +136,11 @@ impl App {
             [tab] => Some(tab),
             _ => None,
         };
+        // Several tabs fold away under its name, which then stands for them:
+        // it is lit while one of them is on show, and says the most pressing
+        // thing any of them does.
+        let folds = session.tabs.len() > 1;
+        let folded = folds && self.remembered.kept.folded.contains(&session.id);
         let height = if lone.is_some() { ROW } else { 28.0 };
         let size = Vec2::new(ui.available_width(), height);
         let id = self.row(&target);
@@ -168,9 +173,10 @@ impl App {
             caption: lone.is_none(),
             icon: lone.map(Tab::program),
             under: &under,
-            selected: lone.is_some() && shown,
+            selected: (lone.is_some() || folded) && shown,
             mark: match muted {
                 Some(true) => Some((Icon::Muted, DIM)),
+                _ if folded => dot(ui.ctx(), session.activity()),
                 _ => dot(ui.ctx(), said),
             },
             // A muted tab's mark has the edge to itself.
@@ -186,10 +192,29 @@ impl App {
             ..Default::default()
         };
         let (response, button) = item(ui, size, row);
-        if lone.is_some() {
+        if lone.is_some() || folded {
             self.follow(id, shown, &response);
         }
-        self.picked(&response, &target, shown);
+        // A press on its name shows the session, as two there ask for a new
+        // name. One anywhere else on the row folds its tabs away, or brings
+        // them back.
+        let aside = folds && {
+            let wide = ui.painter().layout_no_wrap(session.name.clone(), bold(SMALL), DIM);
+            let left = response.rect.left() + 12.0;
+            let name = left - 4.0..=(left + wide.size().x + 4.0).min(response.rect.right() - 12.0);
+            response.interact_pointer_pos().is_some_and(|at| !name.contains(&at.x))
+        };
+        if folds {
+            fold(ui, response.rect, folded);
+        }
+        if aside && response.clicked() {
+            let folded = &mut self.remembered.kept.folded;
+            if !folded.remove(&session.id) {
+                folded.insert(session.id.clone());
+            }
+        } else if !aside {
+            self.picked(&response, &target, shown);
+        }
         let either = if asked.is_some() { Ask::Again } else { ask };
         self.wait(ui, response.rect, &response, either);
         if response.drag_started_by(PointerButton::Primary) {
@@ -197,8 +222,13 @@ impl App {
         }
         let labels = ["Move Up", "Move Down", "Close Session"];
         let at = |index: usize| sessions.get(index).map(|s| s.id.clone());
-        match (button, menu(&response, labels, muted, index, at, ask)) {
-            (Some(0), _) => self.open(server, Action::CreateTab(session.id.clone())),
+        let asked_for = menu(&response, labels, muted, index, at, ask);
+        let asked_for = asked_for.filter(|_| !(aside && response.double_clicked()));
+        match (button, asked_for) {
+            (Some(0), _) => {
+                self.remembered.kept.folded.remove(&session.id);
+                self.open(server, Action::CreateTab(session.id.clone()));
+            }
             // The tab that asked, and not the session with it. Otherwise this
             // ends every program in the session.
             (Some(_), _) => self.shut(asked.cloned().unwrap_or(target), spared, true),

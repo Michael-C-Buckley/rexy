@@ -227,7 +227,7 @@ impl App {
                 let mut listed = rows.iter().enumerate().peekable();
                 for (server, view) in views.iter().enumerate() {
                     // A session made on a server takes the name typed, too.
-                    if places && self.heading(ui, server, view) {
+                    if places && self.heading(ui, server, view, false) {
                         self.open(server, Action::CreateSession(named.clone()));
                         Popup::close_id(ui.ctx(), id());
                     }

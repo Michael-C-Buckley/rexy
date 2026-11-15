@@ -14,7 +14,7 @@ use super::{
         item,
     },
 };
-use crate::model::{Action, Tab, View};
+use crate::model::{Action, Session, Tab, View};
 
 impl App {
     /// The buttons that make another terminal: in a tab of its own, or beside
@@ -106,9 +106,10 @@ impl App {
     /// sidebar has no room for, and says where the window is: the server, if it
     /// is not home, the session, its tab, and what is at the keyboard in it.
     /// The sidebar's rows say the same in less room, and cut short. While the
-    /// sidebar lists what is at work instead, the session and its tab have no
-    /// rows: the field that renames either is here, in place of its name, and
-    /// so is the asking again of a tab asked to close.
+    /// sidebar lists what is at work instead, or the session's server is folded
+    /// away, the session and its tab have no rows, and nor has a tab folded away
+    /// under its session: the field that renames either is then here, in place
+    /// of its name, and so is the asking again of a tab asked to close.
     pub(super) fn header(&mut self, ui: &mut egui::Ui, view: &View) {
         let mut bar = titlebar(ui, TOOLBAR, 8.0);
         bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -123,15 +124,19 @@ impl App {
                 let plain = FontId::proportional(BODY);
                 // The session and its tab, as the sidebar's rows go by, while it
                 // has none of them.
-                let named = session.filter(|_| self.activity).map(|session| Target {
+                let folded = &self.remembered.kept.folded;
+                let away = self.activity || folded.contains(self.servers[self.current].address());
+                let row = |session: &Session, tab: Option<&Tab>| Target {
                     server: self.current,
                     session: session.id.clone(),
-                    tab: None,
-                });
-                let tabbed = named
-                    .clone()
-                    .zip(tab)
-                    .map(|(named, tab)| Target { tab: Some(tab.id.clone()), ..named });
+                    tab: tab.map(|tab| tab.id.clone()),
+                };
+                let named = session.filter(|_| away).map(|session| row(session, None));
+                let tucked = |session: &&Session| {
+                    away || (session.tabs.len() > 1 && folded.contains(&session.id))
+                };
+                let tabbed = session.filter(tucked).zip(tab);
+                let tabbed = tabbed.map(|(session, tab)| row(session, Some(tab)));
                 // The tab was asked to close, and asks again after the names, on
                 // a button so wide.
                 let asked = tabbed.clone();
