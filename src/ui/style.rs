@@ -125,6 +125,10 @@ pub fn eased(ui: &egui::Ui, id: egui::Id, on: bool) -> f32 {
 }
 
 pub const TOOLBAR: f32 = 40.0;
+/// How tall a row of the sidebar is, which says a line under its name.
+pub const ROW: f32 = 44.0;
+/// How far the middle of each of a row's two lines is from the row's own.
+const LINE: f32 = 9.0;
 pub const BODY: f32 = 13.5;
 pub const SMALL: f32 = 12.0;
 const RADIUS: u8 = 7;
@@ -135,7 +139,9 @@ pub const GUTTER: f32 = 6.0;
 const PILL: f32 = 8.0;
 pub const SMALL_BUTTON: f32 = 24.0;
 /// The side of a program's icon: a tile, wider than it is tall, on a square.
-const TILE: f32 = 20.0;
+pub const TILE: f32 = 20.0;
+/// And on a row of two lines.
+const LARGE: f32 = 28.0;
 /// The room an icon takes ahead of the name it goes with.
 pub const ICON: f32 = TILE + 7.0;
 
@@ -380,13 +386,13 @@ impl Icon {
 
 /// Draw a program's icon, as sharp as the screen allows. Where it is not at hand
 /// a prompt stands in for it, in `ink`.
-fn tile(painter: &egui::Painter, program: Program, left: Pos2, ink: Color32) {
+fn tile(painter: &egui::Painter, program: Program, left: Pos2, side: f32, ink: Color32) {
     let Some(drawing) = program.drawing() else {
-        return Icon::Prompt.paint(painter, left + egui::vec2(TILE / 2.0, 0.0), ink);
+        return Icon::Prompt.paint(painter, left + egui::vec2(side / 2.0, 0.0), ink);
     };
     let ctx = painter.ctx();
     let scale = ctx.pixels_per_point();
-    let pixels = (TILE * scale).round() as usize;
+    let pixels = (side * scale).round() as usize;
     let key = egui::Id::unique((program.name(), pixels));
     let texture = ctx.data(|data| data.get_temp::<egui::TextureHandle>(key));
     let texture = texture.unwrap_or_else(|| {
@@ -396,7 +402,7 @@ fn tile(painter: &egui::Painter, program: Program, left: Pos2, ink: Color32) {
         texture
     });
     // One texel to a pixel: an icon that straddles pixels blurs.
-    let corner = (left - egui::vec2(0.0, TILE / 2.0)).round_to_pixels(scale);
+    let corner = (left - egui::vec2(0.0, side / 2.0)).round_to_pixels(scale);
     let rect = Rect::from_min_size(corner, Vec2::splat(pixels as f32 / scale));
     let whole = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
     painter.image(texture.id(), rect, whole, Color32::WHITE);
@@ -408,13 +414,14 @@ pub fn badge(
     painter: &egui::Painter,
     program: Program,
     left: Pos2,
+    side: f32,
     ink: Color32,
     dot: Option<Color32>,
 ) {
-    tile(painter, program, left, ink);
+    tile(painter, program, left, side, ink);
     if let Some(color) = dot {
         // A dark rim parts it from the icon, whatever that is drawn in.
-        let at = left + egui::vec2(TILE - 2.0, 6.0);
+        let at = left + egui::vec2(side - 2.0, side / 2.0 - 4.0);
         painter.circle_filled(at, 5.0, Color32::from_black_alpha(170));
         painter.circle_filled(at, 3.5, color);
     }
@@ -534,6 +541,9 @@ pub struct Item<'a> {
     /// What else there is to say of it, after its name and fainter, in whatever
     /// room the name leaves.
     pub more: &'a str,
+    /// A second line, under its name, smaller and fainter. A row with one keeps
+    /// its mark and its buttons beside the name.
+    pub under: &'a str,
     /// A name of its own, for a row that must stay itself while the rows before
     /// it come and go: its menu and its buttons go by it.
     pub id: Option<egui::Id>,
@@ -602,6 +612,9 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         _ => white(190),
     };
     ui.painter().rect_filled(rect, RADIUS, fill);
+    // The height its name is at: the row's middle, or above it for a second line.
+    let lift = if item.under.is_empty() { 0.0 } else { LINE };
+    let mid = rect.center().y - lift;
     // Room at the trailing edge is the label's to lose, so that it never moves.
     let word = item.word.filter(|_| item.align != Align::Center);
     let word = word.map(|word| {
@@ -626,7 +639,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     // pointer is on it already.
     let last = item.buttons.len().checked_sub(1);
     let asks = item.confirm.zip(last).map(|(word, last)| {
-        let edge = egui::pos2(rect.right() - 4.0, rect.center().y);
+        let edge = egui::pos2(rect.right() - 4.0, mid);
         confirm(ui, edge, response.id.with(("button", last)), word)
     });
     let room = (12.0 + marks).max(4.0 + BUTTON * item.buttons.len() as f32);
@@ -636,7 +649,9 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let mut text = rect.shrink2(egui::vec2(12.0, 0.0));
     text.min.x += item.inset;
     text.max.x = rect.right() - room;
-    let lead = if item.icon.is_some() { ICON } else { 0.0 };
+    // A row tall enough for two lines has the larger icon, whatever it says.
+    let side = if size.y >= ROW { LARGE } else { TILE };
+    let lead = if item.icon.is_some() { side + 8.0 } else { 0.0 };
     // A name too long for its row ends in an ellipsis.
     let font = match (item.caption, item.strong) {
         (true, _) => bold(SMALL),
@@ -658,7 +673,9 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         text = middle;
     }
     let anchor = Align2([item.align, Align::Center]);
-    let place = anchor.align_size_within_rect(needs, text);
+    let place = anchor
+        .align_size_within_rect(needs, text)
+        .translate(egui::vec2(0.0, -lift));
     if let Some(program) = item.icon {
         let left = egui::pos2(place.left(), rect.center().y);
         let ink = if item.selected {
@@ -667,9 +684,18 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
             DIM
         };
         let dot = item.mark.filter(|_| docked).map(|(_, color)| color);
-        badge(ui.painter(), program, left, ink, dot);
+        badge(ui.painter(), program, left, side, ink, dot);
     }
     let name = place.min + egui::vec2(lead, 0.0);
+    // The second line starts under the name and has the row to its far edge.
+    let under = (!item.under.is_empty()).then(|| {
+        let font = FontId::proportional(SMALL);
+        let under = fitted(ui, item.under, font, FAINT, rect.right() - 12.0 - name.x);
+        let at = egui::pos2(name.x, rect.center().y + LINE - under.size().y / 2.0);
+        ui.painter().galley(at, under.clone(), FAINT);
+        under
+    });
+    let low = under.is_some_and(|under| under.elided);
     if let Some(more) = more {
         let after = name + egui::vec2(label.size().x + 8.0, 0.0);
         ui.painter().galley(after, more, FAINT);
@@ -681,7 +707,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     } else if over && !dragging && !item.buttons.is_empty() {
         let mut right = rect.right() - 4.0;
         for (index, (icon, tip)) in item.buttons.iter().enumerate().rev() {
-            let center = egui::pos2(right - BUTTON / 2.0, rect.center().y);
+            let center = egui::pos2(right - BUTTON / 2.0, mid);
             let button = Rect::from_center_size(center, Vec2::splat(BUTTON));
             // By a name of its own: a row's tooltip goes by the row's and a number.
             let id = response.id.with(("button", index));
@@ -693,27 +719,29 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
             right -= BUTTON;
         }
     } else {
-        let mut center = egui::pos2(rect.right() - 16.0, rect.center().y);
+        let mut center = egui::pos2(rect.right() - 16.0, mid);
         if item.menu {
             Icon::Down.paint(ui.painter(), center, DIM);
             center.x -= 14.0;
         }
         if let Some(word) = word {
-            let corner = egui::pos2(rect.right() - 12.0, rect.center().y)
-                - word.size() * egui::vec2(1.0, 0.5);
+            let corner = egui::pos2(rect.right() - 12.0, mid) - word.size() * egui::vec2(1.0, 0.5);
             ui.painter().galley(corner, word, TEXT);
         } else if let Some((mark, color)) = aside {
             mark.paint(ui.painter(), center, color);
         }
-        paint_caps(ui, keys, egui::pos2(rect.right() - 10.0, rect.center().y));
+        paint_caps(ui, keys, egui::pos2(rect.right() - 10.0, mid));
     }
-    let response = if cut || lost || !item.tip.is_empty() {
+    let response = if cut || lost || low || !item.tip.is_empty() {
         response.on_hover_ui(|ui| {
             if cut {
                 ui.label(item.label);
             }
             if lost {
                 ui.label(item.more);
+            }
+            if low {
+                ui.label(item.under);
             }
             if !item.tip.is_empty() {
                 ui.label(item.tip);

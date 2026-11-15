@@ -6,7 +6,7 @@ use eframe::egui::{
 use super::{
     App,
     frame::titlebar,
-    style::{BODY, DIM, Icon, SMALL, TOOLBAR, bold, icon_button, search},
+    style::{BODY, BORDER, DIM, Icon, ROW, SMALL, TOOLBAR, bold, icon_button, search},
     toolbar::bar,
 };
 use crate::model::{Action, View};
@@ -55,15 +55,18 @@ impl App {
                 let list = egui::ScrollArea::vertical().auto_shrink(false);
                 list.show(ui, |ui| {
                     rows.show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.spacing_mut().item_spacing.y = 4.0;
                         if self.agents {
                             return self.agents(ui, views);
                         }
                         for (server, view) in views.iter().enumerate() {
-                            // One with nothing under its name needs less room after it.
+                            // A rule parts it from the server before. Those with
+                            // nothing under their names stand together without one.
                             let bare = |view: &View| view.connected && view.sessions.is_empty();
-                            if let Some(before) = server.checked_sub(1) {
-                                ui.add_space(if bare(&views[before]) { 2.0 } else { 14.0 });
+                            match server.checked_sub(1) {
+                                Some(before) if bare(&views[before]) && bare(view) => {}
+                                Some(_) => rule(ui),
+                                None => {}
                             }
                             self.server(ui, server, view);
                         }
@@ -122,7 +125,7 @@ impl App {
             if session.windows.len() != 1 {
                 // The tab on show, if it is one of this session's.
                 let shown = view.selected_window.as_deref().filter(|_| shown);
-                let size = Vec2::new(ui.available_width(), 30.0);
+                let size = Vec2::new(ui.available_width(), ROW);
                 self.tabs(ui, server, session, shown, size);
                 ui.add_space(6.0);
             }
@@ -156,4 +159,15 @@ impl App {
         });
         create
     }
+}
+
+/// A faint line across the sidebar, as wide as its rows, with the room it
+/// keeps from what it parts.
+fn rule(ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    let (line, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    let across = line.shrink2(egui::vec2(4.0, 0.0)).x_range();
+    ui.painter()
+        .hline(across, line.center().y, Stroke::new(1.0, BORDER));
+    ui.add_space(4.0);
 }

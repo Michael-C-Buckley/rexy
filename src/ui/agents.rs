@@ -1,14 +1,14 @@
 //! The sidebar as a list of what is at work: every pane on every server whose
 //! program has something to say, or is a coding agent at rest, under what it
 //! is doing, with how long it has been so.
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::{self, Vec2};
 
 use super::{
     App,
     heard::{dot, worn},
-    style::{Icon, Item, SMALL, bold, caption, item, toggle},
+    style::{Icon, Item, ROW, SMALL, bold, caption, item, toggle},
 };
 use crate::model::{self, Activity, Pane, View};
 
@@ -58,6 +58,24 @@ impl App {
         }
     }
 
+    /// What a pane's row says of it. Under its name, what its program is waiting
+    /// for or failed at, with what the program says of itself. At its edge, how
+    /// far along it is, where it says, or how long it has been as it is.
+    pub(super) fn told(&self, ctx: &egui::Context, pane: &Pane) -> (String, Option<String>) {
+        let word = pane.activity.word().unwrap_or_default();
+        let said = model::line(word, &pane.saying());
+        let along = pane.along().map(|percent| format!("{percent}%"));
+        let edge = along.or_else(|| {
+            kind(pane)?;
+            let lasted = self.heard.get(&pane.id)?.since?.elapsed();
+            // The time is said anew when it comes to another minute.
+            let left = 60 - lasted.as_secs() % 60;
+            ctx.request_repaint_after(Duration::from_secs(left));
+            Some(ago(lasted))
+        });
+        (said, edge)
+    }
+
     /// The list itself, in place of the servers and their sessions.
     pub(super) fn agents(&mut self, ui: &mut egui::Ui, views: &[View]) {
         // Each pane listed, under its kind: since when it has been so, its
@@ -76,8 +94,7 @@ impl App {
         if listed.iter().all(Vec::is_empty) {
             return caption(ui, egui::RichText::new("Nothing is at work."));
         }
-        let now = Instant::now();
-        let (mut picked, mut wait) = (None, None);
+        let mut picked = None;
         for (kind, mut panes) in KINDS.iter().zip(listed) {
             if panes.is_empty() {
                 continue;
@@ -87,45 +104,32 @@ impl App {
             let head = format!("{kind} · {}", panes.len());
             caption(ui, egui::RichText::new(head).font(bold(SMALL)));
             panes.sort_by_key(|listed| listed.0);
-            for (since, server, session, pane) in panes {
-                // What it is waiting for or failed at, then what it says of
-                // itself, and with neither its title.
-                let word = pane
-                    .activity
-                    .word()
-                    .filter(|_| pane.activity != Activity::Done);
-                let said = model::line(word.unwrap_or_default(), &pane.saying());
-                let more = if said.is_empty() { &pane.title } else { &said };
-                // How far along it is, where it says, or how long it has been so.
-                let along = pane.along().map(|percent| format!("{percent}%"));
-                let lasted = since.map(|since| now.duration_since(since));
-                let word = along.or_else(|| {
-                    // The time is said anew when it comes to another minute.
-                    let left = 60 - lasted?.as_secs() % 60;
-                    wait = Some(wait.map_or(left, |wait: u64| wait.min(left)));
-                    lasted.map(ago)
-                });
+            for (_, server, session, pane) in panes {
+                // With nothing said of it, its title. That is under the pointer
+                // otherwise.
+                let (said, word) = self.told(ui.ctx(), pane);
+                let (under, tip) = match said.is_empty() {
+                    true => (pane.title.as_str(), ""),
+                    false => (said.as_str(), pane.title.as_str()),
+                };
                 let shown = server == self.current && self.focused.as_ref() == Some(&pane.id);
                 let host = &self.servers[server].host.label;
                 let row = Item {
                     id: Some(egui::Id::unique(("at work", host, &pane.id))),
                     icon: Some(pane.program),
                     label: &session.name,
-                    more,
+                    under,
                     selected: shown,
                     mark: dot(ui.ctx(), pane.activity),
                     word: word.as_deref(),
-                    tip: &pane.title,
+                    tip,
                     ..Default::default()
                 };
-                let size = Vec2::new(ui.available_width(), 30.0);
+                let size = Vec2::new(ui.available_width(), ROW);
                 if item(ui, size, row).0.clicked() {
                     picked = Some((server, pane.id.clone()));
                 }
             }
-        }
-        if let Some(wait) = wait {
-            ui.ctx().request_repaint_after(Duration::from_secs(wait));
         }
         if let Some((server, pane)) = picked {
             self.reveal(server, &pane);

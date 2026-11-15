@@ -13,8 +13,8 @@ use super::{
     pointer::{Pointer, Wheel},
     render::{Grid, rgb},
     style::{
-        BODY, BORDER, CARD, CARD_RADIUS, DIM, ICON, Icon, Item, SMALL, SMALL_BUTTON, TEXT, badge,
-        confirm, eased, entry, fitted, small_button, tints,
+        BODY, BORDER, CARD, CARD_RADIUS, DIM, ICON, Icon, Item, SMALL, SMALL_BUTTON, TEXT, TILE,
+        badge, confirm, eased, entry, fitted, small_button, tints,
     },
 };
 use crate::{
@@ -113,7 +113,7 @@ impl App {
             // title too long for the room left ends in an ellipsis.
             let color = if active { TEXT } else { DIM };
             let lead = header.left_center() + egui::vec2(8.0, 0.0);
-            badge(ui.painter(), pane.program, lead, DIM, said);
+            badge(ui.painter(), pane.program, lead, TILE, DIM, said);
             let font = FontId::proportional(SMALL);
             let title = fitted(ui, &pane.title, font, color, header.width() - 16.0 - ICON);
             let corner = lead + egui::vec2(ICON, -title.size().y / 2.0);

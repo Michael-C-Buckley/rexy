@@ -8,7 +8,7 @@ use super::{
     App,
     close::{Ask, CLOSE, asking, closer},
     heard::dot,
-    style::{DIM, Icon, Item, entry, item, tints},
+    style::{DIM, Icon, Item, ROW, entry, item, tints},
 };
 use crate::model::{self, Action, Activity, Edit, Session, Window};
 
@@ -149,7 +149,7 @@ impl App {
             [tab] => Some(tab),
             _ => None,
         };
-        let height = if lone.is_some() { 30.0 } else { 28.0 };
+        let height = if lone.is_some() { ROW } else { 28.0 };
         let size = Vec2::new(ui.available_width(), height);
         let id = self.row(&target);
         if self.renaming(ui, &target, id, size).is_some() {
@@ -169,18 +169,21 @@ impl App {
         let ask = self.closing.ask(id, spared);
         // What the tab's own row would say of it.
         let muted = lone.map(|tab| self.remembered.kept.muted.contains(&tab.id));
-        let (said, word, tip) = speaks(lone);
+        // Under the session's name, what the tab says or the tab's own.
+        let told = lone.map(|tab| self.lines(ui.ctx(), tab, &session.name, tab.name()));
+        let (said, under, word, tip) = told.unwrap_or_default();
         let row = Item {
             id: Some(id),
             caption: lone.is_none(),
             icon: lone.map(Window::program),
-            more: lone.map_or("", Window::name),
+            under: &under,
             selected: lone.is_some() && shown,
             mark: match muted {
                 Some(true) => Some((Icon::Muted, DIM)),
                 _ => dot(ui.ctx(), said),
             },
-            word: word.as_deref(),
+            // A muted tab's mark has the edge to itself.
+            word: word.as_deref().filter(|_| muted != Some(true)),
             tip: &tip,
             buttons: &[(Icon::Plus, "New tab"), (Icon::Close, "Close session")],
             confirm: (ask == Ask::Again).then_some(CLOSE),
@@ -269,7 +272,18 @@ impl App {
             return field;
         }
         let muted = self.remembered.kept.muted.contains(&window.id);
-        let (said, word, tip) = speaks(Some(window));
+        // Along the top a tab has one line. Down the sidebar it says under its
+        // name what it does, or its terminal's title where it has another name.
+        let (said, under, word, tip) = match across {
+            true => {
+                let (said, word, tip) = speaks(window);
+                (said, String::new(), word, tip)
+            }
+            false => {
+                let title = window.top().map_or("", |pane| &pane.title);
+                self.lines(ui.ctx(), window, window.name(), title)
+            }
+        };
         let selected = shown == Some(&window.id);
         let spared = window.idle();
         let ask = self.closing.ask(id, spared);
@@ -282,7 +296,8 @@ impl App {
             } else {
                 dot(ui.ctx(), said)
             },
-            word: word.as_deref(),
+            under: &under,
+            word: word.as_deref().filter(|_| !muted),
             buttons: &[(Icon::Close, "Close tab")],
             confirm: (ask == Ask::Again).then_some(CLOSE),
             tip: &tip,
@@ -314,6 +329,29 @@ impl App {
             (None, None) => {}
         }
         response.rect
+    }
+
+    /// What a tab says on a row of the sidebar that goes by `name`: the most
+    /// pressing thing any of its panes does, the line under the name, the word
+    /// at the row's edge, and what the pointer is told besides. The line is
+    /// what its program says. Failing that it is `title`, which is under the
+    /// pointer otherwise, and is not said at all where it is the name.
+    fn lines(
+        &self,
+        ctx: &egui::Context,
+        tab: &Window,
+        name: &str,
+        title: &str,
+    ) -> (Activity, String, Option<String>, String) {
+        let Some(top) = tab.top() else {
+            return Default::default();
+        };
+        let (said, edge) = self.told(ctx, top);
+        let title = if title == name { "" } else { title }.to_owned();
+        match said.is_empty() {
+            true => (top.activity, title, edge, String::new()),
+            false => (top.activity, said, edge, title),
+        }
     }
 
     /// Do what a session's or a tab's menu was asked. `name` is the one it goes by.
@@ -390,8 +428,8 @@ impl App {
 /// What a tab has to say on its row: the most pressing thing any of its panes
 /// does, the word for that or how far along it is, and all of it in full, for a
 /// row with no room for it, with what its program adds.
-fn speaks(tab: Option<&Window>) -> (Activity, Option<String>, String) {
-    let Some(top) = tab.and_then(Window::top) else {
+fn speaks(tab: &Window) -> (Activity, Option<String>, String) {
+    let Some(top) = tab.top() else {
         return Default::default();
     };
     let word = top.word();
