@@ -151,3 +151,98 @@ fn only_a_server_showing_nothing_is_asked_for_its_first_session() {
     view.sessions.clear();
     assert_eq!(first(&view), None);
 }
+
+#[test]
+fn a_key_moves_the_border_of_the_split_a_pane_is_in_and_balancing_evens_them() {
+    // One pane beside two, one above the other.
+    let border = |before: &str, after: &str, upright, room, at| Border {
+        before: before.into(),
+        after: after.into(),
+        upright,
+        room,
+        at,
+    };
+    let tab = |split: f32| Window {
+        panes: vec![
+            pane("a", [0.0, 0.0, split, 1.0]),
+            pane("b", [split, 0.0, 1.0 - split, 0.5]),
+            pane("c", [split, 0.5, 1.0 - split, 0.5]),
+        ],
+        borders: vec![
+            border("a", "b", true, [0.0, 0.0, 1.0, 1.0], split),
+            border("b", "c", false, [split, 0.0, 1.0 - split, 1.0], 0.5),
+        ],
+        ..Default::default()
+    };
+    let half = tab(0.5);
+    // The border by the pane before it, and the share that side is to have.
+    let nudged = |pane: &str, toward| {
+        let asked = half.nudged(pane, toward)?;
+        Some(format!("{} {:.2}", asked.before, asked.ratio))
+    };
+    assert_eq!(nudged("a", [1.0, 0.0]).as_deref(), Some("a 0.55"));
+    assert_eq!(nudged("b", [-1.0, 0.0]).as_deref(), Some("a 0.45"));
+    // The innermost split that lies that way.
+    assert_eq!(nudged("b", [0.0, 1.0]).as_deref(), Some("b 0.55"));
+    assert_eq!(nudged("c", [0.0, -1.0]).as_deref(), Some("b 0.45"));
+    // No split of its own lies up and down of the one beside the two.
+    assert_eq!(nudged("a", [0.0, 1.0]), None);
+    // A border goes no further than leaves each side a little.
+    let last = tab(0.93).nudged("a", [1.0, 0.0]).unwrap();
+    assert_eq!(last, half.borders[0].moved(Border::MOST));
+    assert_eq!(tab(Border::MOST).nudged("a", [1.0, 0.0]), None);
+    // Balanced, the one is as wide as the two, which share their half.
+    assert_eq!(tab(0.3).balanced(), [half.borders[0].moved(0.5)]);
+    assert!(half.balanced().is_empty());
+    // Three in a row have a third each: the first, and the others half the rest.
+    let mut row = tab(0.5);
+    row.panes[1] = pane("b", [0.5, 0.0, 0.3, 1.0]);
+    row.panes[2] = pane("c", [0.8, 0.0, 0.2, 1.0]);
+    row.borders[1] = border("b", "c", true, [0.5, 0.0, 0.5, 1.0], 0.8);
+    let [first, rest] = &row.balanced()[..] else {
+        panic!("both borders move");
+    };
+    assert!((first.ratio - 1.0 / 3.0).abs() < 0.001);
+    assert_eq!(*rest, row.borders[1].moved(0.5));
+}
+
+#[test]
+fn a_directory_is_named_shortly_for_a_title() {
+    assert_eq!(folder("/home/ada"), "~");
+    assert_eq!(folder("/home/ada/code"), "~/code");
+    assert_eq!(folder("/home/ada/code/x"), "~/code/x");
+    // Many levels down, the last two say where.
+    let deep = "/home/ada/work/projects/rex-lite";
+    assert_eq!(folder(deep), "…/projects/rex-lite");
+    assert_eq!(folder("/var/log/nginx"), "…/log/nginx");
+    // A shell may give it as an address, with its machine's name.
+    assert_eq!(folder("file://studio/home/ada/code"), "~/code");
+    assert_eq!(folder("/Users/a/b"), "~/b");
+    assert_eq!(folder("/root"), "~");
+    assert_eq!(folder("/rootfs/x"), "/rootfs/x");
+    assert_eq!(folder("/"), "/");
+    assert_eq!(folder("/etc"), "/etc");
+}
+
+#[test]
+fn a_pane_says_how_far_along_it_is_only_while_it_works() {
+    let pane = |activity, progress| Pane {
+        activity,
+        progress,
+        task: "Refactor auth".into(),
+        message: "running tests".into(),
+        ..Pane::default()
+    };
+    assert_eq!(
+        pane(Activity::Working, Some(60)).word().as_deref(),
+        Some("60%")
+    );
+    assert_eq!(pane(Activity::Working, None).word(), None);
+    assert_eq!(
+        pane(Activity::Done, Some(60)).word().as_deref(),
+        Some("Done")
+    );
+    assert_eq!(pane(Activity::Idle, Some(60)).word(), None);
+    let saying = pane(Activity::Working, None).saying();
+    assert_eq!(saying, "Refactor auth: running tests");
+}

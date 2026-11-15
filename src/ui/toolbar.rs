@@ -6,7 +6,7 @@ use super::{
     App,
     commands::title,
     frame::{controls, titlebar},
-    heard::dot,
+    heard::{dot, worn},
     style::{BODY, DIM, Icon, Item, TEXT, TOOLBAR, bold, fitted, icon_button, item},
 };
 use crate::model::{Action, View, Window};
@@ -35,19 +35,16 @@ impl App {
         }
         let button = icon_button(ui, Icon::Behind, "Panes out of sight");
         // It wears the most pressing thing any of them has to say.
-        let said = hidden.iter().map(|pane| pane.activity).max();
-        if let Some((_, color)) = dot(said.unwrap_or_default()) {
-            let corner = button.rect.right_top() + egui::vec2(-3.5, 4.5);
-            ui.painter().circle_filled(corner, 3.5, color);
-        }
+        worn(ui, &button, hidden.iter().map(|pane| pane.activity).max());
         let mut picked = None;
         egui::Popup::menu(&button).width(260.0).show(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for pane in hidden {
+                let word = pane.word();
                 let row = Item {
                     icon: Some(pane.program),
-                    mark: dot(pane.activity),
-                    word: pane.activity.word(),
+                    mark: dot(ui.ctx(), pane.activity),
+                    word: word.as_deref(),
                     label: &pane.title,
                     ..Default::default()
                 };

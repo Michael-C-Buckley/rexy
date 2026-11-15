@@ -13,8 +13,8 @@ use super::{
     pointer::{Pointer, Wheel},
     render::{Grid, rgb},
     style::{
-        ACCENT, BODY, BORDER, CARD, CARD_RADIUS, DIM, Icon, Item, SMALL, SMALL_BUTTON, TEXT,
-        confirm, eased, entry, fitted, small_button,
+        BODY, BORDER, CARD, CARD_RADIUS, DIM, ICON, Icon, Item, SMALL, SMALL_BUTTON, TEXT, badge,
+        confirm, eased, entry, fitted, small_button, tints,
     },
 };
 use crate::{
@@ -32,7 +32,8 @@ const LAST: f32 = 0.5;
 impl App {
     /// A pane of the tab on show: a card on the window's ground, `rect`, in its
     /// terminal's own colour. It may show a last screen: of a connection that
-    /// was lost, or of its own terminal where that alone is fed no more.
+    /// was lost, or of its own terminal where that alone is fed no more. The
+    /// card may be on its way to where it comes to `rest`.
     pub(super) fn terminal_pane(
         &mut self,
         ui: &mut egui::Ui,
@@ -40,7 +41,15 @@ impl App {
         window: &Window,
         pane: &Pane,
         rect: Rect,
+        rest: Rect,
     ) {
+        let frame = pane.frame.as_ref();
+        let card = frame.map_or(CARD, |frame| rgb(frame.bg));
+        ui.painter().rect_filled(rect, CARD_RADIUS, card);
+        // One that has only begun to come in has room for nothing yet.
+        if rect != rest && rect.width().min(rect.height()) < 48.0 {
+            return;
+        }
         // A screen with something to say of its terminal is its last.
         let live = view.connected && (pane.frame.is_none() || pane.status.is_empty());
         let active = self.focused.as_deref() == Some(&pane.id);
@@ -57,9 +66,6 @@ impl App {
         // Its view is to move through its history.
         let mut scroll = None;
         let mut terminal_rect = rect;
-        let frame = pane.frame.as_ref();
-        let card = frame.map_or(CARD, |frame| rgb(frame.bg));
-        ui.painter().rect_filled(rect, CARD_RADIUS, card);
         // The way back from a pane that fills the tab is where the way to it was.
         let (zoom_icon, zoom) = match window.zoomed {
             true => (Icon::Restore, "Restore Panes"),
@@ -95,26 +101,26 @@ impl App {
             }
             header.max.x -= 2.0 * SMALL_BUTTON + 4.0;
             // What it has to say sits ahead of them, as on its tab.
-            if let (Some(word), Some((_, color))) = (pane.activity.word(), dot(pane.activity)) {
+            let said = dot(ui.ctx(), pane.activity).map(|(_, color)| color);
+            if let Some((word, color)) = pane.word().zip(said) {
                 let (edge, font) = (header.right_center(), FontId::proportional(SMALL));
                 let word = ui
                     .painter()
                     .text(edge, Align2::RIGHT_CENTER, word, font, color);
                 header.max.x = word.left() - 8.0;
             }
-            // A title too long for the room left ends in an ellipsis.
+            // Its program's icon leads, with the dot of what it has to say. A
+            // title too long for the room left ends in an ellipsis.
             let color = if active { TEXT } else { DIM };
+            let lead = header.left_center() + egui::vec2(8.0, 0.0);
+            badge(ui.painter(), pane.program, lead, DIM, said);
             let font = FontId::proportional(SMALL);
-            let title = fitted(ui, &pane.title, font, color, header.width() - 8.0);
-            let corner = header.left_center() + egui::vec2(8.0, -title.size().y / 2.0);
+            let title = fitted(ui, &pane.title, font, color, header.width() - 16.0 - ICON);
+            let corner = lead + egui::vec2(ICON, -title.size().y / 2.0);
             ui.painter().galley(corner, title, color);
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
-        // Under a header the terminal starts at once; with none, the card keeps
-        // it from its own top edge.
-        let inset = if window.split() { 2.0 } else { 8.0 };
-        let mut within = terminal_rect.shrink2(egui::vec2(12.0, 8.0));
-        within.min.y = terminal_rect.top() + inset;
+        let within = room(rect, window.split());
         // What dims the terminal, where it is dimmed, keeps to the card's corners.
         let below = CornerRadius {
             sw: CARD_RADIUS,
@@ -179,7 +185,13 @@ impl App {
             self.toast
                 .say(format!("The link could not be opened: {error}"));
         }
-        let size = grid.size(ui.ctx().pixels_per_point());
+        // The terminal is as large as the card will be at rest, from the first:
+        // its program is told its size once, not all the way there.
+        let settled = Grid {
+            rect: room(rest, window.split()),
+            ..grid
+        };
+        let size = settled.size(ui.ctx().pixels_per_point());
         if state.last_size != Some(size) {
             let (pane, client) = (pane.id.clone(), &self.servers[self.current].client);
             // A size that could not be sent is sent when it can be.
@@ -310,7 +322,7 @@ impl App {
         // there are several to tell it from.
         let own = egui::Id::unique(("own", &pane.id));
         let own = eased(ui, own, active && window.split());
-        let line = Stroke::new(1.0, BORDER.lerp_to_gamma(ACCENT, own));
+        let line = Stroke::new(1.0, BORDER.lerp_to_gamma(tints(ui.ctx()).accent, own));
         ui.painter()
             .rect_stroke(rect, CARD_RADIUS, line, StrokeKind::Inside);
         if !tracking {
@@ -386,6 +398,15 @@ impl App {
             let _ = client.try_send(Action::Focus { pane, gained });
         }
     }
+}
+
+/// The room a card gives its terminal: what its edges leave, under its header
+/// where it has one. Under a header the terminal starts at once; with none, the
+/// card keeps it from its own top edge.
+fn room(card: Rect, header: bool) -> Rect {
+    let mut room = card.shrink2(egui::vec2(12.0, 8.0));
+    room.min.y = card.top() + if header { PANE_HEADER + 2.0 } else { 8.0 };
+    room
 }
 
 /// Place the IME at the terminal cursor and show its composition there.

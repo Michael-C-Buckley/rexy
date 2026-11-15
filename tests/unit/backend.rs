@@ -112,7 +112,8 @@ fn what_is_not_a_terminal_keeps_its_place_and_says_what_it_is() {
 fn the_most_pressing_of_what_programs_report_speaks_for_their_terminal() {
     let none = (Activity::Idle, "", None);
     fn reported(records: &Value) -> (Activity, &str, Option<Program>) {
-        super::reported(items(records))
+        let (activity, record, app) = super::reported(items(records));
+        (activity, record["msg"].as_str().unwrap_or_default(), app)
     }
     let unheard = json!([{"state": "unheard-of"}]);
     assert_eq!(reported(&json!([])), none);
@@ -253,6 +254,58 @@ fn a_terminal_is_what_the_news_of_it_last_said() {
     assert_eq!(report(&mut block, "build/test", None), Some("Done".into()));
     assert_eq!(report(&mut block, "", None), None);
     assert_eq!(block.says(), (Activity::Idle, "", None));
+}
+
+#[test]
+fn a_pane_is_given_its_shells_directory_at_its_prompt_and_what_its_program_is_at() {
+    let block = Block {
+        title: "ada@studio: /home/ada/code".into(),
+        shell: Some(7),
+        foreground: Some(7),
+        prompt: "zsh".into(),
+        ..Block::default()
+    };
+    let mut blocks = HashMap::from([("p".to_owned(), block)]);
+    let pane = |blocks: &HashMap<String, Block>| {
+        let held = Pane {
+            id: "p".into(),
+            title: "Terminal".into(),
+            ..Pane::default()
+        };
+        let tab = Window {
+            panes: vec![held],
+            ..Window::default()
+        };
+        let mut sessions = vec![Session {
+            windows: vec![tab],
+            ..Session::default()
+        }];
+        fill(&mut sessions, blocks);
+        sessions.remove(0).windows.remove(0).panes.remove(0)
+    };
+    let note = |blocks: &mut HashMap<String, Block>, news| blocks.get_mut("p").unwrap().note(news);
+    // With no directory known, the title its prompt set.
+    assert_eq!(pane(&blocks).title, "ada@studio: /home/ada/code");
+    note(&mut blocks, News::Folder("/home/ada/code".into()));
+    assert_eq!(pane(&blocks).title, "zsh ~/code");
+    // A program in the foreground has a title of its own to go by.
+    let (program, pid) = (None, Some(9));
+    note(&mut blocks, News::Program { program, pid });
+    assert_eq!(pane(&blocks).title, "ada@studio: /home/ada/code");
+    // What it is at and how far along, by the record that speaks for it, or
+    // failing that as the terminal itself was told.
+    note(&mut blocks, News::Progress(Some(10)));
+    let status = |record| News::Status(vec![(String::new(), Some(record))]);
+    let working = json!({"state": "working", "title": "Refactor auth", "progress": 60});
+    note(&mut blocks, status(working));
+    let held = pane(&blocks);
+    assert_eq!(
+        (held.task.as_str(), held.progress),
+        ("Refactor auth", Some(60))
+    );
+    note(&mut blocks, status(json!({"state": "working"})));
+    let held = pane(&blocks);
+    assert_eq!((held.task.as_str(), held.progress), ("", Some(10)));
 }
 
 #[test]

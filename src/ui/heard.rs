@@ -1,9 +1,11 @@
 //! What the panes' programs have to say, and what of it is still news.
+use std::time::Instant;
+
 use eframe::egui::{self, Color32};
 
 use super::{
     App,
-    style::{ACCENT, AMBER, GREEN, Icon, RED},
+    style::{Icon, tints},
 };
 use crate::model::{Activity, View};
 
@@ -11,6 +13,8 @@ use crate::model::{Activity, View};
 #[derive(Default)]
 pub struct Heard {
     said: Activity,
+    /// When it came to say that, if it was while this window was open.
+    pub since: Option<Instant>,
     /// With that said, the pane has been on show in this window, with the window in use.
     seen: bool,
     /// Its bell has rung since then.
@@ -26,6 +30,7 @@ impl App {
     /// rang unseen, and what its program ended with until that has been looked at.
     pub(super) fn hear(&mut self, ctx: &egui::Context, views: &mut [View]) {
         let watching = ctx.input(|i| i.focused);
+        let now = Instant::now();
         // Something was said for the desktop, which is told what need not be passed on.
         let news = self.herald.news();
         let mut open = 0;
@@ -48,6 +53,7 @@ impl App {
                     if heard.said != pane.activity {
                         heard.said = pane.activity;
                         heard.seen = false;
+                        heard.since = Some(now);
                     }
                     heard.rang |= view.rang.contains(&pane.id);
                     if seen {
@@ -70,6 +76,7 @@ impl App {
                     if said != pane.activity {
                         pane.activity = said;
                         pane.message.clear();
+                        pane.task.clear();
                     }
                 }
             }
@@ -82,14 +89,24 @@ impl App {
     }
 }
 
+/// A button wears the most pressing thing said by what it opens, as a dot on
+/// its corner.
+pub fn worn(ui: &egui::Ui, button: &egui::Response, said: Option<Activity>) {
+    if let Some((_, color)) = dot(ui.ctx(), said.unwrap_or_default()) {
+        let corner = button.rect.right_top() + egui::vec2(-3.5, 4.5);
+        ui.painter().circle_filled(corner, 3.5, color);
+    }
+}
+
 /// The mark of a tab whose programs have something to say, in the colour of it.
-pub fn dot(activity: Activity) -> Option<(Icon, Color32)> {
+pub fn dot(ctx: &egui::Context, activity: Activity) -> Option<(Icon, Color32)> {
+    let tints = tints(ctx);
     let color = match activity {
         Activity::Idle => return None,
-        Activity::Working => ACCENT,
-        Activity::Done => GREEN,
-        Activity::Error => RED,
-        Activity::Rang | Activity::Blocked(_) => AMBER,
+        Activity::Working => tints.accent,
+        Activity::Done => tints.done,
+        Activity::Error => tints.failed,
+        Activity::Rang | Activity::Blocked(_) => tints.waiting,
     };
     Some((Icon::Dot, color))
 }

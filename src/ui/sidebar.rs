@@ -41,16 +41,24 @@ impl App {
                 let (tip, toggle) = ("Tabs along the top", "client.sidebar.toggle");
                 self.button(&mut top, &views[self.current], Icon::Sidebar, tip, toggle);
                 top.add_space(2.0);
-                let palette = "client.palette.toggle";
-                let tip = "Find a session, a tab or something to do";
-                let field = search(&mut top, &self.keys.map.shortcut(palette));
-                if field.on_hover_text(tip).clicked() {
-                    self.todo.push((palette, None));
-                }
+                top.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    self.watch(ui, views);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let palette = "client.palette.toggle";
+                        let tip = "Find a session, a tab or something to do";
+                        let field = search(ui, &self.keys.map.shortcut(palette));
+                        if field.on_hover_text(tip).clicked() {
+                            self.todo.push((palette, None));
+                        }
+                    });
+                });
                 let list = egui::ScrollArea::vertical().auto_shrink(false);
                 list.show(ui, |ui| {
                     rows.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
+                        if self.agents {
+                            return self.agents(ui, views);
+                        }
                         for (server, view) in views.iter().enumerate() {
                             // One with nothing under its name needs less room after it.
                             let bare = |view: &View| view.connected && view.sessions.is_empty();

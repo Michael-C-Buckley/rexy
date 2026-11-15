@@ -8,7 +8,7 @@ use super::{
     App,
     close::{Ask, CLOSE, asking, closer},
     heard::dot,
-    style::{ACCENT, DIM, Icon, Item, entry, item},
+    style::{DIM, Icon, Item, entry, item, tints},
 };
 use crate::model::{self, Action, Activity, Edit, Session, Window};
 
@@ -116,7 +116,7 @@ impl App {
             Some((_, space)) => (along(space.min) - 1.0, space),
             None => (along(rows[to - 1].1.max) + 1.0, &rows[to - 1].1),
         };
-        let line = Stroke::new(2.0, ACCENT);
+        let line = Stroke::new(2.0, tints(ui.ctx()).accent);
         if across {
             ui.painter().vline(edge, row.y_range(), line);
         } else {
@@ -169,8 +169,7 @@ impl App {
         let ask = self.closing.ask(id, spared);
         // What the tab's own row would say of it.
         let muted = lone.map(|tab| self.remembered.kept.muted.contains(&tab.id));
-        let (said, message) = lone.map_or((Activity::Idle, ""), Window::says);
-        let tip = model::line(said.word().unwrap_or_default(), message);
+        let (said, word, tip) = speaks(lone);
         let row = Item {
             id: Some(id),
             caption: lone.is_none(),
@@ -179,9 +178,9 @@ impl App {
             selected: lone.is_some() && shown,
             mark: match muted {
                 Some(true) => Some((Icon::Muted, DIM)),
-                _ => dot(said),
+                _ => dot(ui.ctx(), said),
             },
-            word: said.word(),
+            word: word.as_deref(),
             tip: &tip,
             buttons: &[(Icon::Plus, "New tab"), (Icon::Close, "Close session")],
             confirm: (ask == Ask::Again).then_some(CLOSE),
@@ -270,13 +269,10 @@ impl App {
             return field;
         }
         let muted = self.remembered.kept.muted.contains(&window.id);
-        let (said, message) = window.says();
+        let (said, word, tip) = speaks(Some(window));
         let selected = shown == Some(&window.id);
         let spared = window.idle();
         let ask = self.closing.ask(id, spared);
-        // What it says in full, for a row with no room for it, and with the line
-        // its program adds.
-        let tip = model::line(said.word().unwrap_or_default(), message);
         let row = Item {
             id: Some(id),
             icon: Some(window.program()),
@@ -284,9 +280,9 @@ impl App {
             mark: if muted {
                 Some((Icon::Muted, DIM))
             } else {
-                dot(said)
+                dot(ui.ctx(), said)
             },
-            word: said.word(),
+            word: word.as_deref(),
             buttons: &[(Icon::Close, "Close tab")],
             confirm: (ask == Ask::Again).then_some(CLOSE),
             tip: &tip,
@@ -389,6 +385,18 @@ impl App {
         }
         Some(rect)
     }
+}
+
+/// What a tab has to say on its row: the most pressing thing any of its panes
+/// does, the word for that or how far along it is, and all of it in full, for a
+/// row with no room for it, with what its program adds.
+fn speaks(tab: Option<&Window>) -> (Activity, Option<String>, String) {
+    let Some(top) = tab.and_then(Window::top) else {
+        return Default::default();
+    };
+    let word = top.word();
+    let tip = model::line(word.as_deref().unwrap_or_default(), &top.saying());
+    (top.activity, word, tip)
 }
 
 /// What a session's or a tab's menu was asked, if anything. A double click asks for

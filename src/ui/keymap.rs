@@ -16,6 +16,19 @@ fn items(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
 }
 
+/// A key as it is shown: `ctrl+shift+d` is `Ctrl+Shift+D`.
+pub fn shown(key: &str) -> String {
+    let word = |word: &str| match word.trim_matches(['[', ']']) {
+        "pageup" => "PageUp".to_owned(),
+        "pagedown" => "PageDown".to_owned(),
+        word => {
+            let first = word.chars().take(1).flat_map(char::to_uppercase);
+            first.chain(word.chars().skip(1)).collect()
+        }
+    };
+    key.split('+').map(word).collect::<Vec<_>>().join("+")
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
     /// One key as Rex spells it, or the keys of a sequence in order.
@@ -94,30 +107,74 @@ impl Keymap {
         self.modes.iter().any(|mode| mode.name == name)
     }
 
+    /// One of the server's own actions, by its name.
+    pub fn served(&self, name: &str) -> Option<&(String, String, bool)> {
+        self.served.iter().find(|served| served.0 == name)
+    }
+
     /// Whether holding the key of an action does it again.
     pub fn repeats(&self, name: &str) -> bool {
-        let served = self.served.iter().find(|served| served.0 == name);
         let own = commands::command(name).map(|own| own.2);
-        own.or(served.map(|served| served.2)) == Some(true)
+        own.or(self.served(name).map(|served| served.2)) == Some(true)
     }
 
     /// The keys that do something, as they are shown: `Ctrl+Shift+D`, or nothing
     /// for what has none. Of several, those that would be tried first.
     pub fn shortcut(&self, name: &str) -> String {
-        let word = |word: &str| match word.trim_matches(['[', ']']) {
-            "pageup" => "PageUp".to_owned(),
-            "pagedown" => "PageDown".to_owned(),
-            word => {
-                let first = word.chars().take(1).flat_map(char::to_uppercase);
-                first.chain(word.chars().skip(1)).collect()
-            }
-        };
-        let key = |key: &String| key.split('+').map(word).collect::<Vec<_>>().join("+");
         let mut bound = self.bindings.iter();
         let bound = bound.find(|bound| bound.name == name && bound.mode.is_none());
         bound.map_or_else(String::new, |bound| {
-            bound.keys.iter().map(key).collect::<Vec<_>>().join(", ")
+            let keys = bound.keys.iter().map(|key| shown(key));
+            keys.collect::<Vec<_>>().join(", ")
         })
+    }
+
+    /// What an action is called where it is shown: by this client's table, by the
+    /// server whose action it is, or failing both by its name. A mode is
+    /// entered by its own name.
+    pub fn title(&self, bound: &Binding) -> String {
+        match (bound.name.as_str(), bound.args["name"].as_str()) {
+            ("client.mode.enter", Some(mode)) => format!("{mode}…"),
+            (FORWARD, _) => "Send to Terminal".to_owned(),
+            (name, _) => {
+                let served = self.served(name).map_or("", |served| &served.1);
+                let titles = [commands::title(name), served, name];
+                titles
+                    .into_iter()
+                    .find(|title| !title.is_empty())
+                    .unwrap_or_default()
+                    .to_owned()
+            }
+        }
+    }
+
+    /// What can be pressed next, and what each key would do: after the keys
+    /// `pressed` so far of a sequence, each in the ways Rex spells it, or with
+    /// none pressed in the last of the `modes` entered. Of several bindings for
+    /// a key, the one that would be tried first.
+    pub fn next(&self, modes: &[(String, bool)], pressed: &[Vec<String>]) -> Vec<(&str, String)> {
+        let entered = |mode: &str| modes.iter().any(|(name, _)| name == mode);
+        let last = modes.last().map(|(name, _)| name.as_str());
+        let goes_on = |bound: &&Binding| {
+            let follows = bound.keys.len() > pressed.len() && fits(pressed, &bound.keys);
+            // With nothing pressed, only what the mode itself binds is worth saying.
+            follows
+                && match pressed.is_empty() {
+                    true => bound.mode.as_deref() == last,
+                    false => bound.mode.as_deref().is_none_or(entered),
+                }
+        };
+        let mut next: Vec<(&str, String)> = Vec::new();
+        for bound in self.bindings.iter().filter(goes_on) {
+            let key = bound.keys[pressed.len()].as_str();
+            if !next.iter().any(|(seen, _)| *seen == key) {
+                // More keys follow it.
+                let more = bound.keys.len() > pressed.len() + 1;
+                let title = self.title(bound);
+                next.push((key, if more { format!("{title}…") } else { title }));
+            }
+        }
+        next
     }
 
     /// What a control says it does under the pointer, with the keys that do the same.
@@ -144,6 +201,13 @@ pub enum Step<'a> {
     Run(&'a Binding),
 }
 
+/// Whether the keys `pressed`, each in the ways Rex spells it, are a binding's
+/// keys or the first of them.
+fn fits(pressed: &[Vec<String>], keys: &[String]) -> bool {
+    let spelled = |(pressed, key): (&Vec<String>, _)| pressed.contains(key);
+    keys.len() >= pressed.len() && pressed.iter().zip(keys).all(spelled)
+}
+
 /// What the last key pressed comes to. `pressed` ends with it, after the keys of
 /// the sequence it may go on, each in the ways Rex spells it. `modes` are those
 /// entered, the last of them the first to be asked. Of several bindings for a
@@ -160,10 +224,7 @@ pub fn resolve<'a>(
     if escape && pressed.len() > 1 {
         return Step::Void;
     }
-    let fits = |keys: &[String]| {
-        let spelled = |(pressed, key): (&Vec<String>, _)| pressed.contains(key);
-        keys.len() >= pressed.len() && pressed.iter().zip(keys).all(spelled)
-    };
+    let fits = |keys: &[String]| fits(pressed, keys);
     let first = |mode: Option<&str>| {
         let mut bound = map.bindings.iter();
         let bound = bound.find(|b| b.mode.as_deref() == mode && fits(&b.keys) && can(b))?;

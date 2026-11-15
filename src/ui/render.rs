@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use libghostty_vt::style::Underline;
 
-use super::style;
+use super::{boxes, style};
 use crate::{
     model::Size,
     terminal::{CursorShape, Frame, Row},
@@ -83,6 +83,9 @@ struct CachedRow {
     _source: Arc<Row>,
     glyphs: Vec<GlyphRun>,
     backgrounds: Vec<(usize, usize, Color32)>,
+    /// The characters that draw lines and blocks, each by its column: they are
+    /// drawn to fill their cells, which a font's glyphs for them do not.
+    boxes: Vec<(usize, boxes::Drawing, Color32)>,
     /// Columns, the height in the cell as a fraction, and the kind of line.
     decorations: Vec<(usize, usize, f32, Color32, Underline)>,
 }
@@ -108,6 +111,11 @@ impl PaneView {
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(grid.rect));
         let (fg, bg) = (rgb(frame.fg), rgb(frame.bg));
         let visible = ((grid.rect.height() / grid.cell.y).ceil() as usize).min(frame.lines.len());
+        let selection = style::tints(painter.ctx()).accent.gamma_multiply(0.4);
+        // What the characters that draw lines and blocks fill, and how thick a
+        // light line of theirs is.
+        let mut fills = egui::Mesh::default();
+        let light = (grid.font_size / 14.0).max(1.0 / painter.pixels_per_point());
         // A row keeps its shaped text wherever on screen it moves to, and loses it
         // when it is shown no more.
         let mut shaped = std::mem::take(&mut self.cached_rows);
@@ -123,8 +131,11 @@ impl PaneView {
                 }
             }
             if let Some(&Some((start, end))) = frame.selected.get(y) {
-                let fill = style::ACCENT.gamma_multiply(0.4);
-                painter.rect_filled(grid.span(y, start.into(), end.into()), 0, fill);
+                painter.rect_filled(grid.span(y, start.into(), end.into()), 0, selection);
+            }
+            for &(column, drawing, color) in &cached.boxes {
+                let cell = grid.span(y, column, column + 1);
+                boxes::paint(&painter, &mut fills, cell, drawing, color, light);
             }
             for glyph in &cached.glyphs {
                 let cells = grid.span(y, glyph.column, glyph.column + glyph.width);
@@ -180,6 +191,9 @@ impl PaneView {
                 }
             }
         }
+        if !fills.is_empty() {
+            painter.add(fills);
+        }
         if let Some((x, y)) = frame.cursor {
             let rect = grid.span(y.into(), x.into(), usize::from(x) + 1);
             let color = rgb(frame.cursor_color);
@@ -210,6 +224,7 @@ impl CachedRow {
             _source: Arc::clone(row),
             glyphs: Vec::new(),
             backgrounds: Vec::new(),
+            boxes: Vec::new(),
             decorations: Vec::new(),
         };
         let mut x = 0;
@@ -245,7 +260,11 @@ impl CachedRow {
             } else {
                 rgb(look.fg)
             };
-            if !text.trim().is_empty() {
+            let mut letters = text.chars();
+            let alone = letters.next().filter(|_| letters.next().is_none());
+            if let Some(drawing) = alone.and_then(boxes::drawing) {
+                result.boxes.push((start, drawing, color));
+            } else if !text.trim().is_empty() {
                 let font_id = if look.style.bold {
                     style::mono_bold(font_size)
                 } else {

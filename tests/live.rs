@@ -228,12 +228,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     };
     let sides = (&border.before, &border.after, border.upright);
     assert_eq!(sides, (&pane, &other, true));
-    let divide = |ratio: f32| Action::Divide {
-        before: pane.clone(),
-        after: other.clone(),
-        upright: true,
-        ratio,
-    };
+    let divide = |ratio: f32| Action::Divide(vec![border.moved(ratio)]);
     let divided = |ratio: f32| {
         wait(&client, "a border moved", |v| {
             let near = |at: f32| (at - ratio).abs() < 0.01;

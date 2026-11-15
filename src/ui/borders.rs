@@ -1,11 +1,11 @@
 //! The borders between the panes of a split tab, which drag to resize them.
-use eframe::egui::{self, CursorIcon, Rect, Sense, Stroke};
+use eframe::egui::{self, CursorIcon, Rect, Sense};
 
-use super::{App, style::DIM};
+use super::{
+    App,
+    style::{eased, tints},
+};
 use crate::model::{Action, Border, Window};
-
-/// The least of the room two sides share that a drag leaves either of them.
-const LEAST: f32 = 0.05;
 
 /// A border of the tab that fills `area`, and what the pointer asks of it, if
 /// anything: the share of its room that the side before it is to have. A drag
@@ -29,16 +29,25 @@ fn drag(ui: &egui::Ui, border: &Border, area: Rect) -> Option<f32> {
     let grab = ui.interact(line(at).expand(4.0), id, Sense::click_and_drag());
     let pointer = grab.interact_pointer_pos().filter(|_| grab.dragged());
     let ratio = pointer.map(|pointer| (pointer - room.min)[axis] / room.size()[axis]);
-    let ratio = ratio.map(|ratio| ratio.clamp(LEAST, 1.0 - LEAST));
-    if grab.hovered() || grab.dragged() {
+    let ratio = ratio.map(|ratio| ratio.clamp(Border::LEAST, Border::MOST));
+    let held = grab.hovered() || grab.dragged();
+    if held {
         ui.ctx().set_cursor_icon(match border.upright {
             true => CursorIcon::ResizeHorizontal,
             false => CursorIcon::ResizeVertical,
         });
-        // Drawn where the pointer has it, which the server makes so a moment later.
+    }
+    // A short bar in the gutter says the border is there to be dragged. It
+    // comes and goes over a moment, and is drawn where the pointer has the
+    // border, which the server makes so a moment later.
+    let lit = eased(ui, id.with("lit"), held);
+    if lit > 0.0 {
         let line = line(ratio.map_or(at, |ratio| room.min[axis] + room.size()[axis] * ratio));
-        let stroke = Stroke::new(1.0, DIM);
-        ui.painter().line_segment([line.min, line.max], stroke);
+        let along = egui::vec2(10.0, 10.0).min(line.size() / 4.0);
+        let bar =
+            line.shrink2(along * egui::vec2(f32::from(!border.upright), f32::from(border.upright)));
+        let color = tints(ui.ctx()).accent.gamma_multiply(lit);
+        ui.painter().rect_filled(bar.expand(1.5), 1.5, color);
     }
     if grab.double_clicked() {
         return Some(0.5);
@@ -53,12 +62,7 @@ impl App {
     pub(super) fn borders(&mut self, ui: &egui::Ui, window: &Window, area: Rect) {
         for border in &window.borders {
             if let Some(ratio) = drag(ui, border, area) {
-                self.send(Action::Divide {
-                    before: border.before.clone(),
-                    after: border.after.clone(),
-                    upright: border.upright,
-                    ratio,
-                });
+                self.send(Action::Divide(vec![border.moved(ratio)]));
             }
         }
     }

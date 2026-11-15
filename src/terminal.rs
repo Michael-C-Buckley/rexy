@@ -108,6 +108,8 @@ pub struct Frame {
     pub bg: u32,
     pub cursor: Option<(u16, u16)>,
     pub cursor_color: u32,
+    /// The theme's red, green, yellow and blue.
+    pub ansi: [u32; 4],
     pub cursor_shape: CursorShape,
     pub mouse_tracking: bool,
     /// The alternate screen is showing, which keeps no history to scroll through.
@@ -805,6 +807,7 @@ impl Renderer {
             alternate_scroll,
             cursor,
             cursor_color: colors.cursor.map(rgb).unwrap_or(fg),
+            ansi: [1, 2, 3, 4].map(|index: usize| rgb(colors.palette[index])),
             cursor_shape,
             selected,
             found: self.found,

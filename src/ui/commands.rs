@@ -50,6 +50,11 @@ pub const COMMANDS: &[Command] = &[
     ("pane.focus.down", "Focus Pane Down", HELD),
     ("pane.focus_next", "Focus Next Pane", HELD),
     ("pane.focus_previous", "Focus Previous Pane", HELD),
+    ("pane.resize.left", "Resize Pane Left", HELD),
+    ("pane.resize.right", "Resize Pane Right", HELD),
+    ("pane.resize.up", "Resize Pane Up", HELD),
+    ("pane.resize.down", "Resize Pane Down", HELD),
+    ("pane.balance", "Balance Panes", ONCE),
     ("pane.zoom", "Zoom Pane", ONCE),
     ("pane.close", "Close Pane", ONCE),
     ("pane.copy", "Copy from Pane", ONCE),
@@ -69,6 +74,11 @@ pub const COMMANDS: &[Command] = &[
     ("client.font.decrease", "Decrease Font Size", HELD),
     ("client.font.reset", "Reset Font Size", ONCE),
     ("client.sidebar.toggle", "Toggle Sidebar", ONCE),
+    (
+        "client.sidebar.activity.toggle",
+        "Show What Is at Work",
+        ONCE,
+    ),
     ("client.palette.toggle", "Command Palette…", ONCE),
     ("client.mode.enter", "Enter Mode", ONCE),
     ("client.mode.exit", "Exit Mode", ONCE),
@@ -77,9 +87,10 @@ pub const COMMANDS: &[Command] = &[
 
 /// The actions Rex also knows by one name for every direction, which is then
 /// among their arguments.
-const DIRECTED: [Command; 3] = [
+const DIRECTED: [Command; 4] = [
     ("pane.split", "Split Pane", ONCE),
     ("pane.focus", "Focus Pane", ONCE),
+    ("pane.resize", "Resize Pane", HELD),
     ("client.tab.move", "Move Tab", ONCE),
 ];
 
@@ -102,6 +113,11 @@ pub(super) const KEYS: &[(&str, &str)] = &[
     ("ctrl+alt+right", "pane.focus.right"),
     ("ctrl+alt+up", "pane.focus.up"),
     ("ctrl+alt+down", "pane.focus.down"),
+    ("ctrl+alt+shift+left", "pane.resize.left"),
+    ("ctrl+alt+shift+right", "pane.resize.right"),
+    ("ctrl+alt+shift+up", "pane.resize.up"),
+    ("ctrl+alt+shift+down", "pane.resize.down"),
+    ("ctrl+alt+=", "pane.balance"),
     ("ctrl+shift+enter", "pane.zoom"),
     ("ctrl+shift+w", "pane.close"),
     // The keys some keyboards have for these. Rex has no spelling for them, and
@@ -146,6 +162,17 @@ pub fn title(name: &str) -> &'static str {
     command(name).map_or("", |command| command.1)
 }
 
+/// The way a command goes that is named for one: a step along x or y.
+fn toward(name: &str) -> Option<[f32; 2]> {
+    Some(match name.rsplit_once('.')?.1 {
+        "left" => [-1.0, 0.0],
+        "right" => [1.0, 0.0],
+        "up" => [0.0, -1.0],
+        "down" => [0.0, 1.0],
+        _ => return None,
+    })
+}
+
 /// The move through a pane's history that a command makes, if it makes one.
 fn scroll(name: &str) -> Option<Scroll> {
     Some(match name {
@@ -181,6 +208,8 @@ pub(super) enum Deed {
     Focus(String),
     Font(f32),
     Sidebar,
+    /// Turning the sidebar to the list of what is at work, or back.
+    Agents,
     Palette,
     /// Asking something of a pane's own terminal, which no server is told of:
     /// about what is selected or looked for in it, or to move through its history.
@@ -268,6 +297,7 @@ impl Standing<'_> {
         // First what needs no server.
         Some(match name {
             "client.sidebar.toggle" => Deed::Sidebar,
+            "client.sidebar.activity.toggle" => Deed::Agents,
             "client.palette.toggle" | "session.switch" => Deed::Palette,
             "client.font.increase" => Deed::Font(self.font_size + 1.0),
             "client.font.decrease" => Deed::Font(self.font_size - 1.0),
@@ -349,13 +379,16 @@ impl Standing<'_> {
                 Deed::Ask(Action::Split { pane, direction })
             }
             "pane.focus.left" | "pane.focus.right" | "pane.focus.up" | "pane.focus.down" => {
-                let toward = match name.rsplit_once('.')?.1 {
-                    "left" => [-1.0, 0.0],
-                    "right" => [1.0, 0.0],
-                    "up" => [0.0, -1.0],
-                    _ => [0.0, 1.0],
-                };
-                Deed::Focus(tab?.beside(&pane?.id, toward)?.id.clone())
+                Deed::Focus(tab?.beside(&pane?.id, toward(name)?)?.id.clone())
+            }
+            // The border of the split the pane is in moves that way.
+            "pane.resize.left" | "pane.resize.right" | "pane.resize.up" | "pane.resize.down" => {
+                Deed::Ask(Action::Divide(vec![tab?.nudged(&pane?.id, toward(name)?)?]))
+            }
+            // Even already, there is nothing to ask.
+            "pane.balance" => {
+                let borders = Some(tab?.balanced()).filter(|borders| !borders.is_empty());
+                Deed::Ask(Action::Divide(borders?))
             }
             "pane.focus_next" | "pane.focus_previous" if tab?.panes.len() > 1 => {
                 let (pane, panes) = (pane?, &tab?.panes);
@@ -424,6 +457,11 @@ impl App {
                 self.remembered.kept.font_size = size.clamp(FONT_SIZES[0], FONT_SIZES[1]);
             }
             Deed::Sidebar => self.remembered.kept.sidebar ^= true,
+            // The list is the sidebar's, which is brought out for it.
+            Deed::Agents => {
+                self.agents ^= true;
+                self.remembered.kept.sidebar |= self.agents;
+            }
             // It opens with nothing typed.
             Deed::Palette => {
                 self.filter.clear();

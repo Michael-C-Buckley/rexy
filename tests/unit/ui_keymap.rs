@@ -147,3 +147,32 @@ fn modes_and_a_sequence_end_with_the_keymap_they_began_in() {
     keys.follow(None);
     assert!(keys.modes.is_empty() && !keys.map.bindings.is_empty());
 }
+
+#[test]
+fn what_can_be_pressed_next_is_said_with_what_it_does() {
+    let map = map();
+    let next = |modes: &[&str], keys: &[&str]| {
+        let modes = modes.iter().map(|mode| ((*mode).to_owned(), false));
+        let modes: Vec<_> = modes.collect();
+        let next = map.next(&modes, &pressed(keys));
+        let said = |(key, title): &(&str, String)| format!("{key}: {title}");
+        next.iter().map(said).collect::<Vec<_>>()
+    };
+    // After the first key of a sequence, the keys that go on from it.
+    assert_eq!(
+        next(&[], &["ctrl+b"]),
+        ["c: New Tab", "x: Send to Terminal"]
+    );
+    // Nothing goes on from a key that is whole.
+    assert!(next(&[], &["ctrl+l"]).is_empty());
+    // In a mode, what the mode binds, and that more keys follow one of them.
+    let moving = ["left: Focus Pane Left", "g: Scroll to Top…"];
+    assert_eq!(next(&["move"], &[]), moving);
+    assert_eq!(next(&["move"], &["g"]), ["g: Scroll to Top"]);
+    // A sequence begun in a mode goes on as it would outside it.
+    assert_eq!(next(&["move"], &["ctrl+b"]).len(), 2);
+    assert_eq!(shown("ctrl+shift+pageup"), "Ctrl+Shift+PageUp");
+    // A server's own action goes by the title the server gives it.
+    let bound = map.bindings.iter().find(|bound| bound.name == "dev_layout");
+    assert_eq!(map.title(bound.unwrap()), "Open Dev Layout");
+}

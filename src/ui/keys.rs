@@ -1,19 +1,61 @@
 //! The keys that are the window's own, by the keymap in force, and those that go
 //! to the terminal. Other clients' requests are answered here too.
-use eframe::egui::{self, Key, Modifiers, Popup};
+use eframe::egui::{self, Align2, Key, Margin, Modifiers, Popup, Rect};
 use serde_json::Value;
 
 use super::{
     App, input,
     keymap::{self, Binding, FORWARD, Step},
     palette,
+    style::{BODY, DIM, SMALL, bold, hint},
 };
 use crate::{
     model::{Action, Pane, View},
     terminal::Request,
 };
 
+/// How many keys are said to be pressable next: a mode may bind any number.
+const HINTS: usize = 18;
+
 impl App {
+    /// While part of a sequence of keys has been pressed, or a mode is entered,
+    /// say so at the foot of the terminals, which are `within`: the mode by its
+    /// name, and the keys that can be pressed next with what each does.
+    pub(super) fn hints(&self, ctx: &egui::Context, within: Rect) {
+        let keys = &self.keys;
+        if keys.pending.is_empty() && keys.modes.is_empty() {
+            return;
+        }
+        let next = keys.map.next(&keys.modes, &keys.pending);
+        let mode = keys.modes.last().map(|(name, _)| name.as_str());
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(Margin::symmetric(12, 8));
+        let area = egui::Area::new(egui::Id::unique("key hints"))
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .pivot(Align2::CENTER_BOTTOM)
+            .fixed_pos(within.center_bottom() - egui::vec2(0.0, 14.0));
+        area.show(ctx, |ui| {
+            frame.show(ui, |ui| {
+                ui.set_max_width((within.width() - 56.0).clamp(160.0, 760.0));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(14.0, 6.0);
+                    if let Some(mode) = mode {
+                        let name = egui::RichText::new(mode).font(bold(BODY));
+                        ui.add(egui::Label::new(name).selectable(false));
+                    }
+                    for (key, title) in next.iter().take(HINTS) {
+                        hint(ui, &keymap::shown(key), title);
+                    }
+                    if next.len() > HINTS {
+                        let more = format!("and {} more", next.len() - HINTS);
+                        let more = egui::RichText::new(more).size(SMALL).color(DIM);
+                        ui.add(egui::Label::new(more).selectable(false));
+                    }
+                });
+            });
+        });
+    }
+
     /// Take this frame's key presses that the keymap binds, and do what they are
     /// bound to. What is left is the terminal's.
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context, view: &View) {
@@ -104,9 +146,8 @@ impl App {
         self.keys.pending.push(spelled);
         // A key that a function on the server answers to can always be sent there.
         let can = |bound: &Binding| {
-            let served = || map.served.iter().any(|served| served.0 == bound.name);
             let own = self.standing(view).keeps(&bound.name, &bound.args);
-            own || bound.name == FORWARD || served()
+            own || bound.name == FORWARD || map.served(&bound.name).is_some()
         };
         let step = keymap::resolve(&map, &self.keys.modes, &self.keys.pending, can);
         if step != Step::Wait {

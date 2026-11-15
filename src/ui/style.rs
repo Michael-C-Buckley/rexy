@@ -13,24 +13,24 @@ use eframe::egui::{
 
 /// The window's ground where no terminal lends its own, and a card that has
 /// no terminal to take its ground from.
-pub const VIEW: Color32 = Color32::from_rgb(0x16, 0x16, 0x19);
+const VIEW: Color32 = Color32::from_rgb(0x16, 0x16, 0x19);
 pub const CARD: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0d);
-pub const POPOVER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
+const POPOVER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
 pub const TEXT: Color32 = Color32::WHITE;
 pub const DIM: Color32 = white(150);
 pub const BORDER: Color32 = white(16);
 /// The line around the window, which has to part it from whatever lies behind.
 pub const EDGE_LINE: Color32 = white(34);
 /// What marks the one in use: light enough to be a line or a dot on the ground.
-pub const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x9c, 0xf5);
+const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x9c, 0xf5);
 /// Darker, to carry white text.
 const ACCENT_FILL: Color32 = Color32::from_rgb(0x35, 0x84, 0xe4);
 /// Something is waiting for the user.
-pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x2e);
+const AMBER: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x2e);
 /// Something has failed.
-pub const RED: Color32 = Color32::from_rgb(0xf6, 0x61, 0x51);
+const RED: Color32 = Color32::from_rgb(0xf6, 0x61, 0x51);
 /// Something has finished.
-pub const GREEN: Color32 = Color32::from_rgb(0x57, 0xe3, 0x89);
+const GREEN: Color32 = Color32::from_rgb(0x57, 0xe3, 0x89);
 /// What follows a name and says more of the same thing: fainter than `DIM`.
 const FAINT: Color32 = white(110);
 /// Fills of flat controls: selected, and pressed. Under the pointer one is as
@@ -46,6 +46,72 @@ const SELECTED: f32 = 26.0;
 pub const EASE: f32 = 0.1;
 /// The fill of what ends programs if pressed. Darker than `RED`, to carry white text.
 pub const DANGER: Color32 = Color32::from_rgb(0xc0, 0x1c, 0x28);
+
+/// The colours that mean something in the window, which go by the theme of the
+/// terminal on show where it has ones that can be told from its ground.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Tints {
+    /// What marks the one in use, and work under way.
+    pub accent: Color32,
+    pub done: Color32,
+    pub waiting: Color32,
+    pub failed: Color32,
+}
+
+impl Default for Tints {
+    fn default() -> Self {
+        Self {
+            accent: ACCENT,
+            done: GREEN,
+            waiting: AMBER,
+            failed: RED,
+        }
+    }
+}
+
+impl Tints {
+    /// Those of a theme: its blue, green, yellow and red, each where it stands
+    /// out from the theme's `ground` as a small dot or a thin line must.
+    pub fn themed(ground: Color32, [red, green, yellow, blue]: [Color32; 4]) -> Self {
+        let clear = |theirs: Color32, ours: Color32| match luma(theirs) - luma(ground) >= 80 {
+            true => theirs,
+            false => ours,
+        };
+        let ours = Self::default();
+        Self {
+            accent: clear(blue, ours.accent),
+            done: clear(green, ours.done),
+            waiting: clear(yellow, ours.waiting),
+            failed: clear(red, ours.failed),
+        }
+    }
+}
+
+/// The colours in force.
+pub fn tints(ctx: &egui::Context) -> Tints {
+    ctx.data(|data| data.get_temp(egui::Id::NULL))
+        .unwrap_or_default()
+}
+
+/// Put the colours that go by the terminal on show in force, which is known by
+/// its background and its red, green, yellow and blue: what is laid over the
+/// window, and what means something in it. The window's ground, which goes by
+/// the terminal too, is given back.
+pub fn theme(ctx: &egui::Context, terminal: Option<(Color32, [Color32; 4])>) -> Color32 {
+    let (ground, popover, tints) = match terminal {
+        Some((back, ansi)) => (ground(back), popover(back), Tints::themed(back, ansi)),
+        None => (VIEW, POPOVER, Tints::default()),
+    };
+    if ctx.global_style().visuals.window_fill != popover || self::tints(ctx) != tints {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::NULL, tints));
+        ctx.all_styles_mut(|style| {
+            style.visuals.window_fill = popover;
+            style.visuals.selection.bg_fill = tints.accent.gamma_multiply(0.5);
+            style.visuals.selection.stroke = Stroke::new(1.0, tints.accent.gamma_multiply(0.8));
+        });
+    }
+    ground
+}
 
 /// Translucent white, for text and fills that sit on any ground.
 const fn white(alpha: u8) -> Color32 {
@@ -70,6 +136,8 @@ const PILL: f32 = 8.0;
 pub const SMALL_BUTTON: f32 = 24.0;
 /// The side of a program's icon: a tile, wider than it is tall, on a square.
 const TILE: f32 = 20.0;
+/// The room an icon takes ahead of the name it goes with.
+pub const ICON: f32 = TILE + 7.0;
 
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
@@ -82,22 +150,27 @@ pub fn mono_bold(size: f32) -> FontId {
 /// What surrounds a dark terminal is its background, a little lighter, so that
 /// the terminal lies on it as a card of the same hue. The light ink that is
 /// written there would be lost around a light terminal, which gets the plain ground.
-pub fn ground(terminal: Color32) -> Color32 {
+fn ground(terminal: Color32) -> Color32 {
     lifted(terminal, 55).unwrap_or(VIEW)
 }
 
 /// What is laid over the window, a menu or a note, is of the same hue again and
 /// lighter than the ground, to stand off it.
-pub fn popover(terminal: Color32) -> Color32 {
+fn popover(terminal: Color32) -> Color32 {
     lifted(terminal, 115).unwrap_or(POPOVER)
+}
+
+/// How light a colour is to the eye, of 255.
+fn luma(color: Color32) -> i32 {
+    let [r, g, b, _] = color.to_array().map(i32::from);
+    (r * 299 + g * 587 + b * 114) / 1000
 }
 
 /// A dark colour brought so many thousandths of the way to white, and no light one.
 fn lifted(color: Color32, by: u32) -> Option<Color32> {
     let [r, g, b, _] = color.to_array().map(u32::from);
     let lift = |channel: u32| (channel + (255 - channel) * by / 1000) as u8;
-    ((r * 299 + g * 587 + b * 114) / 1000 < 64)
-        .then(|| Color32::from_rgb(lift(r), lift(g), lift(b)))
+    (luma(color) < 64).then(|| Color32::from_rgb(lift(r), lift(g), lift(b)))
 }
 
 pub fn apply(ctx: &egui::Context) {
@@ -205,6 +278,8 @@ pub enum Icon {
     Maximize,
     /// A glass to find things with.
     Search,
+    /// A list of things, each with its mark: what is at work.
+    Agents,
 }
 
 impl Icon {
@@ -274,6 +349,12 @@ impl Icon {
                 painter.circle_stroke(center, 3.5, stroke);
                 line([-5.0, 5.0], [5.0, -5.0]);
             }
+            Icon::Agents => {
+                for row in [-5.0, 0.0, 5.0] {
+                    painter.circle_filled(center + egui::vec2(-5.5, row), 1.5, color);
+                    line([-1.5, row], [7.0, row]);
+                }
+            }
             Icon::Search => {
                 painter.circle_stroke(center + egui::vec2(-1.5, -1.5), 4.5, stroke);
                 line([2.0, 2.0], [6.0, 6.0]);
@@ -321,6 +402,24 @@ fn tile(painter: &egui::Painter, program: Program, left: Pos2, ink: Color32) {
     painter.image(texture.id(), rect, whole, Color32::WHITE);
 }
 
+/// A program's icon with, on its corner, a dot in the colour of what the program
+/// has to say, if it has anything: the two are then read as one.
+pub fn badge(
+    painter: &egui::Painter,
+    program: Program,
+    left: Pos2,
+    ink: Color32,
+    dot: Option<Color32>,
+) {
+    tile(painter, program, left, ink);
+    if let Some(color) = dot {
+        // A dark rim parts it from the icon, whatever that is drawn in.
+        let at = left + egui::vec2(TILE - 2.0, 6.0);
+        painter.circle_filled(at, 5.0, Color32::from_black_alpha(170));
+        painter.circle_filled(at, 3.5, color);
+    }
+}
+
 /// An icon in its own colours.
 fn raster(drawing: &str, pixels: usize) -> egui::ColorImage {
     use resvg::{tiny_skia, usvg};
@@ -353,16 +452,24 @@ pub fn icon() -> egui::IconData {
 
 /// A flat button that draws its own symbol.
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
-    button(ui, 32.0, icon, tip)
+    button(ui, 32.0, icon, tip, false)
+}
+
+/// One that turns something on and off, and shows which it is.
+pub fn toggle(ui: &mut egui::Ui, icon: Icon, tip: &str, on: bool) -> egui::Response {
+    button(ui, 32.0, icon, tip, on)
 }
 
 /// A lesser one, as small as those of a row.
 pub fn small_button(ui: &mut egui::Ui, icon: Icon, tip: &str) -> egui::Response {
-    button(ui, SMALL_BUTTON, icon, tip)
+    button(ui, SMALL_BUTTON, icon, tip, false)
 }
 
-fn button(ui: &mut egui::Ui, side: f32, icon: Icon, tip: &str) -> egui::Response {
+fn button(ui: &mut egui::Ui, side: f32, icon: Icon, tip: &str, on: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+    if on {
+        ui.painter().rect_filled(rect, RADIUS, ACTIVE);
+    }
     paint_button(ui, rect, &response, icon);
     response.on_hover_text(tip)
 }
@@ -465,7 +572,6 @@ pub struct Item<'a> {
 /// Draw a row. Returns its response, and which of its buttons was pressed.
 pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, Option<usize>) {
     const BUTTON: f32 = SMALL_BUTTON;
-    const ICON: f32 = TILE + 7.0;
     let sense = if item.movable {
         Sense::click_and_drag()
     } else {
@@ -498,16 +604,24 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     ui.painter().rect_filled(rect, RADIUS, fill);
     // Room at the trailing edge is the label's to lose, so that it never moves.
     let word = item.word.filter(|_| item.align != Align::Center);
-    let word = word.zip(item.mark).map(|(word, (_, color))| {
-        let font = FontId::proportional(SMALL);
+    let word = word.map(|word| {
+        // In the colour of the mark it goes with, where there is one.
+        let (font, color) = (
+            FontId::proportional(SMALL),
+            item.mark.map_or(DIM, |mark| mark.1),
+        );
         ui.painter().layout_no_wrap(word.to_owned(), font, color)
     });
     let keys = caps(ui, item.keys.unwrap_or_default());
-    let marks = f32::from(u8::from(item.mark.is_some()) + u8::from(item.menu));
+    // A dot sits on the corner of the row's icon, where it has one, and takes
+    // no room of its own.
+    let docked = item.icon.is_some() && matches!(item.mark, Some((Icon::Dot, _)));
+    let aside = item.mark.filter(|_| !docked);
+    let marks = f32::from(u8::from(aside.is_some()) + u8::from(item.menu));
     let marks = word
         .as_ref()
         .map_or(14.0 * marks, |word| word.size().x + 8.0);
-    let marks = marks + keys.iter().map(|name| cap(name).x + 4.0).sum::<f32>();
+    let marks = marks + caps_width(&keys);
     // The button that asks is where the last one was, and goes by its name: the
     // pointer is on it already.
     let last = item.buttons.len().checked_sub(1);
@@ -547,8 +661,13 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     let place = anchor.align_size_within_rect(needs, text);
     if let Some(program) = item.icon {
         let left = egui::pos2(place.left(), rect.center().y);
-        let ink = if item.selected { ACCENT } else { DIM };
-        tile(ui.painter(), program, left, ink);
+        let ink = if item.selected {
+            tints(ui.ctx()).accent
+        } else {
+            DIM
+        };
+        let dot = item.mark.filter(|_| docked).map(|(_, color)| color);
+        badge(ui.painter(), program, left, ink, dot);
     }
     let name = place.min + egui::vec2(lead, 0.0);
     if let Some(more) = more {
@@ -583,7 +702,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
             let corner = egui::pos2(rect.right() - 12.0, rect.center().y)
                 - word.size() * egui::vec2(1.0, 0.5);
             ui.painter().galley(corner, word, TEXT);
-        } else if let Some((mark, color)) = item.mark {
+        } else if let Some((mark, color)) = aside {
             mark.paint(ui.painter(), center, color);
         }
         paint_caps(ui, keys, egui::pos2(rect.right() - 10.0, rect.center().y));
@@ -627,6 +746,11 @@ fn cap(name: &egui::Galley) -> Vec2 {
     egui::vec2(name.size().x + 12.0, 18.0)
 }
 
+/// The room the keys of a shortcut take side by side, each with the gap after it.
+fn caps_width(keys: &[Arc<egui::Galley>]) -> f32 {
+    keys.iter().map(|name| cap(name).x + 4.0).sum()
+}
+
 /// Draw the keys of a shortcut, the last of them ending at `right`.
 fn paint_caps(ui: &egui::Ui, keys: Vec<Arc<egui::Galley>>, mut right: Pos2) {
     for name in keys.into_iter().rev() {
@@ -637,6 +761,31 @@ fn paint_caps(ui: &egui::Ui, keys: Vec<Arc<egui::Galley>>, mut right: Pos2) {
             .galley(key.center() - name.size() / 2.0, name, TEXT);
         right.x -= size.x + 4.0;
     }
+}
+
+/// A key and what pressing it does, side by side: one of the things that can
+/// be pressed next.
+pub fn hint(ui: &mut egui::Ui, keys: &str, title: &str) {
+    let keys = caps(ui, keys);
+    let wide = caps_width(&keys);
+    let font = FontId::proportional(BODY);
+    let title = ui.painter().layout_no_wrap(title.to_owned(), font, TEXT);
+    let size = egui::vec2(wide + 4.0 + title.size().x, 22.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    paint_caps(ui, keys, rect.left_center() + egui::vec2(wide - 4.0, 0.0));
+    let at = rect.left_center() + egui::vec2(wide + 4.0, -title.size().y / 2.0);
+    ui.painter().galley(at, title, TEXT);
+}
+
+/// Words that are no row: what heads the rows under them, or stands where
+/// there are none.
+pub fn caption(ui: &mut egui::Ui, words: egui::RichText) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        ui.add(egui::Label::new(words.color(DIM)).selectable(false));
+    });
+    ui.add_space(2.0);
 }
 
 /// What opens the palette, for the pointer: as wide as the room there is, it
@@ -652,8 +801,7 @@ pub fn search(ui: &mut egui::Ui, keys: &str) -> egui::Response {
     let font = FontId::proportional(BODY);
     let word = ui.painter().layout_no_wrap("Search".to_owned(), font, DIM);
     let keys = caps(ui, keys);
-    let wide = keys.iter().map(|name| cap(name).x + 4.0).sum::<f32>();
-    if 32.0 + word.size().x + 12.0 + wide <= rect.width() {
+    if 32.0 + word.size().x + 12.0 + caps_width(&keys) <= rect.width() {
         paint_caps(ui, keys, rect.right_center() - egui::vec2(5.0, 0.0));
     }
     let at = left + egui::vec2(32.0, -word.size().y / 2.0);

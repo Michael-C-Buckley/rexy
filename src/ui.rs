@@ -1,6 +1,8 @@
 //! A deliberately small desktop shell: the sessions and their tabs, in a sidebar or
 //! along the top, and the terminal. Terminal content never becomes an egui widget tree.
+mod agents;
 mod borders;
+mod boxes;
 mod close;
 pub mod commands;
 mod find;
@@ -9,6 +11,7 @@ mod heard;
 mod input;
 mod keymap;
 mod keys;
+mod motion;
 mod palette;
 mod pane;
 mod pointer;
@@ -43,7 +46,7 @@ pub use remembered::{LEAST_WINDOW, Remembered, state_home};
 use render::{PaneView, rgb};
 use rows::Rename;
 pub use style::icon;
-use style::{BODY, DIM, GUTTER, POPOVER, RED, TEXT, VIEW, fitted, suggested};
+use style::{BODY, DIM, GUTTER, TEXT, fitted, suggested};
 
 const DEFAULT_FONT_SIZE: f32 = 15.0;
 /// The least and the most the keys take it to.
@@ -118,6 +121,10 @@ pub struct App {
     title: String,
     /// By pane.
     heard: HashMap<String, Heard>,
+    /// Where the panes of the tab on show are on their way to.
+    motion: motion::Motion,
+    /// The sidebar lists what is at work, in place of the sessions.
+    agents: bool,
     /// Where the servers' connections send what their panes have to say, and what
     /// passes it on to the desktop.
     herald: Herald,
@@ -161,6 +168,8 @@ impl App {
             remembered,
             title: String::new(),
             heard: HashMap::new(),
+            motion: motion::Motion::default(),
+            agents: false,
             herald,
             desktop,
             filter: String::new(),
@@ -178,6 +187,18 @@ impl App {
 
     fn send(&mut self, action: Action) {
         self.tell(self.current, action);
+    }
+
+    /// Show a pane of a server's, whatever tab it is in and whatever hides it
+    /// there. False if the server has no such pane.
+    fn reveal(&mut self, server: usize, pane: &str) -> bool {
+        let Some((session, window)) = self.servers[server].client.place(pane) else {
+            return false;
+        };
+        self.open(server, Action::SelectWindow { session, window });
+        let pane = pane.to_owned();
+        self.tell(server, Action::Reveal { pane });
+        true
     }
 
     /// Show a session or a tab, on whichever server it lives.
@@ -267,17 +288,12 @@ impl App {
     /// way to try again. What the connection itself had to say comes after them,
     /// and in full under the pointer.
     fn lost(&mut self, ctx: &egui::Context, view: &View, within: Rect) {
-        let frame = egui::Frame::new()
-            .fill(ctx.global_style().visuals.window_fill)
-            .stroke(ctx.global_style().visuals.window_stroke)
-            .corner_radius(10)
-            .inner_margin(Margin {
-                left: 14,
-                right: 6,
-                top: 6,
-                bottom: 6,
-            })
-            .shadow(ctx.global_style().visuals.popup_shadow);
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(Margin {
+            left: 14,
+            right: 6,
+            top: 6,
+            bottom: 6,
+        });
         let area = egui::Area::new(egui::Id::unique("lost"))
             .order(egui::Order::Middle)
             .constrain_to(within)
@@ -289,7 +305,8 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     let (mark, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
-                    ui.painter().circle_filled(mark.center(), 3.5, RED);
+                    let failed = style::tints(ui.ctx()).failed;
+                    ui.painter().circle_filled(mark.center(), 3.5, failed);
                     let room = (within.width() - 220.0).clamp(80.0, 560.0);
                     let said = format!("Lost the connection to {server}.");
                     let said = fitted(ui, &said, FontId::proportional(BODY), TEXT, room);
@@ -326,13 +343,7 @@ impl eframe::App for App {
     /// On Wayland the window has been brought forward by now, if it is to be.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Some(pane) = self.desktop.picked() {
-            let place = |server: &Server| server.client.place(&pane);
-            let mut servers = self.servers.iter().enumerate();
-            let found = servers.find_map(|(index, server)| Some((index, place(server)?)));
-            if let Some((server, (session, window))) = found {
-                self.open(server, Action::SelectWindow { session, window });
-                self.tell(server, Action::Reveal { pane });
-            }
+            let _ = (0..self.servers.len()).any(|server| self.reveal(server, &pane));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
@@ -387,16 +398,12 @@ impl eframe::App for App {
             ctx.copy_text(text);
         }
         self.shortcuts(&ctx, view);
-        // The window's ground goes by the terminals on it.
-        let terminal = panes.iter().find_map(|p| p.frame.as_ref());
-        let terminal = terminal.map(|frame| rgb(frame.bg));
-        let ground = terminal.map_or(VIEW, style::ground);
-        // So does what is laid over it: menus, notes and the palette.
-        let popover = terminal.map_or(POPOVER, style::popover);
-        if ctx.global_style().visuals.window_fill != popover {
-            ctx.all_styles_mut(|style| style.visuals.window_fill = popover);
-        }
-        frame::ground(root_ui, ground);
+        // The window's ground goes by the terminals on it. So do what is laid
+        // over it, menus, notes and the palette, and the colours that mark the
+        // pane in use and what programs have to say.
+        let shown = panes.iter().find_map(|p| p.frame.as_ref());
+        let shown = shown.map(|frame| (rgb(frame.bg), frame.ansi.map(rgb)));
+        frame::ground(root_ui, style::theme(&ctx, shown));
         // With the sidebar, tabs are listed in it. Without, they run along the top.
         let sidebar = self.remembered.kept.sidebar;
         if sidebar {
@@ -429,11 +436,22 @@ impl eframe::App for App {
             if !view.connected {
                 self.lost(ui.ctx(), view, within);
             }
-            for pane in panes {
-                let min = area.min + area.size() * egui::vec2(pane.x, pane.y);
-                let size = area.size() * egui::vec2(pane.width, pane.height);
-                let rect = Rect::from_min_size(min, size).shrink(GUTTER / 2.0);
-                self.terminal_pane(ui, view, window, pane, rect);
+            // Each has its part of the tab, and is drawn on its way there.
+            let belong = panes.iter().map(|pane| {
+                let size = egui::vec2(pane.width, pane.height);
+                let part = Rect::from_min_size(egui::pos2(pane.x, pane.y), size);
+                (&*pane.id, part)
+            });
+            let belong: Vec<_> = belong.collect();
+            // What the pointer has hold of, such as a border, goes where it does.
+            let held = ui.input(|i| i.pointer.any_down());
+            let shown = self.motion.place(ui.ctx(), &window.id, &belong, held);
+            let card = |part: Rect| {
+                let [min, max] = [part.min, part.max].map(|at| area.lerp_inside(at.to_vec2()));
+                Rect::from_min_max(min, max).shrink(GUTTER / 2.0)
+            };
+            for ((pane, (_, rest)), shown) in panes.iter().zip(&belong).zip(shown) {
+                self.terminal_pane(ui, view, window, pane, card(shown), card(*rest));
             }
             if view.connected {
                 self.borders(ui, window, area);
@@ -446,6 +464,7 @@ impl eframe::App for App {
         frame::edges(root_ui);
         self.answer(&ctx, &views);
         self.palette(&ctx, &views);
+        self.hints(&ctx, shown.inner);
         // Under what a lost connection says there, where it says it.
         let lost = !view.connected && window.is_some_and(|tab| !tab.panes.is_empty());
         self.toast

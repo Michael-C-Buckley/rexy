@@ -7,7 +7,7 @@ use super::{
     App,
     commands::{COMMANDS, Deed},
     heard::dot,
-    style::{BODY, BORDER, DIM, Icon, Item, SMALL, TEXT, bold, item},
+    style::{BODY, BORDER, Icon, Item, SMALL, TEXT, bold, caption, item},
 };
 use crate::{
     model::{Action, View},
@@ -63,7 +63,7 @@ impl App {
         let button = Item {
             menu: true,
             strong: true,
-            mark: dot(elsewhere.unwrap_or_default()),
+            mark: dot(ui.ctx(), elsewhere.unwrap_or_default()),
             label: name,
             ..Default::default()
         };
@@ -101,7 +101,7 @@ impl App {
                     shown = rows.len();
                 }
                 let show = Pick::Show(server, Action::SelectSession(session.id.clone()));
-                rows.push(row(&session.name, None, dot(session.activity()), show));
+                rows.push(row(&session.name, None, dot(ctx, session.activity()), show));
             }
             under.push(rows.len());
         }
@@ -113,7 +113,7 @@ impl App {
             for tab in view.windows().iter().filter(|tab| found(&[tab.name()])) {
                 let (session, window) = (session.clone(), tab.id.clone());
                 let show = Pick::Show(current, Action::SelectWindow { session, window });
-                let (icon, mark) = (Some(tab.program()), dot(tab.says().0));
+                let (icon, mark) = (Some(tab.program()), dot(ctx, tab.says().0));
                 rows.push(row(tab.name(), icon, mark, show));
             }
         }
@@ -214,13 +214,7 @@ impl App {
                     // A head with nothing found under it is not shown.
                     let head = heads.iter().rev().find(|head| head.0 <= index);
                     if let Some((_, head)) = head.filter(|head| head.0 == index) {
-                        ui.add_space(8.0);
-                        let head = egui::RichText::new(*head).font(bold(SMALL)).color(DIM);
-                        ui.horizontal(|ui| {
-                            ui.add_space(12.0);
-                            ui.add(egui::Label::new(head).selectable(false));
-                        });
-                        ui.add_space(2.0);
+                        caption(ui, egui::RichText::new(*head).font(bold(SMALL)));
                     }
                     row(ui, index, entry);
                 }

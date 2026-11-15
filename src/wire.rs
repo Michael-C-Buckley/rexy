@@ -590,6 +590,11 @@ pub enum News {
     /// What its programs say they are doing: each record of it that has changed, by
     /// its name and whole, or `None` for one that is no more.
     Status(Vec<(String, Option<Value>)>),
+    /// The directory its shell is in.
+    Folder(String),
+    /// How far along a program in it says it is, in hundredths, or that it no
+    /// longer says.
+    Progress(Option<u8>),
     /// A program in it has copied text: all of it, or if it is long the `id` to
     /// ask for it by.
     Copied { text: Option<String>, id: u64 },
@@ -665,6 +670,11 @@ fn event(message: &Value) -> Option<Event> {
     })
 }
 
+/// How far along something is said to be, in hundredths.
+pub fn percent(value: &Value) -> Option<u8> {
+    value.as_u64().map(|percent| percent.min(100) as u8)
+}
+
 /// News of a terminal, by the name its creator gives that kind of news.
 fn news(name: &str, fields: &Value) -> Option<News> {
     let text = |value: &Value| value.as_str().map(str::to_owned);
@@ -681,6 +691,12 @@ fn news(name: &str, fields: &Value) -> Option<News> {
             let ids = fields["ids"].as_array()?.iter();
             News::Status(ids.filter_map(|id| Some((text(id)?, None))).collect())
         }
+        "pwd_changed" => News::Folder(text(&fields["pwd"])?),
+        // Work with no end in sight has nothing to count.
+        "progress_report" => News::Progress(match fields["state"].as_str()? {
+            "set" | "pause" | "error" => percent(&fields["progress"]),
+            _ => None,
+        }),
         "clipboard_written" => News::Copied {
             text: text(&fields["text"]),
             id: fields["id"].as_u64().unwrap_or_default(),

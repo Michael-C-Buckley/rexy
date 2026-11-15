@@ -86,7 +86,7 @@ fn the_table_names_each_command_once_and_spells_its_keys_as_rex_does() {
     // A server is told of them all, and of the names that take a direction.
     let request = request();
     let count = |list: &Value| list.as_array().unwrap().len();
-    assert_eq!(count(&request["actions"]), COMMANDS.len() + 3);
+    assert_eq!(count(&request["actions"]), COMMANDS.len() + DIRECTED.len());
     assert_eq!(count(&request["defaults"][0]["bindings"]), KEYS.len());
 }
 

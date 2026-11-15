@@ -183,6 +183,58 @@ pub struct Border {
     pub at: f32,
 }
 
+/// Where a border is asked to go: the one between these two panes, so that the
+/// side before it has `ratio` of the room the two sides share.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Division {
+    pub before: String,
+    pub after: String,
+    pub upright: bool,
+    pub ratio: f32,
+}
+
+impl Border {
+    /// The least and the most of the room two sides share that its first side
+    /// can be given, and how much of it one press of a key moves the border by.
+    pub const LEAST: f32 = 0.05;
+    pub const MOST: f32 = 1.0 - Self::LEAST;
+    const STEP: f32 = 0.05;
+
+    /// What asks it to go where its first side has `ratio` of its room.
+    pub fn moved(&self, ratio: f32) -> Division {
+        Division {
+            before: self.before.clone(),
+            after: self.after.clone(),
+            upright: self.upright,
+            ratio,
+        }
+    }
+
+    /// The same, for a share it may be asked for by key: no nearer either end
+    /// than a border goes, and nothing where it is there already.
+    fn sent(&self, share: f32) -> Option<Division> {
+        let ratio = share.clamp(Self::LEAST, Self::MOST);
+        ((ratio - self.share()).abs() > 0.005).then(|| self.moved(ratio))
+    }
+
+    /// Which of x and y it moves along.
+    fn axis(&self) -> usize {
+        usize::from(!self.upright)
+    }
+
+    /// The share of its room that its first side has.
+    fn share(&self) -> f32 {
+        (self.at - self.room[self.axis()]) / self.room[2 + self.axis()]
+    }
+
+    /// Whether a pane is on either side of it: one whose middle is in its room.
+    fn parts(&self, pane: &Pane) -> bool {
+        let [x, y, width, height] = self.room;
+        let (across, down) = (pane.x + pane.width / 2.0, pane.y + pane.height / 2.0);
+        across > x && across < x + width && down > y && down < y + height
+    }
+}
+
 impl Window {
     /// Every pane, on show or not.
     pub fn every(&self) -> impl Iterator<Item = &Pane> {
@@ -193,10 +245,14 @@ impl Window {
         self.panes.iter_mut().chain(&mut self.hidden)
     }
 
-    /// The most pressing thing its panes have to say, and the line said of it. Of
-    /// several as pressing, the first.
+    /// The pane with the most pressing thing to say. Of several as pressing, the first.
+    pub fn top(&self) -> Option<&Pane> {
+        self.every().min_by_key(|pane| Reverse(pane.activity))
+    }
+
+    /// The most pressing thing its panes have to say, and the line said of it.
     pub fn says(&self) -> (Activity, &str) {
-        let top = self.every().min_by_key(|pane| Reverse(pane.activity));
+        let top = self.top();
         top.map_or((Activity::Idle, ""), |pane| (pane.activity, &pane.message))
     }
 
@@ -224,6 +280,50 @@ impl Window {
     /// Whether it holds more panes than one, on show or not.
     pub fn split(&self) -> bool {
         self.zoomed || self.panes.len() > 1
+    }
+
+    /// What moves a pane's edge a step `toward` one side, along x or y: it asks
+    /// that of the border of the innermost split that lies that way across and
+    /// has the pane in it. None when there is none, or it is as far that way as
+    /// a border goes.
+    pub fn nudged(&self, pane: &str, toward: [f32; 2]) -> Option<Division> {
+        let pane = self.panes.iter().find(|held| held.id == pane)?;
+        let upright = toward[1] == 0.0;
+        let across = |border: &&Border| border.upright == upright && border.parts(pane);
+        let room = |border: &&Border| border.room[2] * border.room[3];
+        let borders = self.borders.iter().filter(across);
+        let border = borders.min_by(|a, b| room(a).total_cmp(&room(b)))?;
+        border.sent(border.share() + Border::STEP * (toward[0] + toward[1]).signum())
+    }
+
+    /// What gives every pane as much room as those beside it, and as those
+    /// above and below it: what it asks of each border that is not there already.
+    pub fn balanced(&self) -> Vec<Division> {
+        let even = |border: &Border| {
+            let (along, across) = (border.axis(), 1 - border.axis());
+            // How many panes lie one after another on a side of it, the way it
+            // moves: those stacked the other way share their place in the row.
+            let row = |first: bool| {
+                let side = |pane: &&Pane| {
+                    let before = [pane.x, pane.y][along] + 0.001 < border.at;
+                    border.parts(pane) && before == first
+                };
+                let side = || self.panes.iter().filter(side);
+                // Where a pane starts the other way, and its size: one is level
+                // with another whose middle is within that.
+                let span =
+                    |pane: &Pane| ([pane.x, pane.y][across], [pane.width, pane.height][across]);
+                let level = |by: &Pane, pane: &&Pane| {
+                    let ((at, size), (start, room)) = (span(by), span(pane));
+                    (at + size / 2.0 - start - room / 2.0).abs() < room / 2.0
+                };
+                let most = side().map(|by| side().filter(|pane| level(by, pane)).count());
+                most.max().unwrap_or(1)
+            };
+            row(true) as f32 / (row(true) + row(false)) as f32
+        };
+        let sent = |border: &Border| border.sent(even(border));
+        self.borders.iter().filter_map(sent).collect()
     }
 
     /// The pane nearest a pane on one side of it: `toward` is a step along x or y.
@@ -302,6 +402,44 @@ impl Activity {
     }
 }
 
+impl Pane {
+    /// What it has to say in words: what it is waiting for or ended with, or how
+    /// far along its work is.
+    pub fn word(&self) -> Option<String> {
+        let along = || Some(format!("{}%", self.along()?));
+        self.activity.word().map(str::to_owned).or_else(along)
+    }
+
+    /// How far along its work is, in hundredths, while it is at work and says.
+    pub fn along(&self) -> Option<u8> {
+        self.progress.filter(|_| self.activity == Activity::Working)
+    }
+
+    /// All that its program says of what it is doing, on one line.
+    pub fn saying(&self) -> String {
+        line(&self.task, &self.message)
+    }
+}
+
+/// A directory as a name short enough for a title: under a home it starts at
+/// `~`, and of one many levels down only the last two are given.
+pub fn folder(pwd: &str) -> String {
+    // A shell may give it as an address, with its machine's name.
+    let path = pwd.strip_prefix("file://").map_or(pwd, |rest| {
+        rest.find('/').map_or("/", |slash| &rest[slash..])
+    });
+    let levels: Vec<_> = path.split('/').filter(|level| !level.is_empty()).collect();
+    let (head, rest) = match levels.as_slice() {
+        ["home" | "Users", _, rest @ ..] | ["root", rest @ ..] => ("~", rest),
+        rest => ("", rest),
+    };
+    match rest {
+        [] if !head.is_empty() => head.to_owned(),
+        [.., parent, last] if rest.len() > 2 => format!("…/{parent}/{last}"),
+        _ => format!("{head}/{}", rest.join("/")),
+    }
+}
+
 /// Two things said as one line. Either may be left unsaid.
 pub fn line(first: &str, second: &str) -> String {
     match (first, second) {
@@ -314,12 +452,17 @@ pub fn line(first: &str, second: &str) -> String {
 #[derive(Clone, Default)]
 pub struct Pane {
     pub id: String,
-    /// The terminal's title, as its program set it.
+    /// The terminal's title, as its program set it. At a shell's prompt, the
+    /// shell and the directory it is in, where the server says.
     pub title: String,
     pub program: Program,
     pub activity: Activity,
     /// The line its program has to say of that, if it has one.
     pub message: String,
+    /// The program's own short name for what it is at, if it gave one.
+    pub task: String,
+    /// How far along that is, in hundredths, where the program says.
+    pub progress: Option<u8>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -439,14 +582,9 @@ pub enum Action {
         pane: String,
         direction: Direction,
     },
-    /// Move a border, so that the side before it has `ratio` of the room the two
-    /// sides share.
-    Divide {
-        before: String,
-        after: String,
-        upright: bool,
-        ratio: f32,
-    },
+    /// Move borders. A border asked to move again before the server has moved
+    /// it goes only where it was last asked to.
+    Divide(Vec<Division>),
     /// Let a pane fill its tab, or give the tab back to all its panes.
     Zoom {
         pane: String,

@@ -126,6 +126,26 @@ fn keeps_up_with_what_each_terminal_says_of_itself() {
     let cleared = json!({"ids": ["", "build/test"], "reason": "clear"});
     let status = News::Status(vec![(String::new(), None), ("build/test".into(), None)]);
     assert_eq!(block("program_status_removed", cleared), news(status));
+    // Where its shell is, and how far along a program says it is: in hundredths
+    // while it counts, and no longer once it stops counting.
+    let folder = News::Folder("/home/a".into());
+    assert_eq!(
+        block("pwd_changed", json!({"pwd": "/home/a"})),
+        news(folder)
+    );
+    let along = |state: &str, progress: Value| {
+        block(
+            "progress_report",
+            json!({"state": state, "progress": progress}),
+        )
+    };
+    assert_eq!(along("set", json!(40)), news(News::Progress(Some(40))));
+    assert_eq!(along("set", json!(400)), news(News::Progress(Some(100))));
+    assert_eq!(
+        along("indeterminate", Value::Null),
+        news(News::Progress(None))
+    );
+    assert_eq!(along("remove", json!(0)), news(News::Progress(None)));
     // Text a program copies comes with the news of it, unless it is long.
     let copied = |text: Option<&str>, id| {
         let text = text.map(str::to_owned);

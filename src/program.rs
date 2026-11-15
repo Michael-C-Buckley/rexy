@@ -169,6 +169,17 @@ impl Program {
         self.0
     }
 
+    /// Whether it is a coding agent: a program worth watching while it is at
+    /// rest, since it will be at work again.
+    pub fn agent(self) -> bool {
+        #[rustfmt::skip]
+        const AGENTS: [&str; 19] = [
+            "amp", "claude-code", "codex", "copilot", "crush", "cursor", "devin", "droid", "gemini",
+            "goose", "grok", "ibm-bob", "junie", "kimi", "kiro", "mistral", "opencode", "pi", "poolside",
+        ];
+        AGENTS.contains(&self.0)
+    }
+
     /// The icon as an SVG, if it was at hand.
     pub fn drawing(self) -> Option<&'static str> {
         let icon = DRAWINGS.iter().find(|(icon, _)| *icon == self.0)?;

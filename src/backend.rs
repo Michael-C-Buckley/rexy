@@ -7,7 +7,8 @@
 //! each answer is dealt with when it comes.
 use crate::{
     model::{
-        self, Action, Activity, Border, Direction, Edit, Host, Pane, Session, View, Wait, Window,
+        self, Action, Activity, Border, Direction, Division, Edit, Host, Pane, Session, View, Wait,
+        Window,
     },
     notify::Herald,
     program::Program,
@@ -42,6 +43,7 @@ const TERMINAL: &str = "com.superlogical.terminal";
 const TITLE: &str = "com.superlogical.terminal.title";
 const PROCESS: &str = "com.superlogical.terminal.process";
 const STATUS: &str = "com.superlogical.terminal.program_status";
+const FOLDER: &str = "com.superlogical.terminal.pwd";
 const COPIED: &str = "com.superlogical.terminal.clipboard_read";
 /// The most a program may copy, and the most of it to ask for at a time.
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
@@ -474,7 +476,8 @@ enum Reply {
     Keymap,
     /// One of the server's own actions, which may ask this client for more.
     Performed,
-    /// A terminal's title, its processes and what its programs report, in a list.
+    /// A terminal's title, its processes, what its programs report and the
+    /// directory it is in, in a list.
     /// `known` says an earlier connection knew the terminal.
     Learned {
         block: String,
@@ -557,7 +560,7 @@ struct Connection<'a> {
     /// The fetching of the last text a program copied.
     copying: Option<JoinHandle<()>>,
     /// Where a border was last asked to go, for `divide` to ask of the server.
-    borders: watch::Sender<Value>,
+    borders: watch::Sender<Vec<Value>>,
 }
 
 #[derive(Default)]
@@ -570,6 +573,11 @@ struct Block {
     /// what is in its foreground. Where they are one, the shell is at its prompt.
     shell: Option<u64>,
     foreground: Option<u64>,
+    /// That shell's name, and the directory it is in, if the server says.
+    prompt: String,
+    folder: String,
+    /// How far along a program in it says it is, by the terminal's own means.
+    progress: Option<u8>,
     /// What its programs report of themselves, each record by its name. The
     /// program's own has none, and so comes first, and each part's after its whole.
     records: BTreeMap<String, Value>,
@@ -579,7 +587,8 @@ impl Block {
     /// What its programs say they are doing: the most pressing of it, the line
     /// said of that, and the icon of one still at it.
     fn says(&self) -> (Activity, &str, Option<Program>) {
-        reported(self.records.values())
+        let (activity, record, app) = reported(self.records.values());
+        (activity, record["msg"].as_str().unwrap_or_default(), app)
     }
 
     /// What it has to say to someone not looking, if that is other than it was `before`.
@@ -602,6 +611,8 @@ impl Block {
                     };
                 }
             }
+            News::Folder(folder) => self.folder = folder,
+            News::Progress(progress) => self.progress = progress,
             // News of a moment, which changes nothing that is kept.
             News::Copied { .. } | News::Bell | News::Notice { .. } => {}
         }
@@ -715,7 +726,7 @@ impl<'a> Connection<'a> {
 
     /// Ask it several things, to be answered together: by a list, with nothing in
     /// the place of what it would not say.
-    async fn ask_all(&mut self, reply: Reply, requests: [(&str, Value); 3]) {
+    async fn ask_all(&mut self, reply: Reply, requests: [(&str, Value); 4]) {
         let mut responses = Vec::new();
         for (method, payload) in requests {
             let Ok(response) = self.rpc.enqueue(method, payload).await else {
@@ -764,7 +775,8 @@ impl<'a> Connection<'a> {
             self.link.blocks.entry(id.clone()).or_default().session = session.into();
             if !self.asking.contains_key(&id) {
                 let request = json!({"session_id": session, "block_id": id, "args": {}});
-                let asked = [TITLE, PROCESS, STATUS].map(|method| (method, request.clone()));
+                let asked = [TITLE, PROCESS, STATUS, FOLDER];
+                let asked = asked.map(|method| (method, request.clone()));
                 self.asking.insert(id.clone(), Some(Vec::new()));
                 let reply = Reply::Learned { block: id, known };
                 self.ask_all(reply, asked).await;
@@ -899,19 +911,20 @@ impl<'a> Connection<'a> {
                     return;
                 };
                 let said = answer.unwrap_or_default();
-                let (title, process, status) = (&said[0], &said[1], &said[2]);
+                let [title, process, status, folder] = [0, 1, 2, 3].map(|at| &said[at]);
+                let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
                 // How a terminal stood when first seen is not news. How one that the
                 // last connection knew has changed since that was lost is.
                 return self.note(&block, known, |terminal| {
-                    terminal.title = title["title"].as_str().unwrap_or_default().into();
+                    terminal.title = text(&title["title"]);
                     terminal.process = wire::program(&process["foreground"]);
                     terminal.shell = wire::shell(&process["child"]);
+                    terminal.prompt = text(&process["child"]["name"]);
+                    terminal.folder = text(&folder["pwd"]);
                     terminal.foreground = process["foreground"]["pid"].as_u64();
-                    let named =
-                        |record: &Value| record["id"].as_str().unwrap_or_default().to_owned();
                     let records = items(&status["records"]);
                     terminal.records = records
-                        .map(|record| (named(record), record.clone()))
+                        .map(|record| (text(&record["id"]), record.clone()))
                         .collect();
                     held.into_iter().for_each(|news| terminal.note(news));
                 });
@@ -1233,20 +1246,18 @@ impl<'a> Connection<'a> {
                 });
                 (self.session(&pane)?, "session.new_split", payload, None)
             }
-            Action::Divide {
-                before,
-                after,
-                upright,
-                ratio,
-            } => {
-                let request = json!({
-                    "session_id": self.session(&before)?,
-                    "direction": if upright { "horizontal" } else { "vertical" },
-                    "before_block_id": before,
-                    "after_block_id": after,
-                    "ratio": ratio,
-                });
-                let _ = self.borders.send(request);
+            Action::Divide(borders) => {
+                let request = |border: &Division| {
+                    anyhow::Ok(json!({
+                        "session_id": self.session(&border.before)?,
+                        "direction": if border.upright { "horizontal" } else { "vertical" },
+                        "before_block_id": border.before,
+                        "after_block_id": border.after,
+                        "ratio": border.ratio,
+                    }))
+                };
+                let requests = borders.iter().map(request).collect::<Result<_>>()?;
+                let _ = self.borders.send(requests);
                 return Ok(());
             }
             Action::Zoom { pane } => {
@@ -1593,20 +1604,22 @@ fn list(sessions: &mut Vec<Session>, event: &Event) {
 
 /// Move borders as they are asked to be moved, one request at a time: a drag asks
 /// faster than a server answers, and every move reflows the terminals either side.
-/// Only where a border was last asked to go is asked of the server, once it has
+/// Only where borders were last asked to go is asked of the server, once it has
 /// answered for the time before. The view that comes of it is in the server's news.
-fn divide(rpc: Rpc, shared: Shared) -> watch::Sender<Value> {
-    let (borders, mut asked) = watch::channel(Value::Null);
+fn divide(rpc: Rpc, shared: Shared) -> watch::Sender<Vec<Value>> {
+    let (borders, mut asked) = watch::channel(Vec::new());
     tokio::spawn(async move {
         // Until the connection is dropped, and the asking with it.
         while asked.changed().await.is_ok() {
-            let request = asked.borrow_and_update().clone();
-            // What the server would not do is said. That the connection ended
-            // is said already, above its last screen.
-            if let Err(error) = rpc.call("session.resize_pane", request).await
-                && error.to_string() != ENDED
-            {
-                shared.fail(format!("{error:#}"));
+            let requests = asked.borrow_and_update().clone();
+            for request in requests {
+                // What the server would not do is said. That the connection ended
+                // is said already, above its last screen.
+                if let Err(error) = rpc.call("session.resize_pane", request).await
+                    && error.to_string() != ENDED
+                {
+                    shared.fail(format!("{error:#}"));
+                }
             }
         }
     });
@@ -1685,6 +1698,8 @@ fn parse_windows(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> 
                         program: Program::default(),
                         activity: Activity::Idle,
                         message: String::new(),
+                        task: String::new(),
+                        progress: None,
                         x,
                         y,
                         width,
@@ -1717,12 +1732,9 @@ fn parse_windows(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> 
         .collect()
 }
 
-/// What a terminal's programs say they are doing, of all that each has reported:
-/// the most pressing of it, the line said of that, and the icon of one still at it.
-fn reported<'a>(
-    records: impl Iterator<Item = &'a Value> + Clone,
-) -> (Activity, &'a str, Option<Program>) {
-    let activity = |record: &Value| match record["state"].as_str() {
+/// What one record of a program's says it is doing.
+fn state(record: &Value) -> Activity {
+    match record["state"].as_str() {
         Some("working") => Activity::Working,
         Some("done") => Activity::Done,
         Some("error") => Activity::Error,
@@ -1733,18 +1745,23 @@ fn reported<'a>(
             _ => Wait::Input,
         }),
         _ => Activity::Idle,
-    };
+    }
+}
+
+/// What a terminal's programs say they are doing, of all that each has reported:
+/// the most pressing of it, the record that says so, and the icon of one still
+/// at it.
+fn reported<'a>(
+    records: impl Iterator<Item = &'a Value> + Clone,
+) -> (Activity, &'a Value, Option<Program>) {
     // Of several as pressing, the first: a program comes before its parts.
-    let records = || records.clone().map(|record| (activity(record), record));
+    let records = || records.clone().map(|record| (state(record), record));
     let top = records().min_by_key(|(state, _)| Reverse(*state));
-    let (top, message) = match top {
-        Some((top, record)) => (top, record["msg"].as_str().unwrap_or_default()),
-        None => (Activity::Idle, ""),
-    };
     // What a program that has finished left behind says nothing of what runs now.
     let live = records().filter(|(state, _)| !matches!(state, Activity::Done | Activity::Error));
     let app = Program::named(live.filter_map(|(_, record)| record["effective_app"].as_str()));
-    (top, message, app)
+    let (top, record) = top.unwrap_or((Activity::Idle, &Value::Null));
+    (top, record, app)
 }
 
 /// Give every pane what is known of its terminal.
@@ -1752,15 +1769,26 @@ fn fill(sessions: &mut [Session], blocks: &HashMap<String, Block>) {
     let windows = sessions.iter_mut().flat_map(|s| &mut s.windows);
     for pane in windows.flat_map(Window::every_mut) {
         if let Some(block) = blocks.get(&pane.id) {
-            // One with no title keeps its label.
-            if !block.title.is_empty() {
+            pane.idle = block.shell.is_some() && block.shell == block.foreground;
+            // At its shell's prompt it goes by the shell and where that is: the
+            // title a prompt sets tells who is at what machine first, and at
+            // length. One with no title keeps its label.
+            if pane.idle && !block.folder.is_empty() {
+                let named = format!("{} {}", block.prompt, model::folder(&block.folder));
+                named.trim_start().clone_into(&mut pane.title);
+            } else if !block.title.is_empty() {
                 pane.title.clone_from(&block.title);
             }
-            let (activity, message, app) = block.says();
+            // What it is doing, by the record that speaks for it: the line said of
+            // that, what it is at, and how far along. Failing the last, how far the
+            // terminal itself was told.
+            let (activity, record, app) = reported(block.records.values());
+            let said = |key: &str| record[key].as_str().unwrap_or_default();
             pane.program = app.or(block.process).unwrap_or_default();
             pane.activity = activity;
-            message.clone_into(&mut pane.message);
-            pane.idle = block.shell.is_some() && block.shell == block.foreground;
+            said("msg").clone_into(&mut pane.message);
+            said("title").clone_into(&mut pane.task);
+            pane.progress = wire::percent(&record["progress"]).or(block.progress);
         }
     }
 }
