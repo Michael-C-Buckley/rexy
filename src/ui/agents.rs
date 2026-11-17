@@ -1,7 +1,7 @@
 //! The sidebar as a list of what is at work: every pane on every server whose
 //! program has something to say, or is a coding agent at rest, under what it
 //! is doing, with how long it has been so.
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Vec2};
 
@@ -10,7 +10,7 @@ use super::{
     heard::{dot, worn},
     style::{Icon, Item, ROW, SMALL, bold, caption, item, toggle},
 };
-use crate::model::{self, Activity, Pane, View};
+use crate::model::{self, Activity, Pane, Session, Tab, View};
 
 /// What the panes are sorted under, in the order they are listed.
 const KINDS: [&str; 4] = ["Needs you", "Done", "Working", "Idle"];
@@ -37,7 +37,39 @@ pub fn ago(since: Duration) -> String {
     }
 }
 
+/// A pane that is listed: since when it has been as it is, its server, and the
+/// session and the tab it is in.
+type Listed<'a> = (Option<Instant>, usize, &'a Session, &'a Tab, &'a Pane);
+
 impl App {
+    /// Every pane that is listed, on every server, under its kind. Of each
+    /// kind, the one that has been so longest comes first.
+    fn listed<'a>(&self, views: &'a [View]) -> [Vec<Listed<'a>>; 4] {
+        let mut listed: [Vec<Listed>; 4] = Default::default();
+        for (server, view) in views.iter().enumerate() {
+            for (session, tab) in view.every_tab() {
+                for pane in tab.every() {
+                    if let Some(kind) = kind(pane) {
+                        let since = self.heard.get(&pane.id).and_then(|heard| heard.since);
+                        listed[kind].push((since, server, session, tab, pane));
+                    }
+                }
+            }
+        }
+        for panes in &mut listed {
+            panes.sort_by_key(|listed| listed.0);
+        }
+        listed
+    }
+
+    /// The panes that want the user, in the order the list has them: those
+    /// that need them, and then those that are done.
+    pub(super) fn wanted(&self, views: &[View]) -> Vec<(usize, String)> {
+        let [needing, done, ..] = self.listed(views);
+        let wanting = needing.into_iter().chain(done);
+        wanting.map(|(_, server, _, _, pane)| (server, pane.id.clone())).collect()
+    }
+
     /// The button that turns the sidebar to that list and back. It wears the
     /// most pressing thing any pane has to say, on any server.
     pub(super) fn watch(&mut self, ui: &mut egui::Ui, views: &[View]) {
@@ -74,32 +106,18 @@ impl App {
 
     /// The list itself, in place of the servers and their sessions.
     pub(super) fn agents(&mut self, ui: &mut egui::Ui, views: &[View]) {
-        // Each pane listed, under its kind: since when it has been so, its
-        // server, and the session and the tab it is in.
-        let mut listed: [Vec<_>; 4] = Default::default();
-        for (server, view) in views.iter().enumerate() {
-            for (session, tab) in view.every_tab() {
-                for pane in tab.every() {
-                    if let Some(kind) = kind(pane) {
-                        let since = self.heard.get(&pane.id).and_then(|heard| heard.since);
-                        listed[kind].push((since, server, session, tab, pane));
-                    }
-                }
-            }
-        }
+        let listed = self.listed(views);
         if listed.iter().all(Vec::is_empty) {
             return caption(ui, egui::RichText::new("No activity."));
         }
         let mut picked = None;
-        for (kind, mut panes) in KINDS.iter().zip(listed) {
+        for (kind, panes) in KINDS.iter().zip(listed) {
             if panes.is_empty() {
                 continue;
             }
-            // What they are doing heads them, with how many they are. The one
-            // that has been so longest comes first.
+            // What they are doing heads them, with how many they are.
             let head = format!("{kind} · {}", panes.len());
             caption(ui, egui::RichText::new(head).font(bold(SMALL)));
-            panes.sort_by_key(|listed| listed.0);
             for (_, server, session, tab, pane) in panes {
                 // It goes by its session, and by its tab where the session has
                 // others to tell it from.

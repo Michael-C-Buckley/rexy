@@ -136,7 +136,11 @@ fn keys_are_shown_as_they_are_read_on_a_keyboard() {
     assert_eq!(own.shortcut("client.font.increase"), "Ctrl+=");
     assert_eq!(own.shortcut("client.tab.previous"), "Ctrl+Shift+Tab");
     assert_eq!(own.shortcut("client.scroll.page_up"), "Shift+PageUp");
-    assert_eq!(own.shortcut("client.tab.goto"), "");
+    assert_eq!(own.shortcut("client.tab.rename"), "");
+    // A tab has the keys of its place from the first, or else from the last.
+    assert_eq!(own.tab(1, 3), "Alt+2");
+    assert_eq!(own.tab(11, 12), "Alt+9");
+    assert_eq!(own.tab(9, 12), "");
 }
 
 #[test]

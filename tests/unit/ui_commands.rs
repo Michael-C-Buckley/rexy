@@ -24,11 +24,16 @@ fn view() -> View {
     }
 }
 
+/// How a window stands with nothing wanting the user and no tab to go back to.
+fn standing<'a>(view: &'a View, keys: &'a Keys) -> Standing<'a> {
+    let (font_size, sidebar) = (15.0, false);
+    Standing { view, focused: None, font_size, sidebar, keys, wanting: &[], back: None }
+}
+
 /// What a command comes to with the keyboard in a pane, in words.
 fn plan(view: &View, focused: &str, name: &str, args: Value) -> Result<String, &'static str> {
     let keys = Keys::default();
-    let standing =
-        Standing { view, focused: Some(focused), font_size: 15.0, sidebar: false, keys: &keys };
+    let standing = Standing { focused: Some(focused), ..standing(view, &keys) };
     Ok(match standing.plan(name, &args, None)? {
         Deed::Server(Action::SelectTab { tab, .. }) => format!("show {tab}"),
         Deed::Server(Action::SelectSession(session)) => format!("show {session}"),
@@ -64,7 +69,56 @@ fn the_table_names_each_command_once_and_spells_its_keys_as_rex_does() {
     let request = request();
     let count = |list: &Value| list.as_array().unwrap().len();
     assert_eq!(count(&request["actions"]), COMMANDS.len() + DIRECTED.len());
-    assert_eq!(count(&request["defaults"][0]["bindings"]), KEYS.len());
+    // With a key for each of nine tabs, the last of which is the last tab.
+    let bindings = &request["defaults"][0]["bindings"];
+    assert_eq!(count(bindings), KEYS.len() + 9);
+    let bound = |key: &str| {
+        let has = |bound: &&Value| bound["keys"] == json!([key]);
+        bindings.as_array().unwrap().iter().find(has).cloned().unwrap()
+    };
+    assert_eq!(
+        bound("alt+3"),
+        json!({"keys": ["alt+3"], "action": "client.tab.goto", "args": {"index": 3}})
+    );
+    assert_eq!(bound("alt+9")["args"], json!({"index": -1}));
+    assert_eq!(
+        bound("ctrl+shift+t"),
+        json!({"keys": ["ctrl+shift+t"], "action": "client.tab.new"})
+    );
+    assert!(input::press("p", "alt+9").is_some());
+}
+
+#[test]
+fn the_next_pane_that_wants_the_user_is_the_one_after_this_on_any_server() {
+    let (view, keys) = (view(), Keys::default());
+    let wanting = [(0, "a".to_owned()), (2, "x".to_owned()), (1, "y".to_owned())];
+    let next = |focused, wanting| {
+        let standing = Standing { focused: Some(focused), wanting, ..standing(&view, &keys) };
+        match standing.plan("client.activity.next", &Value::Null, None) {
+            Ok(Deed::Reveal(server, pane)) => Some((server, pane)),
+            _ => None,
+        }
+    };
+    // From a pane that wants nothing, the first. From one that does, the one
+    // after it, and round to the first again.
+    assert_eq!(next("b", &wanting), Some((0, "a".to_owned())));
+    assert_eq!(next("a", &wanting), Some((2, "x".to_owned())));
+    assert_eq!(next("y", &wanting), Some((0, "a".to_owned())));
+    // The pane with the keyboard is not gone to, and there may be no other.
+    assert_eq!(next("a", &wanting[..1]), None);
+    assert_eq!(next("b", &[]), None);
+}
+
+#[test]
+fn the_tab_shown_before_is_gone_back_to_on_whichever_server_it_is() {
+    let (view, keys) = (view(), Keys::default());
+    let back = ((3, "s7".to_owned()), "t9".to_owned());
+    let plan = |back| {
+        Standing { back, ..standing(&view, &keys) }.plan("client.tab.back", &Value::Null, None)
+    };
+    let there = |deed: &Deed| matches!(deed, Deed::Show(3, Action::SelectTab { session, tab }) if session == "s7" && tab == "t9");
+    assert!(plan(Some(&back)).is_ok_and(|deed| there(&deed)));
+    assert!(matches!(plan(None), Err("refused")));
 }
 
 #[test]
@@ -138,8 +192,7 @@ fn a_command_is_refused_where_it_has_nothing_to_act_on() {
     let mut view = view();
     // A pane another client names is one on show, or none.
     let keys = Keys::default();
-    let standing =
-        |view| Standing { view, focused: Some("b"), font_size: 15.0, sidebar: true, keys: &keys };
+    let standing = |view| Standing { focused: Some("b"), sidebar: true, ..standing(view, &keys) };
     let named = |pane| standing(&view).plan("pane.close", &Value::Null, Some(pane));
     assert!(matches!(named("idle"), Ok(Deed::Close(_, true, _))));
     assert!(matches!(named("a"), Err("refused")));

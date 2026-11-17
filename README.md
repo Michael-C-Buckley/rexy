@@ -47,11 +47,14 @@ These are the defaults, and `rex.bind` in your home server's `init.lua` changes 
 
 | Keys | Action |
 |---|---|
-| **Ctrl Shift K** | Find a session or tab |
+| **Ctrl Shift K** | Find a session, or a tab on any server |
+| **Ctrl Shift A** | Go to the next pane that needs you |
 | **Ctrl Shift P** | Command palette |
 | **Ctrl Shift B** | Sidebar, or tabs along the top |
 | **Ctrl Shift N**, **Ctrl Shift T** | New session, new tab |
 | **Ctrl Tab**, **Ctrl Shift Tab** | Next and previous tab |
+| **Alt 1** to **Alt 9** | Tab by its number; 9 is the last |
+| **Ctrl Shift L** | Back to the tab shown before |
 | **Ctrl Shift D**, **Ctrl Alt D** | Split the pane right or down |
 | **Ctrl Alt** + arrow | Focus the pane on that side |
 | **Ctrl Shift Enter** | Zoom the pane |

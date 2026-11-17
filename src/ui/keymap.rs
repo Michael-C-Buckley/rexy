@@ -88,16 +88,13 @@ impl Keymap {
         }
     }
 
-    /// This client's own keys, which are all there is until a server has answered.
-    /// A server tries the later of one layer's bindings first, and so does this.
+    /// This client's own keys, which are all there is until a server has answered:
+    /// those a server is asked with, read as its answer is. A server tries the
+    /// later of one layer's bindings first, and so does this.
     pub fn own() -> Self {
-        let bound = |(key, name): &(&str, &str)| Binding {
-            keys: vec![(*key).to_owned()],
-            mode: None,
-            name: (*name).to_owned(),
-            args: Value::Null,
-        };
-        Self { bindings: commands::KEYS.iter().rev().map(bound).collect(), ..Self::default() }
+        let mut own = Self::parse(&commands::request()["defaults"][0]);
+        own.bindings.reverse();
+        own
     }
 
     pub fn has_mode(&self, name: &str) -> bool {
@@ -115,23 +112,38 @@ impl Keymap {
         own.or(self.served(name).map(|served| served.2)) == Some(true)
     }
 
-    /// The keys that do something, as they are shown: `Ctrl+Shift+D`, or nothing
-    /// for what has none. Of several, those that would be tried first. Keys
-    /// that never come to it are not its keys: those that something tried
-    /// before it always takes, as what is sent on to the server does.
-    pub fn shortcut(&self, name: &str) -> String {
+    /// The keys of a binding that is `wanted`, as they are shown: `Ctrl+Shift+D`,
+    /// or nothing where there is none. Of several, those that would be tried
+    /// first. Keys that never come to it are not its keys: those that something
+    /// tried before it always takes, as what is sent on to the server does.
+    fn keys(&self, wanted: impl Fn(&Binding) -> bool) -> String {
         let always = |over: &Binding| over.name == FORWARD || self.served(&over.name).is_some();
         let reached = |at: usize, bound: &Binding| {
             let over = |over: &Binding| over.mode.is_none() && over.keys == bound.keys;
             !self.bindings[..at].iter().any(|b| over(b) && always(b))
         };
         let mut bound = self.bindings.iter().enumerate();
-        let bound = bound
-            .find(|(at, bound)| bound.name == name && bound.mode.is_none() && reached(*at, bound));
+        let bound =
+            bound.find(|(at, bound)| wanted(bound) && bound.mode.is_none() && reached(*at, bound));
         bound.map_or_else(String::new, |(_, bound)| {
             let keys = bound.keys.iter().map(|key| shown(key));
             keys.collect::<Vec<_>>().join(", ")
         })
+    }
+
+    /// The keys that do something by its name.
+    pub fn shortcut(&self, name: &str) -> String {
+        self.keys(|bound| bound.name == name)
+    }
+
+    /// The keys that show the tab at a place among so many: those for its
+    /// place from the first, which is 1, or else from the last, which is -1.
+    pub fn tab(&self, place: usize, of: usize) -> String {
+        let at = |index: i64| {
+            self.keys(|bound| bound.name == "client.tab.goto" && bound.args["index"] == index)
+        };
+        let keys = at(place as i64 + 1);
+        if keys.is_empty() { at(place as i64 - of as i64) } else { keys }
     }
 
     /// What an action is called where it is shown: by this client's table, by the

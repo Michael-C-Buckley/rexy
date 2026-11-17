@@ -134,6 +134,12 @@ pub struct App {
     commands: bool,
     /// The session on show and the one shown before it, each with its server.
     visited: [Option<(usize, String)>; 2],
+    /// The tab on show and the one shown before it, each with its session as
+    /// above.
+    stood: [Option<((usize, String), String)>; 2],
+    /// The panes that want the user, on every server, each with its server: in
+    /// the order the list of what is at work has them.
+    wanting: Vec<(usize, String)>,
     closing: Closing,
     /// The tab on show that its list was last scrolled to, and in which list. It
     /// is scrolled to once, and the list is the user's to scroll after that.
@@ -178,6 +184,8 @@ impl App {
             cursor: None,
             commands: false,
             visited: [None, None],
+            stood: [None, None],
+            wanting: Vec::new(),
             closing: Closing::default(),
             followed: None,
         }
@@ -378,14 +386,20 @@ impl eframe::App for App {
             self.toast.say(error);
         }
         self.hear(&ctx, &mut views);
+        self.wanting = self.wanted(&views);
         let made = views[self.current].made.take();
         let copied = views[self.current].copied.take();
         let view = &views[self.current];
         let here = view.selected_session.clone().map(|session| (self.current, session));
-        if here.is_some() && here != self.visited[0] {
-            self.visited = [here, self.visited[0].take()];
-        }
         let tab = view.current_tab();
+        let at = here.clone().zip(tab.map(|tab| tab.id.clone()));
+        visit(&mut self.visited, here);
+        visit(&mut self.stood, at);
+        // A tab is gone back to only while it is still there.
+        self.stood[1].take_if(|((server, session), tab)| {
+            let mut tabs = views.get(*server).into_iter().flat_map(View::every_tab);
+            !tabs.any(|(held, open)| held.id == *session && open.id == *tab)
+        });
         let panes = tab.map_or(&[][..], |tab| &tab.panes);
         // A pane this window has just made or brought out takes the keyboard. One
         // made from elsewhere does not: that would take it from under the user's hands.
@@ -534,6 +548,13 @@ impl eframe::App for App {
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
+    }
+}
+
+/// Note what is on show, and keep what was shown before it.
+fn visit<T: PartialEq>(seen: &mut [Option<T>; 2], now: Option<T>) {
+    if now.is_some() && now != seen[0] {
+        *seen = [now, seen[0].take()];
     }
 }
 

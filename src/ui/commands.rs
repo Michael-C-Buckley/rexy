@@ -48,7 +48,8 @@ pub fn label(name: &str, title: &'static str, remote: bool) -> &'static str {
     }
 }
 
-/// Rex has no name for the two scrolls to an end. Theirs are this client's own.
+/// Rex has no name for the two scrolls to an end, for going back to a tab or for
+/// going to what wants the user. Theirs are this client's own.
 pub const COMMANDS: &[Command] = &[
     ("session.new", "New Session", ONCE),
     ("session.switch", "Change Session…", ONCE),
@@ -64,6 +65,7 @@ pub const COMMANDS: &[Command] = &[
     ("client.tab.next", "Show Next Tab", HELD),
     ("client.tab.previous", "Show Previous Tab", HELD),
     ("client.tab.goto", "Go to Tab", ONCE),
+    ("client.tab.back", "Go Back to Last Tab", ONCE),
     ("client.tab.move.backward", "Move Tab Backward", ONCE),
     ("client.tab.move.forward", "Move Tab Forward", ONCE),
     ("pane.split.left", "Split Pane Left", ONCE),
@@ -107,6 +109,7 @@ pub const COMMANDS: &[Command] = &[
     ("client.font.reset", "Reset Font Size", ONCE),
     ("client.sidebar.toggle", "Toggle Sidebar", ONCE),
     ("client.sidebar.activity.toggle", "Show Activity", ONCE),
+    ("client.activity.next", "Go to Next Pane That Needs You", ONCE),
     ("client.palette.toggle", "Command Palette…", ONCE),
     // Rex has no name for this either. Its own app keeps it among its settings.
     (REMOTE, "Toggle Remote Control", ONCE),
@@ -138,6 +141,8 @@ pub(super) const KEYS: &[(&str, &str)] = &[
     ("ctrl+shift+tab", "client.tab.previous"),
     ("ctrl+shift+pageup", "client.tab.move.backward"),
     ("ctrl+shift+pagedown", "client.tab.move.forward"),
+    ("ctrl+shift+l", "client.tab.back"),
+    ("ctrl+shift+a", "client.activity.next"),
     ("ctrl+shift+d", "pane.split.right"),
     ("ctrl+alt+d", "pane.split.down"),
     ("ctrl+alt+left", "pane.focus.left"),
@@ -227,7 +232,13 @@ pub fn request() -> Value {
     };
     let actions: Vec<Value> = COMMANDS.iter().chain(&DIRECTED).map(action).collect();
     let bound = |(key, name): &(&str, &str)| json!({"keys": [key], "action": name});
-    let bindings: Vec<Value> = KEYS.iter().map(bound).collect();
+    // With a key for each of a session's first eight tabs and for its last, as
+    // browsers have them.
+    let tab = |n: i64| {
+        let args = json!({"index": if n == 9 { -1 } else { n }});
+        json!({"keys": [format!("alt+{n}")], "action": "client.tab.goto", "args": args})
+    };
+    let bindings: Vec<Value> = KEYS.iter().map(bound).chain((1..=9).map(tab)).collect();
     json!({"actions": actions, "defaults": [{"name": "default", "bindings": bindings}]})
 }
 
@@ -235,6 +246,10 @@ pub fn request() -> Value {
 pub(super) enum Deed {
     /// Something for the server to do.
     Server(Action),
+    /// Showing a session or a tab of some server's, which may be another.
+    Show(usize, Action),
+    /// Showing a pane of some server's, whatever tab it is in.
+    Reveal(usize, String),
     /// Taking the keyboard to a pane.
     Focus(String),
     Font(f32),
@@ -278,6 +293,10 @@ pub(super) struct Standing<'a> {
     pub font_size: f32,
     pub sidebar: bool,
     pub keys: &'a Keys,
+    /// The panes that want the user, on every server, each with its server.
+    pub wanting: &'a [(usize, String)],
+    /// The tab shown before the one on show, with its session and that one's server.
+    pub back: Option<&'a ((usize, String), String)>,
 }
 
 impl Standing<'_> {
@@ -333,6 +352,18 @@ impl Standing<'_> {
         Some(match name {
             "client.sidebar.toggle" => Deed::Sidebar,
             "client.sidebar.activity.toggle" => Deed::Activity,
+            // The one after the pane with the keyboard, round and round, or
+            // the first of them: but not that pane itself.
+            "client.activity.next" => {
+                let here = |(_, pane): &(usize, String)| Some(pane.as_str()) == self.focused;
+                let after = self.wanting.iter().position(here).map_or(0, |at| at + 1);
+                let next = self.wanting.iter().cycle().nth(after).filter(|next| !here(next))?;
+                Deed::Reveal(next.0, next.1.clone())
+            }
+            "client.tab.back" => {
+                let ((server, session), tab) = self.back?.clone();
+                Deed::Show(server, Action::SelectTab { session, tab })
+            }
             "client.palette.toggle" => Deed::Palette { commands: true },
             "session.switch" => Deed::Palette { commands: false },
             REMOTE => Deed::Remote,
@@ -459,6 +490,8 @@ impl App {
             font_size: self.remembered.kept.font_size,
             sidebar: self.remembered.kept.sidebar,
             keys: &self.keys,
+            wanting: &self.wanting,
+            back: self.stood[1].as_ref(),
         }
     }
 
@@ -486,6 +519,8 @@ impl App {
         let row = |session, tab| Target { server, session, tab };
         match deed {
             Deed::Server(action) => self.open(server, action),
+            Deed::Show(server, action) => self.open(server, action),
+            Deed::Reveal(server, pane) => _ = self.reveal(server, &pane),
             Deed::Focus(pane) => {
                 self.focused = Some(pane.clone());
                 self.send(Action::FocusPane { pane });

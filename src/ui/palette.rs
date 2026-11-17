@@ -1,5 +1,5 @@
 //! One list to find things in by name: every session, the tabs of the one on
-//! show, and what can be done just now.
+//! show or of them all, and what can be done just now.
 use eframe::egui::{self, Color32, Key, Modifiers, Popup, RectAlign, Stroke, Vec2};
 use serde_json::Value;
 
@@ -10,7 +10,7 @@ use super::{
     style::{BODY, BORDER, Icon, Item, SMALL, TEXT, bold, caption, item},
 };
 use crate::{
-    model::{Action, View},
+    model::{Action, Session, Tab, View},
     program::Program,
 };
 
@@ -23,6 +23,15 @@ pub fn id() -> egui::Id {
 fn found(typed: &str, words: &[&str]) -> bool {
     let typed = typed.trim().to_lowercase();
     words.iter().any(|word| word.to_lowercase().contains(&typed))
+}
+
+/// The words a tab is found by: its name, what its panes are titled and the
+/// programs in them, and its session's name where that has other tabs too. A
+/// session's only tab is found with it, by its row.
+fn words<'a>(session: &'a Session, tab: &'a Tab) -> Vec<&'a str> {
+    let panes = tab.every().flat_map(|pane| [pane.title.as_str(), pane.program.name()]);
+    let session = (session.tabs.len() > 1).then_some(session.name.as_str());
+    std::iter::once(tab.name()).chain(panes).chain(session).collect()
 }
 
 /// A row of the list, and what taking it does.
@@ -70,6 +79,7 @@ impl App {
 
     /// The palette, while it is open: the sessions on every server, the tabs of
     /// the one on show, and what can be done just now, with the keys that do it.
+    /// What is typed is looked for among the tabs of every session, too.
     pub(super) fn palette(&mut self, ctx: &egui::Context, views: &[View]) {
         if !Popup::is_id_open(ctx, id()) {
             return;
@@ -116,14 +126,30 @@ impl App {
         let new = named.clone().filter(|_| rows.is_empty());
         // What comes after the sessions is headed by what it is.
         let mut heads = vec![(rows.len(), "Tabs")];
-        if let Some(session) = view.selected_session.as_ref().filter(|_| places) {
-            for tab in view.tabs().iter().filter(|tab| found(&[tab.name()])) {
-                let to = Action::SelectTab { session: session.clone(), tab: tab.id.clone() };
-                let show = Pick::Show(current, to);
-                let (icon, mark) = (Some(tab.program()), dot(ctx, tab.says().0));
-                rows.push(row(tab.name(), icon, mark, show));
+        // Those of the session on show come first, by their names alone and
+        // with the keys of their places. What is typed is looked for in every
+        // other session too, and a tab found there says where it is: in which
+        // session, and on which server if that is another.
+        let mut others = Vec::new();
+        for (server, held) in views.iter().enumerate().filter(|_| places) {
+            let shown = held.selected_session.as_ref().filter(|_| server == current);
+            let elsewhere = (server != current).then(|| self.servers[server].label());
+            let looked = |session: &&Session| named.is_some() || Some(&session.id) == shown;
+            for session in held.sessions.iter().filter(looked) {
+                let (away, of) = (Some(&session.id) != shown, session.tabs.len());
+                let tabs = session.tabs.iter().enumerate();
+                for (place, tab) in tabs.filter(|tab| found(&words(session, tab.1))) {
+                    let label = [elsewhere, away.then_some(&*session.name), Some(tab.name())];
+                    let label = label.into_iter().flatten().collect::<Vec<_>>().join(" › ");
+                    let keys = if away { String::new() } else { map.tab(place, of) };
+                    let to = Action::SelectTab { session: session.id.clone(), tab: tab.id.clone() };
+                    let (icon, mark) = (Some(tab.program()), dot(ctx, tab.says().0));
+                    let row = Row { keys, ..row(&label, icon, mark, Pick::Show(server, to)) };
+                    if away { others.push(row) } else { rows.push(row) }
+                }
             }
         }
+        rows.append(&mut others);
         heads.push((rows.len(), "Commands"));
         // All that can be done just now, but to put this list away.
         for (name, title, _) in COMMANDS.iter().filter(|c| deeds && found(&[c.1, c.0])) {
