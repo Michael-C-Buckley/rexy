@@ -1,6 +1,8 @@
 //! One list to find things in by name: every session, the tabs of the one on
 //! show or of them all, and what can be done just now.
-use eframe::egui::{self, Color32, Key, Modifiers, Popup, RectAlign, Stroke, Vec2};
+use std::sync::Arc;
+
+use eframe::egui::{self, Color32, Key, Modifiers, Popup, Rect, RectAlign, Stroke, Vec2};
 use serde_json::Value;
 
 use super::{
@@ -8,10 +10,10 @@ use super::{
     commands::{COMMANDS, Deed, label},
     heard::dot,
     hosts,
-    style::{BODY, BORDER, Icon, Item, SMALL, TEXT, bold, caption, item},
+    style::{BODY, BORDER, Icon, Item, ROW, SMALL, TEXT, bold, caption, item, tick},
 };
 use crate::{
-    model::{Action, Host, Session, Tab, View},
+    model::{Action, Answer, Host, Question, Session, Tab, View},
     program::Program,
 };
 
@@ -48,13 +50,22 @@ pub enum Listing {
     Host(Option<Host>),
     /// The hosts that can be removed.
     Hosts,
+    /// What an action of a server's asks the user: the first of its questions
+    /// yet to be answered. What is typed is the answer, or finds one.
+    Asked,
 }
 
 /// A row of the list, and what taking it does.
 struct Row {
     label: String,
+    /// A second line, where it has more to say.
+    under: String,
+    /// A few words at its far end, in place of a mark.
+    detail: String,
     icon: Option<Program>,
     mark: Option<(Icon, Color32)>,
+    /// Whether it is among those chosen, where several may be.
+    chosen: Option<bool>,
     /// The keys that do the same.
     keys: String,
     pick: Pick,
@@ -67,6 +78,10 @@ enum Pick {
     Do(String),
     /// Have home do something to its list of hosts.
     Home(Action),
+    /// Answer the question on show.
+    Answer(Answer),
+    /// Choose one of the things it offers, or leave it out again.
+    Choose(String),
 }
 
 impl App {
@@ -111,6 +126,49 @@ impl App {
         }
     }
 
+    /// Take in what the servers' actions ask of the user, and put the first of
+    /// their questions on show. One is over when it is answered here or from
+    /// elsewhere, when its server is lost, and when the palette is put away or
+    /// turned to something else while it shows the question: that says the
+    /// user will not answer.
+    pub(super) fn questions(&mut self, ctx: &egui::Context, views: &[View]) {
+        let shows = Popup::is_id_open(ctx, id()) && self.listing == Listing::Asked;
+        for (server, view) in views.iter().enumerate() {
+            let asked = view.questions.iter().cloned();
+            self.questions.extend(asked.map(|question| (server, question)));
+            let over = |(of, question): &(usize, Arc<Question>)| {
+                *of == server && (!view.connected || view.settled.contains(&question.call))
+            };
+            self.questions.retain(|question| !over(question));
+            if self.asking.take_if(|question| over(question)).is_some() && shows {
+                Popup::close_id(ctx, id());
+            }
+        }
+        if self.asking.is_some() && !shows {
+            self.settle(Answer::Refused);
+        }
+        // The next waits its turn, and for the palette to be free: it does not
+        // take over what the user is typing there for something else.
+        if self.asking.is_some() || Popup::is_id_open(ctx, id()) {
+            return;
+        }
+        self.asking = self.questions.pop_front();
+        if let Some((_, question)) = &self.asking {
+            let offered = question.choices.iter().flatten();
+            self.chosen = offered.filter(|choice| choice.chosen).map(|c| c.id.clone()).collect();
+            self.filter = question.value.clone();
+            (self.listing, self.cursor) = (Listing::Asked, None);
+            Popup::open_id(ctx, id());
+        }
+    }
+
+    /// Answer the question on show, which is then over.
+    fn settle(&mut self, answer: Answer) {
+        if let Some((server, question)) = self.asking.take() {
+            self.tell(server, Action::Answer { call: question.call.clone(), answer });
+        }
+    }
+
     /// The palette, while it is open: the sessions on every server, the tabs of
     /// the one on show, and what can be done just now, with the keys that do it.
     /// What is typed is looked for among the tabs of every session, too.
@@ -128,12 +186,15 @@ impl App {
         let (places, deeds) = match self.listing {
             Listing::Places => (true, named.is_some()),
             Listing::Commands => (named.is_some(), true),
-            Listing::Host(_) | Listing::Hosts => (false, false),
+            Listing::Host(_) | Listing::Hosts | Listing::Asked => (false, false),
         };
         let row = |label: &str, icon, mark, pick| Row {
             label: label.to_owned(),
+            under: String::new(),
+            detail: String::new(),
             icon,
             mark,
+            chosen: None,
             keys: String::new(),
             pick,
         };
@@ -237,7 +298,43 @@ impl App {
                     rows.push(row(&label, None, None, remove));
                 }
             }
-            Listing::Places | Listing::Commands => {}
+            Listing::Places | Listing::Commands | Listing::Asked => {}
+        }
+        // What an action asks: what is typed, as it is typed, or one of the
+        // things it offers. Where several may be chosen each is ticked, and the
+        // row at the foot answers with them all.
+        let question = self.asking.clone().filter(|_| self.listing == Listing::Asked);
+        let mut foot = None;
+        if let Some((_, question)) = &question {
+            // It is headed by what it asks, and by nothing else.
+            heads.clear();
+            let choices = question.choices.iter().flatten();
+            for choice in choices.clone().filter(|c| found(&[&c.title, &c.under, &c.id])) {
+                let pick = match question.several {
+                    true => Pick::Choose(choice.id.clone()),
+                    false => Pick::Answer(Answer::Chosen(vec![choice.id.clone()])),
+                };
+                rows.push(Row {
+                    under: choice.under.clone(),
+                    detail: choice.detail.clone(),
+                    chosen: question.several.then(|| self.chosen.contains(&choice.id)),
+                    ..row(&choice.title, None, None, pick)
+                });
+            }
+            // A line of text goes by what the action calls answering with it.
+            if question.choices.is_none() || (question.other && named.is_some()) {
+                let label = question.confirm.as_ref().filter(|_| question.choices.is_none());
+                let label = label.cloned().unwrap_or_else(|| format!("Use “{}”", self.filter));
+                rows.push(row(&label, None, None, Pick::Answer(Answer::Text(self.filter.clone()))));
+            }
+            if question.several {
+                let chosen = choices.filter(|choice| self.chosen.contains(&choice.id));
+                let chosen: Vec<_> = chosen.map(|choice| choice.id.clone()).collect();
+                let confirm = question.confirm.as_deref().unwrap_or("Done");
+                let label = format!("{confirm} · {} chosen", chosen.len());
+                let answer = row(&label, None, None, Pick::Answer(Answer::Chosen(chosen)));
+                foot = Some(Row { keys: "Ctrl+Enter".into(), ..answer });
+            }
         }
 
         let (mut picked, mut pointed) = (None, None);
@@ -250,10 +347,12 @@ impl App {
         popup.show(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             // The arrows walk the list while what is typed goes to the field.
-            let (step, enter) = ui.input_mut(|i| {
+            // With Ctrl, Enter answers with all that has been chosen.
+            let (step, enter, all) = ui.input_mut(|i| {
                 let down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
                 let up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
-                (isize::from(down) - isize::from(up), i.key_pressed(Key::Enter))
+                let all = foot.is_some() && i.consume_key(Modifiers::CTRL, Key::Enter);
+                (isize::from(down) - isize::from(up), i.key_pressed(Key::Enter), all)
             });
             // The field is the head of the list, with a line under it and none
             // around it: nothing else here could be taking what is typed.
@@ -263,6 +362,7 @@ impl App {
                     Listing::Places => "Search sessions and tabs, or name a new session…",
                     Listing::Host(_) => "A name and its address, such as: studio ssh://studio",
                     Listing::Hosts => "Search hosts…",
+                    Listing::Asked => question.as_ref().map_or("", |asked| &asked.1.hint),
                 })
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
                 .desired_width(f32::INFINITY);
@@ -292,11 +392,25 @@ impl App {
                     selected: index == at,
                     icon: row.icon,
                     mark: row.mark,
+                    word: Some(row.detail.as_str()).filter(|detail| !detail.is_empty()),
                     keys,
                     label: &row.label,
+                    under: &row.under,
+                    // A tick stands ahead of what may be chosen with others.
+                    inset: if row.chosen.is_some() { 24.0 } else { 0.0 },
                     ..Default::default()
                 };
-                let (response, _) = item(ui, Vec2::new(ui.available_width(), 32.0), entry);
+                let tall = if row.under.is_empty() { 32.0 } else { ROW };
+                let size = Vec2::new(ui.available_width(), tall);
+                // A long list draws only what is in sight, and the row that is lit.
+                if index != at && !ui.is_rect_visible(Rect::from_min_size(ui.cursor().min, size)) {
+                    ui.allocate_space(size);
+                    return;
+                }
+                let (response, _) = item(ui, size, entry);
+                if let Some(chosen) = row.chosen {
+                    tick(ui, response.rect, chosen);
+                }
                 if index == at && (step != 0 || fresh) {
                     response.scroll_to_me(None);
                 }
@@ -318,6 +432,15 @@ impl App {
                 list = list.vertical_scroll_offset(0.0);
             }
             list.show(ui, |ui| {
+                // A question is headed by what it asks, and by whose it is where
+                // that could be another's.
+                if let Some((server, question)) = &question {
+                    let whose = match self.servers.len() {
+                        1 => question.title.clone(),
+                        _ => format!("{} · {}", question.title, self.servers[*server].label()),
+                    };
+                    caption(ui, egui::RichText::new(whose).font(bold(SMALL)));
+                }
                 let mut listed = rows.iter().enumerate().peekable();
                 for (server, view) in views.iter().enumerate() {
                     // A session made on a server takes the name typed, too.
@@ -338,16 +461,39 @@ impl App {
                     row(ui, index, entry);
                 }
             });
+            // The row that answers with all that is chosen stays in sight under
+            // the list, however long that is.
+            if let Some(foot) = &foot {
+                ui.add_space(3.0);
+                ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), line);
+                ui.add_space(4.0);
+                let entry =
+                    Item { label: &foot.label, keys: Some(&foot.keys), ..Default::default() };
+                let (response, _) = item(ui, Vec2::new(ui.available_width(), 32.0), entry);
+                if response.clicked() || all {
+                    picked = Some(rows.len());
+                }
+            }
         });
         self.cursor = pointed.or(self.cursor);
+        rows.extend(foot);
         let Some(row) = picked.map(|picked| rows.swap_remove(picked)) else {
             return;
         };
-        Popup::close_id(ctx, id());
+        // Choosing one of several leaves the rest to be chosen from.
+        if !matches!(row.pick, Pick::Choose(_)) {
+            Popup::close_id(ctx, id());
+        }
         match row.pick {
             Pick::Show(server, action) => self.open(server, action),
             Pick::Do(name) => self.run(ctx, view, &name, &Value::Null, "palette"),
             Pick::Home(action) => self.tell(0, action),
+            Pick::Answer(answer) => self.settle(answer),
+            Pick::Choose(choice) => {
+                if !self.chosen.remove(&choice) {
+                    self.chosen.insert(choice);
+                }
+            }
         }
     }
 }

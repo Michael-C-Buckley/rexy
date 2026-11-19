@@ -53,6 +53,49 @@ fn keeps_up_with_sessions_and_their_views_by_what_the_news_carries() {
     };
     let asking = sent(None, "client_perform_requested", asking);
     assert_eq!(event(&asking), Some(Event::Asked(asked)));
+    // An action's question is for a line of text, or for a choice among what it
+    // offers, of which one may have no name but its own.
+    let asks = |prompt: Value| {
+        let asking = json!({"call_id": "1", "action": "branch", "prompt": prompt});
+        let Some(Event::Question(question)) = event(&sent(None, "client_prompt_requested", asking))
+        else {
+            panic!("no question was heard");
+        };
+        question
+    };
+    let line = json!({"kind": "input", "title": "New branch", "placeholder": "feature/…",
+        "value": "feature/", "confirm": "Create branch"});
+    let line = asks(line);
+    let wanted = Question {
+        call: "1".into(),
+        title: "New branch".into(),
+        hint: "feature/…".into(),
+        value: "feature/".into(),
+        confirm: Some("Create branch".into()),
+        ..Question::default()
+    };
+    assert_eq!(line, wanted);
+    let items = json!([
+        {"id": "/a/rex", "title": "rex", "subtitle": "~/a/rex", "icon": "folder", "detail": "M"},
+        {"id": "Plain", "selected": true},
+    ]);
+    let pick = asks(json!({"kind": "pick", "title": "Open", "multiple": true, "items": items}));
+    let rex = Choice {
+        id: "/a/rex".into(),
+        title: "rex".into(),
+        under: "~/a/rex".into(),
+        detail: "M".into(),
+        chosen: false,
+    };
+    let plain =
+        Choice { id: "Plain".into(), title: "Plain".into(), chosen: true, ..Choice::default() };
+    assert_eq!(pick.choices, Some(vec![rex, plain]));
+    assert!(pick.several && !pick.other);
+    // One with nothing to offer is a choice still, and not a line of text.
+    assert_eq!(asks(json!({"kind": "pick", "title": "Open"})).choices, Some(Vec::new()));
+    // And one that is over, for whatever reason, says only which.
+    let over = sent(None, "client_prompt_ended", json!({"call_id": "1", "reason": "answered"}));
+    assert_eq!(event(&over), Some(Event::Settled { call: "1".into() }));
     // What a view holds is told by its revision, and is not taken twice.
     let label = json!({"window_id": "w", "label": "Named"});
     let owner = json!({"block_id": "b", "owner": "client:1", "reason": "take"});
@@ -345,6 +388,8 @@ async fn a_request_too_large_for_the_server_fails_alone() {
 #[tokio::test]
 async fn a_request_never_answered_fails_alone() {
     let mut link = Link::open(65536).await;
+    let mut action = link.rpc.enqueue("client.action", json!({})).await.unwrap();
+    let (asking, _) = link.asked().await;
     let mut slow = link.rpc.enqueue("slow", json!({})).await.unwrap();
     let (id, _) = link.asked().await;
     // The server is there all the while, and so is not pinged.
@@ -357,6 +402,11 @@ async fn a_request_never_answered_fails_alone() {
     let error = slow.await.unwrap().unwrap_err();
     assert_eq!(error, Failed::Unanswered("slow".into()));
     assert!(!link.sent());
+    // An action is waited for: it may be asking the user something, and is
+    // answered when the user is done.
+    assert!(action.try_recv().is_err());
+    link.answer(json!({"type": "response", "id": asking, "payload": 2})).await;
+    assert_eq!(action.await.unwrap(), Ok(json!(2)));
     // Its answer comes after all, and is passed over. The connection carries on.
     link.answer(json!({"type": "response", "id": id})).await;
     let next = link.rpc.enqueue("next", json!({})).await.unwrap();
@@ -412,10 +462,10 @@ async fn the_server_says_why_it_closes_the_control_connection() {
     assert_eq!(behind, Ended::Closed { code, reason });
     let words = "This client fell too far behind the server's news";
     assert_eq!(behind.to_string(), words);
-    let reason = "no common API revision: server speaks 14 to 15, client needs 13 to 13; \
+    let reason = "no common API revision: server speaks 14 to 15, client needs 13 to 18; \
                   update the client";
     let new = ended(close(1008, reason)).await;
-    let why = "server speaks 14 to 15, client needs 13 to 13; update the client";
+    let why = "server speaks 14 to 15, client needs 13 to 18; update the client";
     assert_eq!(new, Ended::Incompatible(why.into()));
     let words = format!("This client and the server share no API revision: {why}");
     assert_eq!(new.to_string(), words);
@@ -527,7 +577,7 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     let welcome = json!({
         "type": "welcome",
         "protocol": CONTROL_PROTOCOL,
-        "api_revision": 13,
+        "api_revision": 18,
         "limits": {"max_message_bytes": 65536},
         "client": {"id": "client:1", "reconnect_token": "next"},
     });
@@ -547,8 +597,8 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     let (hello, last) = server.await.unwrap();
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["reconnect_token"], "last");
-    // It offers the one revision it speaks, and no older.
-    assert_eq!((&hello["api_revision"], &hello["api_min_revision"]), (&json!(13), &json!(13)));
+    // It offers the newest revision it was written for, and the oldest it can do with.
+    assert_eq!((&hello["api_revision"], &hello["api_min_revision"]), (&json!(18), &json!(13)));
     let Some(Message::Close(Some(frame))) = last else {
         panic!("the server was sent no close frame");
     };
@@ -557,7 +607,7 @@ async fn a_client_is_welcomed_at_a_socket_or_told_why_not() {
     // A server that cannot serve the client closes instead of welcoming it. One too
     // old to know that welcomes it at a revision it did not offer. Both are told
     // of in the same words.
-    let why = "server speaks 0 to 12, client needs 13 to 13; update the server";
+    let why = "server speaks 0 to 12, client needs 13 to 18; update the server";
     let refusal = Message::Close(close(1008, &format!("no common API revision: {why}")));
     let old = json!({"type": "welcome", "protocol": CONTROL_PROTOCOL, "api_server_revision": 12});
     for answer in [refusal, Message::Text(old.to_string().into())] {

@@ -26,7 +26,7 @@ mod style;
 mod toolbar;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -36,7 +36,7 @@ use eframe::egui::{self, Align2, FontId, Key, Margin, Rect, RichText, Sense, Vec
 
 use crate::{
     backend::Client,
-    model::{Action, Host, Tab, View},
+    model::{Action, Host, Question, Tab, View},
     notify::{Desktop, Herald},
 };
 use close::Closing;
@@ -136,6 +136,12 @@ pub struct App {
     filter: String,
     cursor: Option<usize>,
     listing: palette::Listing,
+    /// What a server's action is `asking` the user in the palette, with the
+    /// server, and those `chosen` of what it offers where several may be.
+    /// Behind it, the `questions` that wait their turn.
+    asking: Option<(usize, Arc<Question>)>,
+    chosen: HashSet<String>,
+    questions: VecDeque<(usize, Arc<Question>)>,
     /// The session on show and the one shown before it, each with its server.
     visited: [Option<(usize, String)>; 2],
     /// The tab on show and the one shown before it, each with its session as
@@ -191,6 +197,9 @@ impl App {
             filter: String::new(),
             cursor: None,
             listing: palette::Listing::Places,
+            asking: None,
+            chosen: HashSet::new(),
+            questions: VecDeque::new(),
             visited: [None, None],
             stood: [None, None],
             wanting: Vec::new(),
@@ -554,6 +563,7 @@ impl eframe::App for App {
         }
         frame::edges(root_ui);
         self.answer(&ctx, &views);
+        self.questions(&ctx, &views);
         self.palette(&ctx, &views);
         self.hints(&ctx, shown.inner);
         // Under what a lost connection says there, where it says it.

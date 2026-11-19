@@ -198,6 +198,8 @@ impl Client {
             copied: told.copied.take(),
             output: told.output.take(),
             asked: std::mem::take(&mut told.asked),
+            questions: std::mem::take(&mut told.questions),
+            settled: std::mem::take(&mut told.settled),
             rang: std::mem::take(&mut told.rang),
             ..told.clone()
         };
@@ -871,6 +873,10 @@ impl<'a> Connection<'a> {
                 return;
             }
             Event::Asked(asked) => return self.pass(asked),
+            Event::Question(question) => {
+                return self.shared.change(|s| s.view.questions.push(Arc::new(question)));
+            }
+            Event::Settled { call } => return self.shared.change(|s| s.view.settled.push(call)),
             Event::Block { block, news } => {
                 return match news {
                     News::Bell => self.rang(block),
@@ -1531,6 +1537,16 @@ impl<'a> Connection<'a> {
                 // Whoever asked has stopped waiting if this comes too late, and
                 // there is nobody to tell.
                 let _ = self.rpc.enqueue("client.reply", reply(&call, error)).await;
+                return Ok(());
+            }
+            Action::Answer { call, answer } => {
+                let result = match answer {
+                    model::Answer::Text(text) => json!({"text": text}),
+                    model::Answer::Chosen(ids) => json!({"ids": ids}),
+                    model::Answer::Refused => json!({"cancelled": true}),
+                };
+                let payload = json!({"call_id": call, "result": result});
+                self.ask(Reply::Told("The answer was not taken"), "client.reply", payload).await;
                 return Ok(());
             }
             Action::Upload { pane, files } => {

@@ -24,6 +24,10 @@ pub struct View {
     pub keymap: Option<Arc<Value>>,
     /// What this client has been asked to do, reported by one snapshot only.
     pub asked: Vec<Asked>,
+    /// What actions of the server's have to ask the user, reported likewise,
+    /// and then which of its questions are over without an answer from here.
+    pub questions: Vec<Arc<Question>>,
+    pub settled: Vec<String>,
     /// The other servers this one knows of.
     pub hosts: Vec<Host>,
     /// Every session on the server, each with its tabs.
@@ -145,6 +149,53 @@ pub struct Asked {
     /// The session and the pane it is to be done to, where the asking says.
     pub session: Option<String>,
     pub pane: Option<String>,
+}
+
+/// A question that an action of the server's puts to the user: for a line of
+/// text, or for a choice among what it offers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Question {
+    /// What its answer is answered by. A server numbers its own.
+    pub call: String,
+    pub title: String,
+    /// What to say in the field while nothing is typed there.
+    pub hint: String,
+    /// What the field starts with, for the user to change.
+    pub value: String,
+    /// What to call answering it, where the action says.
+    pub confirm: Option<String>,
+    /// What there is to choose from. None asks for a line of text.
+    pub choices: Option<Vec<Choice>>,
+    /// Any number of them may be chosen.
+    pub several: bool,
+    /// What is typed may be the answer, in place of any of them.
+    pub other: bool,
+}
+
+/// One of the things to choose from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Choice {
+    /// What it is answered by.
+    pub id: String,
+    pub title: String,
+    /// A second, quieter line.
+    pub under: String,
+    /// A few words for the far end of its row.
+    pub detail: String,
+    /// It starts out chosen, where several may be.
+    pub chosen: bool,
+}
+
+/// What the user says to a question.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    /// What was typed, as it was typed.
+    Text(String),
+    /// Those chosen of what it offered, each by what it is answered by, in
+    /// the order they were offered.
+    Chosen(Vec<String>),
+    /// That the user will not say.
+    Refused,
 }
 
 #[derive(Clone, Default)]
@@ -651,6 +702,11 @@ pub enum Action {
     Reply {
         call: String,
         error: Option<&'static str>,
+    },
+    /// Answer a question an action asked.
+    Answer {
+        call: String,
+        answer: Answer,
     },
 }
 

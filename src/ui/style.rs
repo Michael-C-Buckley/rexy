@@ -800,6 +800,24 @@ pub fn fold(ui: &egui::Ui, row: Rect, folded: bool) {
     }
 }
 
+/// The mark ahead of a `row` that is one of several to choose: a box, with a
+/// tick in it once the row is `chosen`.
+pub fn tick(ui: &egui::Ui, row: Rect, chosen: bool) {
+    let center = egui::pos2(row.left() + 20.0, row.center().y);
+    let (fill, edge) = if chosen {
+        (tints(ui.ctx()).accent, Color32::TRANSPARENT)
+    } else {
+        (Color32::TRANSPARENT, FAINT)
+    };
+    let square = Rect::from_center_size(center, Vec2::splat(14.0));
+    ui.painter().rect(square, 4, fill, Stroke::new(1.5, edge), StrokeKind::Inside);
+    if chosen {
+        let points =
+            [[-3.5, 0.0], [-1.0, 2.5], [3.5, -2.5]].map(|point| center + Vec2::from(point));
+        ui.painter().line(points.to_vec(), Stroke::new(1.5, CARD));
+    }
+}
+
 /// Words that are no row: what heads the rows under them, or stands where
 /// there are none.
 pub fn caption(ui: &mut egui::Ui, words: egui::RichText) {

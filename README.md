@@ -16,7 +16,7 @@ Rexy is unofficial and not affiliated with Superlogical. It is early software fo
 - **Splits.** Split, resize and zoom panes, and move them between tabs.
 - **A real terminal.** libghostty does the emulation: Kitty graphics, hyperlinks, search through the whole history, and your Ghostty theme.
 - **Files and pictures reach the pane's machine.** Drop files on a pane, or paste a picture, and their paths are typed there. For a server on another machine they are sent to it first.
-- **Rex's own keymap**, from your home server's `init.lua`, and a command palette.
+- **Rex's own keymap**, from your home server's `init.lua`, and a command palette, where the actions you write there ask their questions.
 
 ## Install
 
@@ -74,7 +74,7 @@ With the mouse: drag the line between two panes to resize them, drag a pane's he
 - **State** is kept in `rexy/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
 - **Not yet:** floating panes, moving a pane to another session, animated pictures.
 
-Rexy speaks revision 13 of Rex's control API, and refuses a server that is older or too new.
+Rexy speaks revisions 13 to 18 of Rex's control API, and refuses a server too old for the first of them.
 
 ## Development
 

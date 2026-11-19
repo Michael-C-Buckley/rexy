@@ -641,6 +641,21 @@ fn live_keymap_actions_and_requests() {
         rex.mode("only", { exclusive = true })
         rex.bind("only/z", "client.mode.exit")
         rex.bind("ctrl+x>ctrl+t", function(ctx, ev) rex.invoke("to_other") return true end)
+        rex.action{
+          name = "ask", title = "Ask",
+          run = function(ctx, args)
+            local name = rex.ui.input{ title = "Name it", placeholder = "a name", value = "was" }
+            if name == nil then
+              rex.session.set_label{ label = "unanswered" }
+              return
+            end
+            local which = rex.ui.pick{
+              title = "Which", multiple = true, confirm = "Take",
+              items = { "one", { id = "two", title = "Two", subtitle = "second", selected = true } },
+            }
+            rex.session.set_label{ label = name .. " " .. table.concat(which or {}, "+") }
+          end,
+        }
     "#;
     let config = format!("{config}\n{}\n{}", go("to_other", &other), go("to_first", &first));
     std::fs::write(path, config).unwrap();
@@ -700,6 +715,38 @@ fn live_keymap_actions_and_requests() {
     wait(&client, "a second line of it", |v| screen(v, &pane).matches("rexy-typed").count() == 2);
     send(&client, perform("com.superlogical.terminal.clear"));
     wait(&client, "a terminal cleared", |v| !typed(v));
+    // What an action asks the user comes to be answered here: with a line of
+    // text, and with some of the things it offers. It carries on with each.
+    let named = |name: &'static str| move |v: &View| v.session().is_some_and(|s| s.name == name);
+    send(&client, perform("ask"));
+    let asked = wait(&client, "an action's question", |v| !v.questions.is_empty()).questions;
+    let line = &asked[0];
+    assert_eq!(
+        (line.title.as_str(), line.hint.as_str(), line.value.as_str()),
+        ("Name it", "a name", "was")
+    );
+    assert_eq!(line.choices, None);
+    let answer = model::Answer::Text("named".into());
+    send(&client, Action::Answer { call: line.call.clone(), answer });
+    let asked = wait(&client, "its next question", |v| !v.questions.is_empty()).questions;
+    let which = &asked[0];
+    let offered = which.choices.as_ref().unwrap();
+    let said =
+        |at: usize| (offered[at].id.as_str(), offered[at].title.as_str(), offered[at].chosen);
+    assert_eq!((said(0), said(1)), (("one", "one", false), ("two", "Two", true)));
+    assert_eq!(
+        (offered[1].under.as_str(), which.several, which.confirm.as_deref()),
+        ("second", true, Some("Take"))
+    );
+    let answer = model::Answer::Chosen(vec!["one".into(), "two".into()]);
+    send(&client, Action::Answer { call: which.call.clone(), answer });
+    wait(&client, "an action that was answered", named("named one+two"));
+    // And it is told when the user will not say.
+    send(&client, perform("ask"));
+    let asked = wait(&client, "a question again", |v| !v.questions.is_empty()).questions;
+    let answer = model::Answer::Refused;
+    send(&client, Action::Answer { call: asked[0].call.clone(), answer });
+    wait(&client, "an action left unanswered", named("unanswered"));
     // One there is not is said to have failed.
     send(&client, perform("no_such_action"));
     let failed = wait(&client, "an action that failed", |v| v.error.is_some());

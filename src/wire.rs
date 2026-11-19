@@ -1,7 +1,7 @@
 //! Rex WebSocket transport and bounded, pipelined control requests.
 // Protocol interoperability informed by rexrs and rex-rune (MIT); see THIRD_PARTY.md.
 use crate::{
-    model::Asked,
+    model::{Asked, Choice, Question},
     program::{self, Program},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -27,9 +27,11 @@ use url::Url;
 pub const DATA_PROTOCOL: &str = "rex.data.terminal.v1";
 pub const ENDED: &str = "Rex control connection ended";
 const CONTROL_PROTOCOL: &str = "rex.control.v1";
-/// The one revision of the control API this client speaks. It needs what came with
-/// this one, and was written for none newer.
-const REVISION: u64 = 13;
+/// The revisions of the control API this client speaks. It needs what came with the
+/// first, and was written for none newer than the last, which a newer server still
+/// speaks to it. A server asks an action's questions only of a client that speaks
+/// revision 17.
+const REVISIONS: std::ops::RangeInclusive<u64> = 13..=18;
 /// How a server begins its reason for closing on a client it shares no revision with.
 const REFUSAL: &str = "no common API revision";
 const MAX_IN_FLIGHT: usize = 64;
@@ -480,8 +482,8 @@ impl Control {
         let machine = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
         let mut hello = json!({
             "type": "hello",
-            "api_revision": REVISION,
-            "api_min_revision": REVISION,
+            "api_revision": REVISIONS.end(),
+            "api_min_revision": REVISIONS.start(),
             "client": {
                 "kind": "app",
                 "platform": "linux",
@@ -508,11 +510,13 @@ impl Control {
         // A server from before revisions were agreed on welcomes whoever comes. It
         // is told of in the words of one that refuses.
         let revision = |field: &str| welcome[field].as_u64().unwrap_or(0);
-        if revision("api_revision") != REVISION {
+        if !REVISIONS.contains(&revision("api_revision")) {
             let why = format!(
-                "server speaks {} to {}, client needs {REVISION} to {REVISION}; update the server",
+                "server speaks {} to {}, client needs {} to {}; update the server",
                 revision("api_min_revision"),
                 revision("api_server_revision"),
+                REVISIONS.start(),
+                REVISIONS.end(),
             );
             return Err(Ended::Incompatible(why).into());
         }
@@ -598,6 +602,13 @@ pub enum Event {
     },
     /// This client is asked to do one of its own actions.
     Asked(Asked),
+    /// An action of the server's has a question for the user.
+    Question(Question),
+    /// A question is over without an answer from here: another client gave one,
+    /// or nobody did in time.
+    Settled {
+        call: String,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -693,8 +704,39 @@ fn event(message: &Value) -> Option<Event> {
             session: text(&fields["session_id"]),
             pane: text(&fields["block_id"]),
         }),
+        "client_prompt_requested" => {
+            Event::Question(question(text(&fields["call_id"])?, &fields["prompt"]))
+        }
+        "client_prompt_ended" => Event::Settled { call: text(&fields["call_id"])? },
         _ => return None,
     })
+}
+
+/// A question as the server puts it. What it offers is taken as far as it is
+/// understood: a choice with no name has its `id` for one.
+fn question(call: String, prompt: &Value) -> Question {
+    let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+    let choice = |item: &Value| {
+        let id = text(&item["id"]);
+        Choice {
+            title: item["title"].as_str().unwrap_or(&id).to_owned(),
+            under: text(&item["subtitle"]),
+            detail: text(&item["detail"]),
+            chosen: item["selected"] == true,
+            id,
+        }
+    };
+    Question {
+        call,
+        title: text(&prompt["title"]),
+        hint: text(&prompt["placeholder"]),
+        value: text(&prompt["value"]),
+        confirm: prompt["confirm"].as_str().map(str::to_owned),
+        choices: (prompt["kind"] == "pick")
+            .then(|| prompt["items"].as_array().into_iter().flatten().map(choice).collect()),
+        several: prompt["multiple"] == true,
+        other: prompt["allow_other"] == true,
+    }
 }
 
 /// How far along something is said to be, in hundredths.
@@ -823,8 +865,13 @@ async fn control_loop(
                 tick += 1;
                 // A request the server does not answer fails alone, and is not asked
                 // again here. The link is judged by its pings. An answer that comes
-                // after all is to a number no longer known, and is passed over.
-                for (_, late) in pending.extract_if(|_, request| tick - request.sent >= REQUEST_TICKS) {
+                // after all is to a number no longer known, and is passed over. An
+                // action is never late: the server ends one that runs too long, and
+                // one that asks the user something is answered when the user is done.
+                let late = |request: &Pending| {
+                    tick - request.sent >= REQUEST_TICKS && request.method != "client.action"
+                };
+                for (_, late) in pending.extract_if(|_, request| late(request)) {
                     let _ = late.reply.send(Err(Failed::Unanswered(late.method)));
                 }
                 if std::mem::take(&mut heard) {
