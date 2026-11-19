@@ -11,6 +11,7 @@ fn draw(ctx: &egui::Context, events: Vec<egui::Event>) -> [Option<f32>; 2] {
         upright,
         room,
         at,
+        float: None,
     };
     let across = border("b", true, [0.0, 0.0, 1.0, 1.0], 0.5);
     let down = border("c", false, [0.5, 0.0, 0.5, 1.0], 0.4);

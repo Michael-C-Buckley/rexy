@@ -235,6 +235,12 @@ impl App {
         self.tell(self.current, action);
     }
 
+    /// Give a pane of the server on show the keyboard, at once and for the server.
+    fn focus(&mut self, pane: String) {
+        self.focused = Some(pane.clone());
+        self.send(Action::FocusPane { pane });
+    }
+
     /// Paste what was copied to whatever has the keyboard: text, or where
     /// that is a pane and `pictures` are wanted, a picture as a file. It is
     /// read here where this client listens for it, and by the toolkit otherwise.
@@ -419,12 +425,14 @@ impl eframe::App for App {
     /// This runs whether or not the window can be seen, as it cannot when the
     /// user picks one of its notes from the desktop: show the pane the note was about.
     /// On Wayland the window has been brought forward by now, if it is to be.
+    /// And pass on what the servers have for one another.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Some(pane) = self.desktop.picked() {
             let _ = (0..self.servers.len()).any(|server| self.reveal(server, &pane));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
+        self.relay();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -608,17 +616,22 @@ impl eframe::App for App {
             // The panes of the tab's layout, and the borders between them.
             draw(self, ui, None);
             if view.connected {
-                self.borders(ui, tab, area);
+                self.borders(ui, tab, area, None);
             }
             // Over those the layers that float, from the back, each on ground
             // that reaches round its panes.
             for float in tab.floating() {
                 let held =
                     panes.iter().zip(&cards).filter(|(pane, _)| tab.layer(pane) == Some(float));
-                let round = held.map(|(_, [card, _])| *card).reduce(Rect::union);
-                if let Some(round) = round {
-                    self.float(ui, float, round, ground);
-                    draw(self, ui, Some(float));
+                let Some(round) = held.map(|(_, [card, _])| *card).reduce(Rect::union) else {
+                    continue;
+                };
+                self.float(ui, tab, float, round, ground);
+                draw(self, ui, Some(float));
+                // Its borders stay where the server has them, and so are not
+                // there to drag while the pointer has the layer elsewhere.
+                if view.connected && taken.is_none_or(|(held, _)| held != float.id) {
+                    self.borders(ui, tab, area, Some(float));
                 }
             }
             within

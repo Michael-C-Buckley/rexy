@@ -10,7 +10,7 @@ use super::{
     style::{BODY, DIM, SMALL, bold, hint},
 };
 use crate::{
-    model::{Action, Pane, View},
+    model::{Action, Called, Pane, View},
     terminal::Request,
 };
 
@@ -192,7 +192,7 @@ impl App {
         let looking = matches!(plan, Ok(commands::Deed::Peek(..) | commands::Deed::Paste(_)));
         match plan {
             Ok(deed) => self.act(ctx, self.current, deed, false),
-            Err("not_supported") => self.perform(name, args, origin, self.focused.clone()),
+            Err("not_supported") => self.perform(view, name, args, origin, self.focused.clone()),
             Err(_) => {}
         }
         if !looking {
@@ -200,9 +200,55 @@ impl App {
         }
     }
 
-    /// Have the server do one of its own actions, to a pane if one is given.
-    fn perform(&mut self, name: &str, args: &Value, origin: &'static str, pane: Option<String>) {
-        self.send(Action::Perform { name: name.to_owned(), args: args.clone(), origin, pane });
+    /// Have a server do one of its own actions, to a pane of the server on
+    /// show if one is given. A terminal's is that server's to do. One of the
+    /// configuration's is home's, whichever server is on show, as the keys
+    /// are: home is told the window's other servers by name, for the action
+    /// to call through this client, and which of them the session on show is
+    /// on, where it is not home's own.
+    fn perform(
+        &mut self,
+        view: &View,
+        name: &str,
+        args: &Value,
+        origin: &'static str,
+        pane: Option<String>,
+    ) {
+        let (name, args) = (name.to_owned(), args.clone());
+        // A terminal's is named for what makes it, with dots: none of the
+        // configuration's has a dot in its name.
+        if name.contains('.') {
+            let (servers, far) = (Vec::new(), None);
+            return self.send(Action::Perform { name, args, origin, pane, servers, far });
+        }
+        let named = |server: &super::Server| server.label().to_owned();
+        let servers = self.servers.iter().skip(1).map(named).collect();
+        let far = (self.current != 0).then(|| named(&self.servers[self.current]));
+        let far = far.zip(view.selected_session.clone());
+        self.tell(0, Action::Perform { name, args, origin, pane, servers, far });
+    }
+
+    /// Pass on what each server has for another: the calls that an action of
+    /// home's has this client make there, and to home what came of each. Only
+    /// home was told of the others, so only home's calls are made. An action
+    /// may go on long after the user began it here, so this is done whether
+    /// or not the window can be seen.
+    pub(super) fn relay(&mut self) {
+        for from in 0..self.servers.len() {
+            let (calls, called) = self.servers[from].client.relays();
+            for call in calls {
+                let named = |to: &&super::Server| from == 0 && to.label() == call.server;
+                let to = self.servers.iter().skip(1).find(named);
+                let (asked, to) = (call.call.clone(), to.ok_or("Rexy has no such server".into()));
+                if let Err(error) = to.and_then(|to| to.client.try_send(Action::Call(call))) {
+                    let answer = Err(["refused".to_owned(), error]);
+                    self.tell(from, Action::Called(Called { call: asked, answer }));
+                }
+            }
+            for called in called {
+                self.tell(0, Action::Called(called));
+            }
+        }
     }
 
     /// Do what the buttons and menus asked for while they were drawn, and what
@@ -213,12 +259,16 @@ impl App {
             let view = &views[self.current];
             match self.standing(view).plan(name, &Value::Null, pane.as_deref()) {
                 Ok(deed) => self.act(ctx, self.current, deed, true),
-                Err("not_supported") => self.perform(name, &Value::Null, "palette", pane),
+                Err("not_supported") => self.perform(view, name, &Value::Null, "palette", pane),
                 Err(_) => {}
             }
         }
         for (server, view) in views.iter().enumerate() {
             for request in &view.asked {
+                // What an action this client began asks in its turn is done
+                // where the user is: home's are done for other servers too.
+                let server = if request.call.is_some() { server } else { self.current };
+                let view = &views[server];
                 // A server's clients have no say over what another server's session
                 // shows, nor over a session that is not on show: but to have one shown.
                 let shown = request.session.is_none() || request.session == view.selected_session;

@@ -53,6 +53,15 @@ fn keeps_up_with_sessions_and_their_views_by_what_the_news_carries() {
     };
     let asking = sent(None, "client_perform_requested", asking);
     assert_eq!(event(&asking), Some(Event::Asked(asked)));
+    // An action's call on another server names the server as this client did.
+    let calling = json!({"call_id": "1", "server": "far", "method": "session.list", "args": {}});
+    let call = Call {
+        call: "1".into(),
+        server: "far".into(),
+        method: "session.list".into(),
+        args: json!({}),
+    };
+    assert_eq!(event(&sent(None, "client_call_requested", calling)), Some(Event::Call(call)));
     // An action's question is for a line of text, or for a choice among what it
     // offers, of which one may have no name but its own.
     let asks = |prompt: Value| {
@@ -86,6 +95,7 @@ fn keeps_up_with_sessions_and_their_views_by_what_the_news_carries() {
         under: "~/a/rex".into(),
         detail: "M".into(),
         chosen: false,
+        icon: "folder".into(),
     };
     let plain =
         Choice { id: "Plain".into(), title: "Plain".into(), chosen: true, ..Choice::default() };

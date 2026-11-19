@@ -290,18 +290,80 @@ pub enum Icon {
     Peek,
     /// A pane over the corner of another: one that floats.
     Float,
+    /// The pictures an action gives the things it offers, with `Plus`, and
+    /// one for a thing whose picture is not among them.
+    Document,
+    Folder,
+    Branch,
+    Terminal,
+    Code,
+    Server,
+    Database,
+    Package,
+    Globe,
+    Link,
+    Person,
+    Tag,
+    Clock,
+    Star,
+    Gear,
+    Thing,
 }
 
 impl Icon {
+    /// The picture an action names for a thing it offers: none for no name.
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "" => return None,
+            "document" => Self::Document,
+            "folder" => Self::Folder,
+            "branch" => Self::Branch,
+            "terminal" => Self::Terminal,
+            "code" => Self::Code,
+            "server" => Self::Server,
+            "database" => Self::Database,
+            "package" => Self::Package,
+            "globe" => Self::Globe,
+            "link" => Self::Link,
+            "person" => Self::Person,
+            "tag" => Self::Tag,
+            "clock" => Self::Clock,
+            "star" => Self::Star,
+            "gear" => Self::Gear,
+            "plus" => Self::Plus,
+            _ => Self::Thing,
+        })
+    }
+
     fn paint(self, painter: &egui::Painter, center: Pos2, color: Color32) {
         let stroke = Stroke::new(1.5, color);
         let line = |from: [f32; 2], to: [f32; 2]| {
             painter.line_segment([center + Vec2::from(from), center + Vec2::from(to)], stroke);
         };
-        let window = || {
-            let rect = Rect::from_center_size(center, egui::vec2(16.0, 14.0));
-            painter.rect_stroke(rect, 3, stroke, StrokeKind::Inside);
+        // A line through several points, a circle and one filled in, a box
+        // with round corners, and part of an oval: so many twenty-fourths of
+        // the way round it, clockwise from its right.
+        let path = |points: &[[f32; 2]]| {
+            painter.line(points.iter().map(|at| center + Vec2::from(*at)).collect(), stroke);
         };
+        let ring = |at: [f32; 2], radius: f32| {
+            painter.circle_stroke(center + Vec2::from(at), radius, stroke);
+        };
+        let dot = |at: [f32; 2], radius: f32| {
+            painter.circle_filled(center + Vec2::from(at), radius, color);
+        };
+        let frame = |at: [f32; 2], size: [f32; 2], radius: f32| {
+            let rect = Rect::from_center_size(center + Vec2::from(at), size.into());
+            painter.rect_stroke(rect, radius, stroke, StrokeKind::Inside);
+        };
+        let bow = |at: [f32; 2], radii: [f32; 2], part: std::ops::RangeInclusive<i32>| {
+            let around = part.map(|step| {
+                let turned = Vec2::angled(step as f32 * std::f32::consts::TAU / 24.0);
+                center + Vec2::from(at) + turned * Vec2::from(radii)
+            });
+            painter.line(around.collect(), stroke);
+        };
+        let window = || frame([0.0, 0.0], [16.0, 14.0], 3.0);
         match self {
             Icon::Plus => {
                 line([-6.0, 0.0], [6.0, 0.0]);
@@ -321,8 +383,7 @@ impl Icon {
             }
             Icon::Float => {
                 window();
-                let over = Rect::from_center_size(center, egui::vec2(8.0, 6.0));
-                painter.rect_stroke(over, 1.5, stroke, StrokeKind::Inside);
+                frame([0.0, 0.0], [8.0, 6.0], 1.5);
             }
             Icon::Close => {
                 line([-4.0, -4.0], [4.0, 4.0]);
@@ -342,31 +403,22 @@ impl Icon {
             }
             // One window, and the edges of another that shows from behind it.
             Icon::Behind => {
-                let front =
-                    Rect::from_center_size(center + egui::vec2(-1.5, 1.5), egui::vec2(13.0, 11.0));
-                painter.rect_stroke(front, 3, stroke, StrokeKind::Inside);
-                line([-4.0, -6.5], [7.5, -6.5]);
-                line([7.5, -6.5], [7.5, 3.0]);
+                frame([-1.5, 1.5], [13.0, 11.0], 3.0);
+                path(&[[-4.0, -6.5], [7.5, -6.5], [7.5, 3.0]]);
             }
-            Icon::Down => {
-                line([-4.0, -2.0], [0.0, 2.0]);
-                line([0.0, 2.0], [4.0, -2.0]);
-            }
+            Icon::Down => path(&[[-4.0, -2.0], [0.0, 2.0], [4.0, -2.0]]),
             Icon::Prompt => {
-                line([-6.0, -4.0], [-2.0, 0.0]);
-                line([-2.0, 0.0], [-6.0, 4.0]);
+                path(&[[-6.0, -4.0], [-2.0, 0.0], [-6.0, 4.0]]);
                 line([0.5, 4.5], [6.0, 4.5]);
             }
-            Icon::Dot => {
-                painter.circle_filled(center, 3.5, color);
-            }
+            Icon::Dot => dot([0.0, 0.0], 3.5),
             Icon::Muted => {
-                painter.circle_stroke(center, 3.5, stroke);
+                ring([0.0, 0.0], 3.5);
                 line([-5.0, 5.0], [5.0, -5.0]);
             }
             Icon::Agents => {
                 for row in [-5.0, 0.0, 5.0] {
-                    painter.circle_filled(center + egui::vec2(-5.5, row), 1.5, color);
+                    dot([-5.5, row], 1.5);
                     line([-1.5, row], [7.0, row]);
                 }
             }
@@ -376,24 +428,131 @@ impl Icon {
                     let lid = |at: f32| center + egui::vec2(at, bowed * (1.0 - (at / 7.0).powi(2)));
                     painter.line((-7..=7).map(|at| lid(at as f32)).collect(), stroke);
                 }
-                painter.circle_filled(center, 2.0, color);
+                dot([0.0, 0.0], 2.0);
             }
             Icon::Search => {
-                painter.circle_stroke(center + egui::vec2(-1.5, -1.5), 4.5, stroke);
+                ring([-1.5, -1.5], 4.5);
                 line([2.0, 2.0], [6.0, 6.0]);
             }
-            Icon::Minimize => line([-4.0, 3.5], [4.0, 3.5]),
-            Icon::Maximize => {
-                let rect = Rect::from_center_size(center, Vec2::splat(9.0));
-                painter.rect_stroke(rect, 2, stroke, StrokeKind::Inside);
+            Icon::Document => {
+                path(&[
+                    [1.5, -7.0],
+                    [-5.0, -7.0],
+                    [-5.0, 7.0],
+                    [5.0, 7.0],
+                    [5.0, -3.5],
+                    [1.5, -7.0],
+                ]);
+                path(&[[1.5, -7.0], [1.5, -3.5], [5.0, -3.5]]);
             }
+            Icon::Folder => path(&[
+                [-7.0, -5.5],
+                [-2.5, -5.5],
+                [-0.5, -3.5],
+                [7.0, -3.5],
+                [7.0, 5.5],
+                [-7.0, 5.5],
+                [-7.0, -5.5],
+            ]),
+            // A line from one dot to another, and a third that joins it.
+            Icon::Branch => {
+                for at in [[-4.0, -5.0], [-4.0, 5.0], [4.0, -3.0]] {
+                    ring(at, 2.0);
+                }
+                line([-4.0, -3.0], [-4.0, 3.0]);
+                path(&[[4.0, -1.0], [4.0, 0.0], [1.5, 1.5], [-4.0, 2.0]]);
+            }
+            Icon::Terminal => {
+                window();
+                path(&[[-4.5, -2.5], [-2.0, 0.0], [-4.5, 2.5]]);
+                line([0.0, 2.5], [4.0, 2.5]);
+            }
+            Icon::Code => {
+                path(&[[-3.0, -4.5], [-7.0, 0.0], [-3.0, 4.5]]);
+                path(&[[3.0, -4.5], [7.0, 0.0], [3.0, 4.5]]);
+                line([1.2, -6.0], [-1.2, 6.0]);
+            }
+            // Two machines in a rack, each with its light.
+            Icon::Server => {
+                for row in [-3.75, 3.75] {
+                    frame([0.0, row], [14.0, 6.0], 2.0);
+                    dot([-4.0, row], 1.0);
+                }
+            }
+            // A drum, with a band round its middle.
+            Icon::Database => {
+                bow([0.0, -4.0], [6.0, 2.5], 0..=24);
+                bow([0.0, 0.0], [6.0, 2.5], 0..=12);
+                bow([0.0, 4.0], [6.0, 2.5], 0..=12);
+                line([-6.0, -4.0], [-6.0, 4.0]);
+                line([6.0, -4.0], [6.0, 4.0]);
+            }
+            // A box, seen from a corner.
+            Icon::Package => {
+                path(&[
+                    [0.0, -7.0],
+                    [6.0, -3.5],
+                    [6.0, 3.5],
+                    [0.0, 7.0],
+                    [-6.0, 3.5],
+                    [-6.0, -3.5],
+                    [0.0, -7.0],
+                ]);
+                path(&[[-6.0, -3.5], [0.0, 0.0], [6.0, -3.5]]);
+                line([0.0, 0.0], [0.0, 7.0]);
+            }
+            Icon::Globe => {
+                ring([0.0, 0.0], 6.5);
+                bow([0.0, 0.0], [3.0, 6.5], 0..=24);
+                line([-6.5, 0.0], [6.5, 0.0]);
+            }
+            // Two links of a chain.
+            Icon::Link => {
+                frame([-3.0, 0.0], [8.0, 6.0], 3.0);
+                frame([3.0, 0.0], [8.0, 6.0], 3.0);
+            }
+            Icon::Person => {
+                ring([0.0, -3.5], 3.0);
+                bow([0.0, 7.0], [6.0, 5.5], 12..=24);
+            }
+            // A label with a hole for its string.
+            Icon::Tag => {
+                path(&[
+                    [-6.5, -6.5],
+                    [0.0, -6.5],
+                    [6.5, 0.0],
+                    [0.0, 6.5],
+                    [-6.5, 0.0],
+                    [-6.5, -6.5],
+                ]);
+                dot([-3.2, -3.2], 1.1);
+            }
+            Icon::Clock => {
+                ring([0.0, 0.0], 6.5);
+                path(&[[0.0, -4.0], [0.0, 0.0], [3.0, 1.5]]);
+            }
+            // Five points, and the five hollows between them.
+            Icon::Star => {
+                let around = (0..=10).map(|step| {
+                    let turned = Vec2::angled((step as f32 / 10.0 - 0.25) * std::f32::consts::TAU);
+                    center + turned * if step % 2 == 0 { 7.0 } else { 3.0 }
+                });
+                painter.line(around.collect(), stroke);
+            }
+            Icon::Gear => {
+                ring([0.0, 0.0], 4.5);
+                ring([0.0, 0.0], 1.5);
+                for tooth in 0..8 {
+                    let turned = Vec2::angled(tooth as f32 * std::f32::consts::TAU / 8.0);
+                    line((turned * 4.5).into(), (turned * 7.0).into());
+                }
+            }
+            Icon::Thing => frame([0.0, 0.0], [11.0, 11.0], 3.0),
+            Icon::Minimize => line([-4.0, 3.5], [4.0, 3.5]),
+            Icon::Maximize => frame([0.0, 0.0], [9.0, 9.0], 2.0),
             Icon::Retry => {
                 // Most of a circle, clockwise, ending in an arrowhead on the right.
-                let arc = (4..=24).map(|step| {
-                    let angle = step as f32 * std::f32::consts::TAU / 24.0;
-                    center + 6.0 * Vec2::angled(angle)
-                });
-                painter.line(arc.collect(), stroke);
+                bow([0.0, 0.0], [6.0, 6.0], 4..=24);
                 line([6.0, 0.0], [2.5, -3.0]);
                 line([6.0, 0.0], [8.5, -3.5]);
             }
@@ -588,6 +747,8 @@ pub struct Item<'a> {
     pub id: Option<egui::Id>,
     /// The icon of its program, ahead of the label.
     pub icon: Option<Program>,
+    /// A picture in that place, for a row that is no program's.
+    pub sign: Option<Icon>,
     /// The programs of the other panes it stands for, stacked behind that icon.
     pub behind: &'a [Program],
     pub selected: bool,
@@ -679,7 +840,7 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
     text.max.x = rect.right() - room;
     // A row tall enough for two lines has the larger icon, whatever it says.
     let side = if size.y >= ROW { LARGE } else { TILE };
-    let lead = if item.icon.is_some() { side + 8.0 } else { 0.0 };
+    let lead = if item.icon.is_some() || item.sign.is_some() { side + 8.0 } else { 0.0 };
     // A name too long for its row ends in an ellipsis.
     let font = match (item.caption, item.strong) {
         (true, _) => bold(SMALL),
@@ -696,6 +857,9 @@ pub fn item(ui: &mut egui::Ui, size: Vec2, item: Item<'_>) -> (egui::Response, O
         let ink = if item.selected { tints(ui.ctx()).accent } else { DIM };
         let dot = item.mark.filter(|_| docked).map(|(_, color)| color);
         badge(ui.painter(), program, item.behind, left, side, ink, dot);
+    } else if let Some(sign) = item.sign {
+        let middle = egui::pos2(place.left() + side / 2.0, rect.center().y);
+        sign.paint(ui.painter(), middle, if item.selected { TEXT } else { DIM });
     }
     let name = place.min + egui::vec2(lead, 0.0);
     // The second line starts under the name and has the row to its far edge.

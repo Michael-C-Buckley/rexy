@@ -1,7 +1,7 @@
 //! Rex WebSocket transport and bounded, pipelined control requests.
 // Protocol interoperability informed by rexrs and rex-rune (MIT); see THIRD_PARTY.md.
 use crate::{
-    model::{Asked, Choice, Question},
+    model::{Asked, Call, Choice, Question},
     program::{self, Program},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -602,6 +602,9 @@ pub enum Event {
     },
     /// This client is asked to do one of its own actions.
     Asked(Asked),
+    /// An action of the server's configuration, which this client began, has
+    /// a call for it to make on another server.
+    Call(Call),
     /// An action of the server's has a question for the user.
     Question(Question),
     /// A question is over without an answer from here: another client gave one,
@@ -704,6 +707,12 @@ fn event(message: &Value) -> Option<Event> {
             session: text(&fields["session_id"]),
             pane: text(&fields["block_id"]),
         }),
+        "client_call_requested" => Event::Call(Call {
+            call: text(&fields["call_id"])?,
+            server: text(&fields["server"])?,
+            method: text(&fields["method"])?,
+            args: fields["args"].clone(),
+        }),
         "client_prompt_requested" => {
             Event::Question(question(text(&fields["call_id"])?, &fields["prompt"]))
         }
@@ -723,6 +732,7 @@ fn question(call: String, prompt: &Value) -> Question {
             under: text(&item["subtitle"]),
             detail: text(&item["detail"]),
             chosen: item["selected"] == true,
+            icon: text(&item["icon"]),
             id,
         }
     };

@@ -63,6 +63,8 @@ struct Row {
     /// A few words at its far end, in place of a mark.
     detail: String,
     icon: Option<Program>,
+    /// A picture in that place, where an action gives it one.
+    sign: Option<Icon>,
     mark: Option<(Icon, Color32)>,
     /// Whether it is among those chosen, where several may be.
     chosen: Option<bool>,
@@ -193,6 +195,7 @@ impl App {
             under: String::new(),
             detail: String::new(),
             icon,
+            sign: None,
             mark,
             chosen: None,
             keys: String::new(),
@@ -318,6 +321,7 @@ impl App {
                     under: choice.under.clone(),
                     detail: choice.detail.clone(),
                     chosen: question.several.then(|| self.chosen.contains(&choice.id)),
+                    sign: Icon::named(&choice.icon),
                     ..row(&choice.title, None, None, pick)
                 });
             }
@@ -391,6 +395,7 @@ impl App {
                 let entry = Item {
                     selected: index == at,
                     icon: row.icon,
+                    sign: row.sign,
                     mark: row.mark,
                     word: Some(row.detail.as_str()).filter(|detail| !detail.is_empty()),
                     keys,

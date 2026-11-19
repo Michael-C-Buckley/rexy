@@ -84,6 +84,11 @@ struct State {
     /// The user has asked for a session or a tab to be made, and for nothing
     /// else to be shown since. What is made is shown once it is there.
     awaited: bool,
+    /// The calls an action of this server's configuration has this client
+    /// make on another of the window's servers, and what has come of those it
+    /// made on this server for home: each for the window to pass on.
+    calls: Vec<model::Call>,
+    called: Vec<model::Called>,
 }
 
 impl State {
@@ -114,6 +119,13 @@ impl Shared {
     fn change(&self, f: impl FnOnce(&mut State)) {
         f(&mut self.lock());
         self.wake.notify();
+    }
+    /// Give the window something to pass on to another of its servers. It is
+    /// told every time: it passes them on out of sight too, where it draws
+    /// nothing and so takes no snapshot.
+    fn relay(&self, f: impl FnOnce(&mut State)) {
+        f(&mut self.lock());
+        (self.wake.callback)();
     }
     fn status(&self, message: impl Into<String>, connected: bool) {
         self.change(|s| {
@@ -264,6 +276,14 @@ impl Client {
             self.shared.wake.notify();
         }
         Ok(())
+    }
+
+    /// What there is to pass on to the window's other servers: the calls an
+    /// action of this server's has this client make on one, and what came of
+    /// those made on this server. Each is handed over once.
+    pub fn relays(&self) -> (Vec<model::Call>, Vec<model::Called>) {
+        let mut state = self.shared.lock();
+        (std::mem::take(&mut state.calls), std::mem::take(&mut state.called))
     }
 
     /// The session and the tab that hold a pane, if this server has the pane.
@@ -523,6 +543,9 @@ enum Reply {
     /// more. With it are the session and the tab that were on show when it was
     /// asked, to tell whether it has moved the server's tab.
     Performed(Option<(String, String)>),
+    /// A call made here for an action of home's configuration: what home is
+    /// answered by, and what was on show, as for an action of this server's own.
+    Relayed(String, Option<(String, String)>),
     /// The view of that session as the server left it.
     Moved(String, String),
     /// A tab made for a pane of that session to have to itself. The server
@@ -890,6 +913,7 @@ impl<'a> Connection<'a> {
                 return;
             }
             Event::Asked(asked) => return self.pass(asked),
+            Event::Call(call) => return self.shared.relay(|s| s.calls.push(call)),
             Event::Question(question) => {
                 return self.shared.change(|s| s.view.questions.push(Arc::new(question)));
             }
@@ -931,7 +955,7 @@ impl<'a> Connection<'a> {
             let waits = |held: &mut model::Asked| held.call == call;
             let untaken = shared.lock().view.asked.extract_if(.., waits).count() > 0;
             if let Some(call) = call.filter(|_| untaken) {
-                let _ = rpc.enqueue("client.reply", reply(&call, Some("refused"))).await;
+                let _ = rpc.enqueue("client.reply", reply(&call, outcome(Some("refused")))).await;
             }
         });
     }
@@ -985,13 +1009,20 @@ impl<'a> Connection<'a> {
                 let asked: Vec<_> = asked.collect();
                 self.shared.change(|s| s.view.asked.extend(asked));
                 // A key that no function took after all has done nothing here.
-                if let Some((session, tab)) = shown.filter(|_| done["handled"] != false) {
-                    let request = json!({"session_id": session});
-                    self.ask(Reply::Moved(session, tab), "session.view", request).await;
-                }
-                return;
+                return self.moved(shown.filter(|_| done["handled"] != false)).await;
             }
             (Reply::Performed(_), Err(error)) => return self.shared.fail(error.to_string()),
+            (Reply::Relayed(call, shown), answer) => {
+                // What it did may have moved this server's tab, as an action of
+                // this server's own may: seen to once home has its answer.
+                let shown = shown.filter(|_| answer.is_ok());
+                let answer = answer.map_err(|error| match error {
+                    Failed::Refused { code, message } => [code, message],
+                    other => ["internal".to_owned(), other.to_string()],
+                });
+                self.shared.relay(|s| s.called.push(model::Called { call, answer }));
+                return self.moved(shown).await;
+            }
             // What the user had the server do has moved its tab, and the
             // window goes with it: the server's own doing does not move it.
             (Reply::Moved(session, tab), answer) => {
@@ -1416,6 +1447,15 @@ impl<'a> Connection<'a> {
         Ok((session, "session.focus_block", payload, brought.then_some(pane)))
     }
 
+    /// See whether the server has moved its tab from what was `shown` when it
+    /// was asked to act for the user, if anything was.
+    async fn moved(&mut self, shown: Option<(String, String)>) {
+        if let Some((session, tab)) = shown {
+            let request = json!({"session_id": session});
+            self.ask(Reply::Moved(session, tab), "session.view", request).await;
+        }
+    }
+
     /// Have the server show the tab this window shows, where it shows another,
     /// before it is asked to act for the user: what its configuration does, it
     /// does to the tab the server shows. Returns the session and the tab on show.
@@ -1604,28 +1644,54 @@ impl<'a> Connection<'a> {
             }
             Action::Reveal { pane } => self.focus(pane, true).await?,
             Action::FocusPane { pane } => self.focus(pane, false).await?,
-            Action::Perform { name, args, origin, pane } => {
+            Action::Perform { name, args, origin, pane, servers, far } => {
                 // A terminal's action is done to a pane, in the pane's session.
-                // One of the configuration's is given what there is.
-                let session = match &pane {
-                    Some(pane) => Some(self.session(pane)?),
-                    None => self.shared.lock().view.selected_session.clone(),
+                // One of the configuration's is given what there is: which is
+                // another server's, where the window shows that one.
+                let (server, session) = match (far, &pane) {
+                    (Some((server, session)), _) => (Some(server), Some(session)),
+                    (None, Some(pane)) => (None, Some(self.session(pane)?)),
+                    (None, None) => (None, self.shared.lock().view.selected_session.clone()),
                 };
+                let named = |name: &String| json!({"name": name, "id": name});
+                let listed = || servers.iter().map(named).collect::<Vec<_>>();
+                let servers = (!servers.is_empty()).then(listed);
                 let mut payload = json!({"action": name, "origin": origin});
-                let (session, pane) = (json!(session), json!(pane));
-                for (key, value) in [("args", args), ("session_id", session), ("block_id", pane)] {
+                let fields = [
+                    ("args", args),
+                    ("session_id", json!(session)),
+                    ("block_id", json!(pane)),
+                    ("servers", json!(servers)),
+                    ("server", json!(server)),
+                ];
+                for (key, value) in fields {
                     if !value.is_null() {
                         payload[key] = value;
                     }
                 }
-                let shown = self.agree().await;
+                // What it does to another server's tab, it does through a call
+                // made there, which sees to the tab then.
+                let shown = match server {
+                    Some(_) => None,
+                    None => self.agree().await,
+                };
                 self.ask(Reply::Performed(shown), "client.action", payload).await;
+                return Ok(());
+            }
+            Action::Call(call) => {
+                let shown = self.agree().await;
+                self.ask(Reply::Relayed(call.call, shown), &call.method, call.args).await;
+                return Ok(());
+            }
+            Action::Called(model::Called { call, answer }) => {
+                // The action has stopped waiting if this comes too late.
+                let _ = self.rpc.enqueue("client.reply", reply(&call, answer)).await;
                 return Ok(());
             }
             Action::Reply { call, error } => {
                 // Whoever asked has stopped waiting if this comes too late, and
                 // there is nobody to tell.
-                let _ = self.rpc.enqueue("client.reply", reply(&call, error)).await;
+                let _ = self.rpc.enqueue("client.reply", reply(&call, outcome(error))).await;
                 return Ok(());
             }
             Action::Answer { call, answer } => {
@@ -1634,7 +1700,7 @@ impl<'a> Connection<'a> {
                     model::Answer::Chosen(ids) => json!({"ids": ids}),
                     model::Answer::Refused => json!({"cancelled": true}),
                 };
-                let payload = json!({"call_id": call, "result": result});
+                let payload = reply(&call, Ok(result));
                 self.ask(Reply::Told("The answer was not taken"), "client.reply", payload).await;
                 return Ok(());
             }
@@ -1819,11 +1885,22 @@ impl<'a> Connection<'a> {
     }
 }
 
-/// The answer to another client's asking: that what it asked was done, or the
-/// code of an error and the words for it.
-fn reply(call: &str, error: Option<&str>) -> Value {
+/// The answer to something the server asked of this client by a `call`: what
+/// came of it, or the code of an error and the words for it.
+fn reply(call: &str, answer: Result<Value, [String; 2]>) -> Value {
+    match answer {
+        Ok(result) => json!({"call_id": call, "result": result}),
+        Err([code, message]) => {
+            json!({"call_id": call, "error": {"code": code, "message": message}})
+        }
+    }
+}
+
+/// What came of another client's asking: that what it asked was done, or by
+/// the code of an error that it was not, with the words for that.
+fn outcome(error: Option<&str>) -> Result<Value, [String; 2]> {
     let Some(code) = error else {
-        return json!({"call_id": call, "result": null});
+        return Ok(Value::Null);
     };
     let message = match code {
         "refused" => "Rexy cannot do that just now",
@@ -1833,7 +1910,7 @@ fn reply(call: &str, error: Option<&str>) -> Value {
         }
         _ => "Rexy has no such action",
     };
-    json!({"call_id": call, "error": {"code": code, "message": message}})
+    Err([code.into(), message.into()])
 }
 
 /// The whole of a long text that a terminal keeps by an `id`, such as one a
@@ -2039,6 +2116,7 @@ fn layout(node: &Value, panes: &mut Vec<(String, [f32; 4])>, borders: &mut Vec<B
             upright,
             room,
             at: place[usize::from(!upright)],
+            float: None,
         });
     }
 }
@@ -2054,14 +2132,15 @@ fn parse_tabs(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> Vec
             for layer in items(&tab["layers"]) {
                 let (mut placed, mut split) = (Vec::new(), Vec::new());
                 layout(&layer["layout"], &mut placed, &mut split);
-                // Only the layer that fills the tab has borders to drag, while
-                // its panes are all on show. The others float over it, in the
+                // One layer fills the tab, and the others float over it in the
                 // order they come: a layer of no kind is taken to fill the tab.
+                // Each has borders to drag while its panes are all on show.
                 let floating = layer["kind"] == "floating";
                 let float = layer["layer_id"].as_str().filter(|_| floating);
                 let away = layer["state"] == "minimized";
-                if !floating && zoom.is_none() {
-                    borders = split;
+                if zoom.is_none() && !away {
+                    split.iter_mut().for_each(|border| border.float = float.map(str::to_owned));
+                    borders.append(&mut split);
                 }
                 if let Some((id, bounds)) = float.zip(rect(&layer["bounds"])) {
                     floats.push(Float { id: id.into(), bounds, away });

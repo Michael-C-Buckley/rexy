@@ -160,6 +160,26 @@ pub struct Asked {
     pub pane: Option<String>,
 }
 
+/// A call on another server, which an action of home's configuration has this
+/// client make there for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    /// What home is answered by.
+    pub call: String,
+    /// The server to call, by the name this client gave that one for it.
+    pub server: String,
+    pub method: String,
+    pub args: Value,
+}
+
+/// What came of such a call, for home: its result, or else the code of an
+/// error and the words for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Called {
+    pub call: String,
+    pub answer: Result<Value, [String; 2]>,
+}
+
 /// A question that an action of the server's puts to the user: for a line of
 /// text, or for a choice among what it offers.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -193,6 +213,8 @@ pub struct Choice {
     pub detail: String,
     /// It starts out chosen, where several may be.
     pub chosen: bool,
+    /// The name of a picture for it, where it has one.
+    pub icon: String,
 }
 
 /// What the user says to a question.
@@ -309,6 +331,8 @@ pub struct Border {
     pub room: [f32; 4],
     /// Where in the tab it lies, along x if it is upright and along y if not.
     pub at: f32,
+    /// The layer its split is in, where that floats over the tab's layout.
+    pub float: Option<String>,
 }
 
 /// Where a border is asked to go: the one between these two panes, so that the
@@ -355,11 +379,13 @@ impl Border {
         (self.at - self.room[self.axis()]) / self.room[2 + self.axis()]
     }
 
-    /// Whether a pane is on either side of it: one whose middle is in its room.
+    /// Whether a pane is on either side of it: one of its layer whose middle
+    /// is in its room.
     fn parts(&self, pane: &Pane) -> bool {
         let [x, y, width, height] = self.room;
         let (across, down) = (pane.x + pane.width / 2.0, pane.y + pane.height / 2.0);
-        across > x && across < x + width && down > y && down < y + height
+        let within = across > x && across < x + width && down > y && down < y + height;
+        within && pane.float == self.float
     }
 }
 
@@ -433,6 +459,13 @@ impl Tab {
         self.floating().find(|float| Some(&float.id) == pane.float.as_ref())
     }
 
+    /// The pane that speaks for a layer that floats over it, on show or not:
+    /// the one typing goes to, or else its first.
+    pub fn fore(&self, float: &Float) -> Option<&Pane> {
+        let held = self.every().filter(|pane| pane.float.as_ref() == Some(&float.id));
+        held.min_by_key(|pane| Some(&pane.id) != self.focus.as_ref())
+    }
+
     /// The layer of a pane that floats with another in front of it, of those
     /// not put away.
     pub fn covered(&self, pane: &Pane) -> Option<&Float> {
@@ -453,7 +486,7 @@ impl Tab {
     /// has the pane in it. None when there is none, or it is as far that way as
     /// a border goes.
     pub fn nudged(&self, pane: &str, toward: [f32; 2]) -> Option<Division> {
-        let pane = self.tiled().find(|held| held.id == pane)?;
+        let pane = self.panes.iter().find(|held| held.id == pane)?;
         let upright = toward[1] == 0.0;
         let across = |border: &&Border| border.upright == upright && border.parts(pane);
         let room = |border: &&Border| border.room[2] * border.room[3];
@@ -474,7 +507,7 @@ impl Tab {
                     let before = [pane.x, pane.y][along] + 0.001 < border.at;
                     border.parts(pane) && before == first
                 };
-                let side = || self.tiled().filter(side);
+                let side = || self.panes.iter().filter(side);
                 // Where a pane starts the other way, and its size: one is level
                 // with another whose middle is within that.
                 let span =
@@ -818,12 +851,21 @@ pub enum Action {
     Reconnect,
     /// Do one of the server's own actions, from its configuration or of a
     /// terminal: to a pane, if one has the keyboard. `origin` is `key` or `palette`.
+    /// One of the configuration's is home's to do, and home is told the
+    /// window's other `servers` by name, to call through this client: and
+    /// where one of those is on show, `far` is that one and its session on show.
     Perform {
         name: String,
         args: Value,
         origin: &'static str,
         pane: Option<String>,
+        servers: Vec<String>,
+        far: Option<(String, String)>,
     },
+    /// Make a call on this server for an action of home's configuration.
+    Call(Call),
+    /// Tell home, whose action had a call made, what came of it.
+    Called(Called),
     /// Answer another client's asking: that it was done, or by the code of an
     /// error that it was not.
     Reply {

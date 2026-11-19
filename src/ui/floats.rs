@@ -50,16 +50,25 @@ impl App {
         }
     }
 
-    /// What lies under the panes of a layer whose cards fill `rect`: a shadow
-    /// on what it floats over, the window's `ground` between them, and around
-    /// them the edges and corners that drag to give it another size. It is
-    /// asked for before its panes, which have the pointer first where they are.
-    pub(super) fn float(&mut self, ui: &egui::Ui, float: &Float, rect: Rect, ground: Color32) {
+    /// What lies under the panes of a layer of `tab` whose cards fill `rect`:
+    /// a shadow on what it floats over, the window's `ground` between them,
+    /// and around them the edges and corners that drag to give it another
+    /// size. It is asked for before its panes, which have the pointer first
+    /// where they are.
+    pub(super) fn float(
+        &mut self,
+        ui: &egui::Ui,
+        tab: &Tab,
+        float: &Float,
+        rect: Rect,
+        ground: Color32,
+    ) {
         ui.painter().add(ui.visuals().popup_shadow.as_shape(rect, CARD_RADIUS));
         ui.painter().rect_filled(rect, CARD_RADIUS, ground);
         // Nothing under it has the pointer through it.
         let id = ui.scope_id().with(("float", &float.id));
         ui.interact(rect, id, Sense::click_and_drag());
+        let mut taken = false;
         for (direction, hold) in frame::handles(rect.expand(REACH), REACH, REACH + CORNER) {
             let held = ui.interact(hold, id.with(direction as u8), Sense::drag());
             if held.hovered() || held.dragged() {
@@ -77,6 +86,12 @@ impl App {
                 SouthEast => [1, 1],
             };
             self.grip(&held, float, Some(sides));
+            taken |= held.drag_started();
+        }
+        // Taken hold of by one of those, it comes to the front with the
+        // keyboard, as it does by a header.
+        if taken && let Some(pane) = tab.fore(float) {
+            self.focus(pane.id.clone());
         }
     }
 

@@ -15,7 +15,7 @@ use super::{
     style::{Icon, icon_button},
 };
 use crate::{
-    model::{Action, Edit, Float, Tab, View},
+    model::{Action, Edit, Float, Pane, Tab, View},
     terminal::{Request, Scroll},
 };
 
@@ -504,20 +504,21 @@ impl Standing<'_> {
                     tab.tiled().next()?;
                     Action::Stow { session, layers: layers(false), back: None }
                 } else {
-                    let front = &tab.floats.last()?.id;
-                    let held = tab.every().find(|pane| pane.float.as_ref() == Some(front))?;
+                    let held = tab.fore(tab.floats.last()?)?;
                     Action::Stow { session, layers: layers(true), back: Some(held.id.clone()) }
                 })
             }
             // A pane of the layout floats over it, but for the last one there.
-            // One that floats goes back into it, beside the first pane there:
-            // or, the layout empty, is given all of the tab.
+            // One that floats goes back into it, beside the largest pane
+            // there, which has the most room to give: or, the layout empty,
+            // is given all of the tab.
             floats::FLOAT => {
                 let (pane, tab) = (pane?, tab?);
-                let mut layout = tab.tiled();
-                Deed::Server(match (&pane.float, layout.next()) {
+                let room = |pane: &&Pane| pane.width * pane.height;
+                let largest = tab.tiled().min_by(|a, b| room(b).total_cmp(&room(a)));
+                Deed::Server(match (&pane.float, largest) {
                     (None, _) => {
-                        layout.next()?;
+                        tab.tiled().nth(1)?;
                         let bounds = Float::first(tab.floats.len());
                         Action::Float { pane: pane.id.clone(), bounds }
                     }
@@ -610,10 +611,7 @@ impl App {
             Deed::Show(server, action) => self.open(server, action),
             Deed::Reveal(server, pane) => _ = self.reveal(server, &pane),
             Deed::Peek(server, pane) => self.peek(server, &pane),
-            Deed::Focus(pane) => {
-                self.focused = Some(pane.clone());
-                self.send(Action::FocusPane { pane });
-            }
+            Deed::Focus(pane) => self.focus(pane),
             Deed::Font(size) => {
                 self.remembered.kept.font_size = size.clamp(FONT_SIZES[0], FONT_SIZES[1]);
             }

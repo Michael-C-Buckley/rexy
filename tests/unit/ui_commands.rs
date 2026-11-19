@@ -316,6 +316,10 @@ fn floating_panes_are_made_put_away_and_brought_back_by_one_command() {
     assert_eq!(said(&view, "b", floats::TOGGLE), "stow [] for Some(\"c\")");
     assert_eq!(said(&view, "c", floats::TOGGLE), "stow [\"f\"] for None");
     assert_eq!(said(&view, "c", floats::FLOAT), "dock c by b");
+    // Of panes with more room than others, it goes back beside the largest.
+    let idle = &mut view.sessions[0].tabs[1].panes[1];
+    (idle.width, idle.height) = (0.5, 1.0);
+    assert_eq!(said(&view, "c", floats::FLOAT), "dock c by idle");
     assert_eq!(said(&view, "b", floats::NEW), "float over t2");
     // Put away, it is brought back for its pane.
     let tab = &mut view.sessions[0].tabs[1];

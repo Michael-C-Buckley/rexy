@@ -687,6 +687,14 @@ fn live_keymap_actions_and_requests() {
             rex.session.set_label{ label = name .. " " .. table.concat(which or {}, "+") }
           end,
         }
+        rex.action{
+          name = "far", title = "Far",
+          run = function(ctx, args)
+            local listed, why = rex.server("other").call("session.list", {})
+            local said = listed and ("far has a " .. type(listed.sessions)) or ("far: " .. tostring(why))
+            rex.session.set_label{ label = said }
+          end,
+        }
     "#;
     let config = format!("{config}\n{}\n{}", go("to_other", &other), go("to_first", &first));
     std::fs::write(path, config).unwrap();
@@ -733,6 +741,8 @@ fn live_keymap_actions_and_requests() {
         args: Value::Null,
         origin: "key",
         pane: Some(pane.clone()),
+        servers: vec!["other".into()],
+        far: None,
     };
     send(&client, perform("focus_mode"));
     let queued = wait(&client, "an action asked in turn", |v| !v.asked.is_empty()).asked;
@@ -778,6 +788,33 @@ fn live_keymap_actions_and_requests() {
     let answer = model::Answer::Refused;
     send(&client, Action::Answer { call: asked[0].call.clone(), answer });
     wait(&client, "an action left unanswered", named("unanswered"));
+    // An action that calls another server has this client make the call, and
+    // goes on with what it is told came of it: here, by this same server.
+    let relayed = |label: &str| {
+        let start = Instant::now();
+        loop {
+            let (mut calls, mut called) = client.relays();
+            if !calls.is_empty() || !called.is_empty() {
+                return (calls.pop(), called.pop());
+            }
+            assert!(start.elapsed() < Duration::from_secs(15), "{label}");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    send(&client, perform("far"));
+    let asked = relayed("a call for another server").0.unwrap();
+    assert_eq!((asked.server.as_str(), asked.method.as_str()), ("other", "session.list"));
+    send(&client, Action::Call(asked.clone()));
+    let came = relayed("what came of the call").1.unwrap();
+    assert_eq!((&came.call, came.answer.is_ok()), (&asked.call, true));
+    send(&client, Action::Called(came));
+    wait(&client, "an action told of its call", named("far has a table"));
+    // Or with why the call was not made.
+    send(&client, perform("far"));
+    let asked = relayed("a call again").0.unwrap();
+    let answer = Err(["refused".into(), "no such server".into()]);
+    send(&client, Action::Called(model::Called { call: asked.call, answer }));
+    wait(&client, "an action told its call failed", named("far: no such server"));
     // One there is not is said to have failed.
     send(&client, perform("no_such_action"));
     let failed = wait(&client, "an action that failed", |v| v.error.is_some());

@@ -154,6 +154,7 @@ fn a_key_moves_the_border_of_the_split_a_pane_is_in_and_balancing_evens_them() {
         upright,
         room,
         at,
+        float: None,
     };
     let tab = |split: f32| Tab {
         panes: vec![

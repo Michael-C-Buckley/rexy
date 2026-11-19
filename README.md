@@ -18,7 +18,7 @@ Rexy is unofficial and not affiliated with Superlogical. It is early software fo
 - **Floating panes.** A scratch terminal over any tab: one key makes it, takes you to it, and from it puts it away, still running. Float any pane out of the layout and dock it again, and move and resize it with the mouse. They are Rex's own floating layers, so every client sees them.
 - **A real terminal.** libghostty does the emulation: Kitty graphics, hyperlinks, search through the whole history, and your Ghostty theme and font.
 - **Files and pictures reach the pane's machine.** Drop files on a pane, or paste a picture, and their paths are typed there. For a server on another machine they are sent to it first.
-- **Rex's own keymap**, from your home server's `init.lua`, and a command palette, where the actions you write there ask their questions.
+- **Rex's own keymap**, from your home server's `init.lua`, and a command palette, where the actions you write there ask their questions. They act on the session on show, whichever server it is on, and can call your other servers by name.
 
 ## Install
 

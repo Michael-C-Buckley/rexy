@@ -54,13 +54,14 @@ fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
         upright,
         room,
         at,
+        float: None,
     };
     // Each is named by the first pane of either side, inner splits first.
     assert_eq!(
         borders(&tab(json!([tiled]))),
         [border("b", "c", false, [0.6, 0., 0.4, 1.], 0.25), border("a", "b", true, FULL, 0.6)]
     );
-    // A floating layer has none of its own, and the tab keeps its own under one.
+    // A floating layer has its own, after the tab's, which keeps them under one.
     let floating = |state: &str| {
         let bounds = [0.2, 0.2, 0.5, 0.5];
         let layout =
@@ -68,7 +69,9 @@ fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
         json!({"layer_id": "f", "kind": "floating", "state": state, "bounds": bounds, "layout": layout})
     };
     let over = tabs(&tab(json!([tiled, floating("normal")]))).remove(0);
-    assert_eq!(over.borders.len(), 2);
+    let within =
+        Border { float: Some("f".into()), ..border("d", "e", true, [0.2, 0.2, 0.5, 0.5], 0.45) };
+    assert_eq!(over.borders[2..], [within]);
     // Its panes are on show after the tab's own, and know the layer they are in.
     let float = Float { id: "f".into(), bounds: [0.2, 0.2, 0.5, 0.5], away: false };
     assert_eq!(over.floats, std::slice::from_ref(&float));
