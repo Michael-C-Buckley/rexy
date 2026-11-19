@@ -15,6 +15,9 @@ pub struct View {
     pub made: Option<String>,
     /// A pane on show, and text a program in it has just copied, reported likewise.
     pub copied: Option<(String, String)>,
+    /// All that a pane has put out, which the user asked to have copied,
+    /// reported likewise.
+    pub output: Option<String>,
     /// The panes whose bells have rung since the last snapshot.
     pub rang: HashSet<String>,
     /// What the server says this client's keys do: its answer, once it has one.
@@ -120,10 +123,15 @@ impl View {
 }
 
 /// A server, by the name it goes by and the addresses that reach it, in the order to try them.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Host {
+    /// What the list it is in knows it by. One yet to be listed has none.
+    pub id: String,
     pub label: String,
     pub endpoints: Vec<String>,
+    /// Where the configuration declares it, such as `init.lua:4`. Empty for one
+    /// the list itself keeps, which is the list's to remove.
+    pub source: String,
 }
 
 /// Something this client is asked to do, of its own actions.
@@ -557,6 +565,14 @@ pub enum Action {
         pane: String,
         files: Vec<File>,
     },
+    /// Hand over all that a pane has put out, its history too, as text.
+    CopyAll {
+        pane: String,
+    },
+    /// Add a host to the server's list, or with the `id` of one there change that one.
+    PutHost(Host),
+    /// Take the host with this `id` out of the server's list.
+    RemoveHost(String),
     Resize {
         pane: String,
         size: Size,

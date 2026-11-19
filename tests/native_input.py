@@ -87,6 +87,28 @@ def click(px, py, twice=False):
         time.sleep(.07)
     time.sleep(.15)
 
+def drag(px, py, to):
+    """Press at one height of a column and let go at another."""
+    xtest.XTestFakeMotionEvent(display, -1, px, py, 0)
+    x11.XFlush(display)
+    time.sleep(.1)
+    xtest.XTestFakeButtonEvent(display, 1, 1, 0)
+    for step in range(1, 9):
+        xtest.XTestFakeMotionEvent(display, -1, px, py + (to - py) * step // 8, 0)
+        x11.XFlush(display)
+        time.sleep(.03)
+    xtest.XTestFakeButtonEvent(display, 1, 0, 0)
+    x11.XFlush(display)
+    time.sleep(.15)
+
+def palette(typed):
+    """Take the first thing the palette finds for what is typed."""
+    chord(ord('p'), ctrl=True, shift=True)
+    time.sleep(.2)
+    type_text(typed)
+    time.sleep(.2)
+    chord(RETURN)
+
 def capture():
     return subprocess.check_output(['rex', '-S', args.server, '--autostart=false', 'capture', '-s', args.session, '-b', args.pane, '--trim'], text=True)
 
@@ -99,14 +121,15 @@ def clipboard(text=None):
     subprocess.run(xclip + ['-i'], input=text, text=True, check=True, timeout=5,
         stderr=subprocess.DEVNULL)
 
-def expect(label, predicate):
+def expect(label, predicate, read=capture):
+    """Wait for the pane, or whatever else is read, to be as it should."""
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
-        if predicate(capture()):
+        if predicate(read()):
             print(label + ': passed', flush=True)
             return
         time.sleep(.1)
-    raise AssertionError(label + ': ' + capture())
+    raise AssertionError(label + ': ' + read()[-400:])
 
 # The terminal is to the right of the 240 px sidebar, under the 40 px row that is
 # the window's handle.
@@ -130,11 +153,7 @@ chord(RETURN)
 expect('clipboard fixture', lambda text: text.strip().startswith('CLIPBOARD'))
 click(290, 58, twice=True)
 chord(ord('c'), ctrl=True, shift=True)
-deadline = time.monotonic() + 5
-while clipboard() != 'CLIPBOARD':
-    assert time.monotonic() < deadline, 'a copy reaches other programs: ' + repr(clipboard())
-    time.sleep(.1)
-print('a copy reaches other programs: passed', flush=True)
+expect('a copy reaches other programs', lambda text: text == 'CLIPBOARD', clipboard)
 chord(ESCAPE)
 type_text('cat')
 chord(RETURN)
@@ -162,6 +181,24 @@ chord(ord('v'), ctrl=True, shift=True)
 expect('a pasted picture is typed as a path', lambda text: 'clipboard.png' in text)
 chord(RETURN)
 expect('the pasted picture is on the pane\'s machine', lambda text: 'PNG image data, 64 x 48' in text)
+
+# The server clears a pane of all it has put out, as its own action. All it
+# puts out after that is copied by name, what has left the screen too.
+palette('clear terminal')
+expect('a pane is cleared', lambda text: 'clipboard.png' not in text)
+type_text('seq 1 200')
+chord(RETURN)
+expect('more output than the screen holds', lambda text: '\n199\n200\n' in text)
+palette('copy all')
+expect('all of a pane is copied',
+    lambda text: 'seq 1 200\n1\n2\n' in text and '\n199\n200\n' in text, clipboard)
+# The bar at the pane's right edge drags its view to the first of that, where
+# the fifth line of what was put out is the sixth on the screen.
+drag(1107, 735, 40)
+click(256, 165, twice=True)
+chord(ord('c'), ctrl=True, shift=True)
+expect('the bar at a pane\'s edge drags its view', lambda text: text == '5', clipboard)
+chord(ESCAPE)
 
 # A program tracking the mouse gets the clicks on its pane.
 type_text("printf '\\033[?1000h\\033[?1006h'; cat -v")

@@ -52,6 +52,9 @@ pub enum Scroll {
     Pages(i32),
     /// From one shell prompt to another, where the shell marks them (OSC 133).
     Prompts(i32),
+    /// To where this row is the view's first, counted from the first of all
+    /// there is.
+    Row(usize),
     Bottom,
 }
 
@@ -103,6 +106,7 @@ pub fn heed(
                     Scroll::Lines(lines) => ScrollViewport::Delta(lines as isize),
                     Scroll::Pages(pages) => ScrollViewport::Delta(pages as isize * rows),
                     Scroll::Prompts(prompts) => ScrollViewport::DeltaPrompt(prompts as isize),
+                    Scroll::Row(row) => ScrollViewport::Row(row),
                     Scroll::Bottom => ScrollViewport::Bottom,
                 });
             }

@@ -100,7 +100,9 @@ impl App {
     fn server(&mut self, ui: &mut egui::Ui, server: usize, view: &View) {
         // One with nothing under its name has nothing to fold.
         let folds = !view.connected || !view.sessions.is_empty();
-        if self.heading(ui, server, view, folds) {
+        let (create, name) = self.heading(ui, server, view, folds);
+        self.host_menu(&name, server);
+        if create {
             self.remembered.kept.folded.remove(self.servers[server].address());
             self.open(server, Action::CreateSession(None));
         }
@@ -140,23 +142,23 @@ impl App {
     }
 
     /// A server's name, beside a button that tries it again if it is not connected.
-    /// True if its other button, for a new session, was pressed. Where it
-    /// `folds`, a press anywhere on it but its buttons folds away what is under
-    /// it, or brings that back: folded, it wears the most pressing thing any of
-    /// its sessions says.
+    /// True if its other button, for a new session, was pressed, and with that
+    /// all of the row but its buttons, for what else is asked of it. Where it
+    /// `folds`, a press there folds away what is under it, or brings that
+    /// back: folded, it wears the most pressing thing any of its sessions says.
     pub(super) fn heading(
         &mut self,
         ui: &mut egui::Ui,
         server: usize,
         view: &View,
         folds: bool,
-    ) -> bool {
+    ) -> (bool, egui::Response) {
         let mut create = false;
         let address = self.servers[server].address().to_owned();
         let folded = folds && self.remembered.kept.folded.contains(&address);
         let mut heading = bar(ui, 32.0, 0.0);
         let row = heading.max_rect();
-        heading.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let name = heading.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if view.connected {
                 create = icon_button(ui, Icon::Plus, "New session").clicked();
             } else if icon_button(ui, Icon::Retry, "Try again").clicked() {
@@ -179,16 +181,19 @@ impl App {
                 };
                 ui.add(egui::Label::new(label).truncate());
             });
+            // Asked after the name, so that the press is not the name's own. The
+            // palette may show the same server over this one.
+            let id = egui::Id::unique(("fold", &address, ui.layer_id()));
+            let name = ui.interact(rest, id, Sense::click());
             if folds {
                 fold(ui, row, folded);
-                // Asked after the name, so that the press is not the name's own.
-                let id = egui::Id::unique(("fold", &address));
-                if ui.interact(rest, id, Sense::click()).clicked() {
+                if name.clicked() {
                     flip(&mut self.remembered.kept.folded, &address);
                 }
             }
+            name
         });
-        create
+        (create, name.inner)
     }
 }
 

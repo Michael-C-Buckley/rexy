@@ -1,15 +1,15 @@
 //! The client's own actions, under the names Rex gives them. One table says what
 //! each is called and which keys it has until a server says otherwise. Keys, menus,
 //! the palette and other clients' requests all ask `plan` what doing one comes to.
-use eframe::egui::{self, Popup};
+use eframe::egui;
 use serde_json::{Value, json};
 
 use super::{
     App, DEFAULT_FONT_SIZE, FONT_SIZES,
     close::doomed,
-    input,
+    hosts, input,
     keymap::Keys,
-    palette,
+    palette::Listing,
     rows::{Choice, Target},
     style::{Icon, icon_button},
 };
@@ -29,6 +29,10 @@ const HELD: bool = true;
 pub const REMOTE: &str = "client.remote_control.toggle";
 /// The command that gives a pane a tab of its own.
 pub const TO_TAB: &str = "client.pane.to_new_tab";
+/// The command that copies all a pane has put out.
+pub const COPY_ALL: &str = "client.pane.copy_all";
+/// A terminal's own action, which a server offers: to clear all it has put out.
+pub const CLEAR: &str = "com.superlogical.terminal.clear";
 /// The code of the error another client is answered with while they may not.
 pub const BARRED: &str = "remote_control_off";
 
@@ -48,8 +52,9 @@ pub fn label(name: &str, title: &'static str, remote: bool) -> &'static str {
     }
 }
 
-/// Rex has no name for the two scrolls to an end, for going back to a tab or for
-/// going to what wants the user. Theirs are this client's own.
+/// Rex has no name for the two scrolls to an end, for going back to a tab, for
+/// going to what wants the user or for copying all of a pane. Theirs are this
+/// client's own.
 pub const COMMANDS: &[Command] = &[
     ("session.new", "New Session", ONCE),
     ("session.switch", "Change Session…", ONCE),
@@ -59,6 +64,8 @@ pub const COMMANDS: &[Command] = &[
     ("session.rename", "Rename Session", ONCE),
     // Its sessions are read again by connecting again.
     ("session.refresh", "Reconnect", ONCE),
+    (hosts::ADD, "Add Remote Host…", ONCE),
+    (hosts::REMOVE, "Remove Host…", ONCE),
     ("client.tab.new", "New Tab", ONCE),
     ("client.tab.close", "Close Tab", ONCE),
     ("client.tab.rename", "Rename Tab", ONCE),
@@ -92,6 +99,7 @@ pub const COMMANDS: &[Command] = &[
     ("pane.zoom", "Zoom Pane", ONCE),
     ("pane.close", "Close Pane", ONCE),
     ("pane.copy", "Copy from Pane", ONCE),
+    (COPY_ALL, "Copy All from Pane", ONCE),
     ("pane.paste", "Paste into Pane", ONCE),
     ("pane.select_all", "Select All in Pane", ONCE),
     ("pane.send_key", "Send Key", ONCE),
@@ -256,11 +264,8 @@ pub(super) enum Deed {
     Sidebar,
     /// Turning the sidebar to the list of what is at work, or back.
     Activity,
-    /// Opening the palette, or putting it away: on what can be done, or else
-    /// on the sessions and the tabs.
-    Palette {
-        commands: bool,
-    },
+    /// Opening the palette on one of the things it lists, or putting it away.
+    Palette(Listing),
     /// Letting a server's other clients have this window do things, or no longer.
     Remote,
     /// Something for a pane's own terminal to do, which no server is told of:
@@ -297,6 +302,8 @@ pub(super) struct Standing<'a> {
     pub wanting: &'a [(usize, String)],
     /// The tab shown before the one on show, with its session and that one's server.
     pub back: Option<&'a ((usize, String), String)>,
+    /// Some host that home names is its list's own to remove.
+    pub removable: bool,
 }
 
 impl Standing<'_> {
@@ -364,8 +371,10 @@ impl Standing<'_> {
                 let ((server, session), tab) = self.back?.clone();
                 Deed::Show(server, Action::SelectTab { session, tab })
             }
-            "client.palette.toggle" => Deed::Palette { commands: true },
-            "session.switch" => Deed::Palette { commands: false },
+            "client.palette.toggle" => Deed::Palette(Listing::Commands),
+            "session.switch" => Deed::Palette(Listing::Places),
+            hosts::ADD => Deed::Palette(Listing::Host(None)),
+            hosts::REMOVE if self.removable => Deed::Palette(Listing::Hosts),
             REMOTE => Deed::Remote,
             "client.font.increase" => Deed::Font(self.font_size + 1.0),
             "client.font.decrease" => Deed::Font(self.font_size - 1.0),
@@ -476,6 +485,8 @@ impl Standing<'_> {
                 Deed::Close(what, spared, Action::ClosePane { pane })
             }
             "pane.paste" => Deed::Paste(pane?.id.clone()),
+            // The server keeps it all, and what the pane shows here is part of it.
+            COPY_ALL => Deed::Server(Action::CopyAll { pane: frame.and(pane)?.id.clone() }),
             "pane.send_key" => Deed::Server(input::press(&pane?.id, args["key"].as_str()?)?),
             _ => return None,
         })
@@ -492,6 +503,7 @@ impl App {
             keys: &self.keys,
             wanting: &self.wanting,
             back: self.stood[1].as_ref(),
+            removable: self.servers[1..].iter().any(|server| server.host.source.is_empty()),
         }
     }
 
@@ -534,16 +546,7 @@ impl App {
                 self.activity ^= true;
                 self.remembered.kept.sidebar |= self.activity;
             }
-            // It opens with nothing typed. Asked for the list it is not showing,
-            // it turns to that one, and is put away only by the one it shows.
-            Deed::Palette { commands } => {
-                let other = Popup::is_id_open(ctx, palette::id()) && self.commands != commands;
-                (self.commands, self.cursor) = (commands, None);
-                self.filter.clear();
-                if !other {
-                    Popup::toggle_id(ctx, palette::id());
-                }
-            }
+            Deed::Palette(listing) => self.list(ctx, listing),
             Deed::Remote => {
                 let remote = &mut self.remembered.kept.remote;
                 *remote ^= true;

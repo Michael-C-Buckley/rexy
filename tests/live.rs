@@ -1,7 +1,7 @@
 //! Run only against a disposable server, never the default personal socket.
 use rexy::{
     backend::Client,
-    model::{self, Action, Activity, Edit, Size, Tab, View, Wait},
+    model::{self, Action, Activity, Edit, Host, Size, Tab, View, Wait},
     notify::Herald,
     terminal::Frame,
     upload::File,
@@ -95,6 +95,20 @@ fn rex(endpoint: &str, args: &[&str]) -> Result<String, String> {
         true => Ok(String::from_utf8(rex.stdout).unwrap()),
         false => Err(String::from_utf8_lossy(&rex.stderr).into_owned()),
     }
+}
+
+/// A session made for a test, with a shell in its one pane, and a client that
+/// shows it.
+fn shell(endpoint: &str, name: &str) -> (String, String, Client) {
+    let shell = ["new", name, "--shell=none", "--keep-open", "--json", "--", "/bin/sh"];
+    let made: Value = serde_json::from_str(&rex(endpoint, &shell).unwrap()).unwrap();
+    let session = made["session_id"].as_str().unwrap().to_owned();
+    let pane = made["initial_windows"][0]["block_ids"][0].as_str().unwrap().to_owned();
+    let client = open(endpoint, Herald::new().0);
+    wait(&client, "a connection", |v| v.connected);
+    send(&client, Action::SelectSession(session.clone()));
+    wait(&client, "the pane", |v| frame(v, &pane).is_some());
+    (session, pane, client)
 }
 
 /// Ask that server something as the command line does.
@@ -723,14 +737,7 @@ fn live_keymap_actions_and_requests() {
 #[ignore = "requires REXY_TEST_SERVER pointing to a disposable Rex server"]
 fn live_files_reach_a_pane() {
     let endpoint = endpoint();
-    let shell = ["new", "files", "--shell=none", "--keep-open", "--json", "--", "/bin/sh"];
-    let made: Value = serde_json::from_str(&rex(&endpoint, &shell).unwrap()).unwrap();
-    let session = made["session_id"].as_str().unwrap().to_owned();
-    let pane = made["initial_windows"][0]["block_ids"][0].as_str().unwrap().to_owned();
-    let client = open(&endpoint, Herald::new().0);
-    wait(&client, "a connection", |v| v.connected);
-    send(&client, Action::SelectSession(session.clone()));
-    wait(&client, "the pane", |v| frame(v, &pane).is_some());
+    let (session, pane, client) = shell(&endpoint, "files");
     // Wide, so that no path is broken over two lines.
     let size = Size { cols: 240, rows: 24, cell_width: 9, cell_height: 19 };
     send(&client, Action::Resize { pane: pane.clone(), size });
@@ -777,6 +784,54 @@ fn live_files_reach_a_pane() {
     give(vec![pasted("kept.txt", "kept"), File::Path(std::env::temp_dir())]);
     let failed = wait(&client, "word that nothing was sent", |v| v.error.is_some());
     assert!(failed.error.unwrap().starts_with("Nothing was sent to the pane"));
+    // The server is left with the sessions it had, for the tests after this.
+    rex(&endpoint, &["kill", &session]).unwrap();
+}
+
+#[test]
+#[ignore = "requires REXY_TEST_SERVER pointing to a disposable Rex server"]
+fn live_all_of_a_pane_is_copied_and_hosts_are_kept() {
+    let endpoint = endpoint();
+    let (session, pane, client) = shell(&endpoint, "output");
+    // Lines too long for the pane, and more of them than one answer holds.
+    let size = Size { cols: 60, rows: 24, cell_width: 9, cell_height: 19 };
+    send(&client, Action::Resize { pane: pane.clone(), size });
+    let line = ["abcdefghijklmnopqrstuvwxyz"; 4].join(" ");
+    let text = format!("seq -f '%.0f {line}' 1 12000");
+    send(&client, Action::Text { pane: pane.clone(), text });
+    enter(&client, &pane);
+    wait(&client, "the last of the output", |v| screen(v, &pane).contains("12000 abc"));
+    send(&client, Action::CopyAll { pane: pane.clone() });
+    let copied = wait(&client, "all of the pane", |v| v.output.is_some()).output.unwrap();
+    assert!(copied.len() > 1024 * 1024, "{} bytes", copied.len());
+    // Each line is as it was written, from the first to the last, and it is
+    // handed over once.
+    assert!(copied.contains(&format!("\n1 {line}\n2 {line}\n")));
+    assert!(copied.contains(&format!("\n11999 {line}\n12000 {line}\n")));
+    assert!(client.snapshot().output.is_none());
+
+    // A host is added to the server's list, changed there and taken away.
+    let host = |id: &str, label: &str| Host {
+        id: id.into(),
+        label: label.into(),
+        endpoints: vec!["ssh://rexy-live.invalid".into()],
+        source: String::new(),
+    };
+    let named = |view: &View, label: &str| view.hosts.iter().find(|h| h.label == label).cloned();
+    send(&client, Action::PutHost(host("", "rexy-live")));
+    let listed = wait(&client, "a host added", |v| named(v, "rexy-live").is_some());
+    let id = named(&listed, "rexy-live").unwrap().id;
+    assert!(!id.is_empty());
+    send(&client, Action::PutHost(host(&id, "rexy-live-renamed")));
+    let listed = wait(&client, "a host changed", |v| named(v, "rexy-live-renamed").is_some());
+    assert_eq!(named(&listed, "rexy-live-renamed").unwrap().id, id);
+    assert!(named(&listed, "rexy-live").is_none());
+    // A second by the same name is refused, and the window is told.
+    send(&client, Action::PutHost(host("", "rexy-live-renamed")));
+    let failed = wait(&client, "word that a host was refused", |v| v.error.is_some());
+    assert!(failed.error.unwrap().starts_with("The hosts are as they were"));
+    send(&client, Action::RemoveHost(id));
+    wait(&client, "a host removed", |v| named(v, "rexy-live-renamed").is_none());
     // The server is left with the sessions it had, for the tests after this.
     rex(&endpoint, &["kill", &session]).unwrap();
 }

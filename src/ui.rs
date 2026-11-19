@@ -8,6 +8,7 @@ pub mod commands;
 mod find;
 mod frame;
 mod heard;
+mod hosts;
 mod input;
 mod keymap;
 mod keys;
@@ -74,7 +75,7 @@ impl Server {
 
     /// Home, the server this window was opened on, has no label of its own.
     fn home(ctx: &egui::Context, endpoint: &str, herald: &Herald) -> Self {
-        let host = Host { label: String::new(), endpoints: vec![endpoint.to_owned()] };
+        let host = Host { endpoints: vec![endpoint.to_owned()], ..Host::default() };
         Self::connect(ctx, host, herald, true)
     }
 
@@ -110,7 +111,8 @@ pub struct App {
     /// Where the keyboard stands with home's keymap.
     keys: Keys,
     /// What the buttons and menus have asked for since the window last drew, each
-    /// by its name in the table of commands and the pane it was asked of, if one.
+    /// by its name, in the table of commands or among the server's own actions,
+    /// and the pane it was asked of, if one.
     todo: Vec<(&'static str, Option<String>)>,
     toast: Toast,
     rename: Option<Rename>,
@@ -129,12 +131,11 @@ pub struct App {
     /// passes it on to the desktop.
     herald: Herald,
     desktop: Desktop,
-    /// What is typed in the palette, and which of its rows Enter would take, once
-    /// it has shown any. Until something is typed it lists what it was opened
-    /// for: what can be done, if `commands`, and else the sessions and the tabs.
+    /// What is typed in the palette, which of its rows Enter would take, once
+    /// it has shown any, and what it was opened to list.
     filter: String,
     cursor: Option<usize>,
-    commands: bool,
+    listing: palette::Listing,
     /// The session on show and the one shown before it, each with its server.
     visited: [Option<(usize, String)>; 2],
     /// The tab on show and the one shown before it, each with its session as
@@ -189,7 +190,7 @@ impl App {
             desktop,
             filter: String::new(),
             cursor: None,
-            commands: false,
+            listing: palette::Listing::Places,
             visited: [None, None],
             stood: [None, None],
             wanting: Vec::new(),
@@ -267,16 +268,21 @@ impl App {
         if !home.connected || listed.eq(&home.hosts) {
             return;
         }
-        let current = self.servers[self.current].host.clone();
+        let current = self.servers[self.current].host.id.clone();
         let mut known = self.servers.split_off(1);
         for host in &home.hosts {
-            let server = match known.iter().position(|server| &server.host == host) {
-                Some(index) => known.swap_remove(index),
-                None => Server::connect(ctx, host.clone(), &self.herald, false),
-            };
+            // A connection is to addresses, under a name. Whatever else has
+            // changed of a host, the one it has is kept.
+            let reached = |host: &Host| (host.label.clone(), host.endpoints.clone());
+            let server =
+                match known.iter().position(|server| reached(&server.host) == reached(host)) {
+                    Some(index) => Server { host: host.clone(), ..known.swap_remove(index) },
+                    None => Server::connect(ctx, host.clone(), &self.herald, false),
+                };
             self.servers.push(server);
         }
-        let current = self.servers.iter().position(|s| s.host == current);
+        // The server on show stays on show, whatever it is called now.
+        let current = self.servers.iter().position(|server| server.host.id == current);
         self.current = current.unwrap_or(0);
     }
 
@@ -438,6 +444,16 @@ impl eframe::App for App {
         }
         self.hear(&ctx, &mut views);
         self.wanting = self.wanted(&views);
+        // All of a pane, which the user asked for, is theirs wherever they are now.
+        for mut output in views.iter_mut().filter_map(|view| view.output.take()) {
+            output.truncate(output.trim_end().len());
+            let lines = output.lines().count();
+            ctx.copy_text(output);
+            self.toast.note(match lines {
+                1 => "Copied 1 line.".into(),
+                lines => format!("Copied {lines} lines."),
+            });
+        }
         let made = views[self.current].made.take();
         let copied = views[self.current].copied.take();
         let view = &views[self.current];

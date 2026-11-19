@@ -27,7 +27,16 @@ fn view() -> View {
 /// How a window stands with nothing wanting the user and no tab to go back to.
 fn standing<'a>(view: &'a View, keys: &'a Keys) -> Standing<'a> {
     let (font_size, sidebar) = (15.0, false);
-    Standing { view, focused: None, font_size, sidebar, keys, wanting: &[], back: None }
+    Standing {
+        view,
+        focused: None,
+        font_size,
+        sidebar,
+        keys,
+        wanting: &[],
+        back: None,
+        removable: false,
+    }
 }
 
 /// What a command comes to with the keyboard in a pane, in words.
@@ -237,4 +246,20 @@ fn other_clients_may_only_have_a_session_shown_until_they_are_let_do_more() {
     assert_eq!(label(REMOTE, title(REMOTE), off), "Allow Remote Control");
     assert_eq!(label(REMOTE, title(REMOTE), true), "Refuse Remote Control");
     assert_eq!(label("pane.zoom", title("pane.zoom"), true), "Zoom Pane");
+}
+
+#[test]
+fn hosts_are_added_always_and_removed_while_one_can_be() {
+    let (view, keys) = (View::default(), Keys::default());
+    let opens = |removable: bool, name: &str| {
+        let standing = Standing { removable, ..standing(&view, &keys) };
+        match standing.plan(name, &Value::Null, None) {
+            Ok(Deed::Palette(listing)) => Some(listing),
+            _ => None,
+        }
+    };
+    // Home need not be there to be asked: it answers when the host is typed.
+    assert!(opens(false, hosts::ADD) == Some(Listing::Host(None)));
+    assert!(opens(true, hosts::REMOVE) == Some(Listing::Hosts));
+    assert!(opens(false, hosts::REMOVE).is_none());
 }

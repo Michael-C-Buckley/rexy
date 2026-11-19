@@ -188,14 +188,14 @@ impl App {
     ) {
         match self.standing(view).plan(name, args, None) {
             Ok(deed) => self.act(ctx, self.current, deed, false),
-            Err("not_supported") => self.send(Action::Perform {
-                name: name.to_owned(),
-                args: args.clone(),
-                origin,
-                pane: self.focused.clone(),
-            }),
+            Err("not_supported") => self.perform(name, args, origin, self.focused.clone()),
             Err(_) => {}
         }
+    }
+
+    /// Have the server do one of its own actions, to a pane if one is given.
+    fn perform(&mut self, name: &str, args: &Value, origin: &'static str, pane: Option<String>) {
+        self.send(Action::Perform { name: name.to_owned(), args: args.clone(), origin, pane });
     }
 
     /// Do what the buttons and menus asked for while they were drawn, and what
@@ -204,8 +204,10 @@ impl App {
     pub(super) fn answer(&mut self, ctx: &egui::Context, views: &[View]) {
         for (name, pane) in std::mem::take(&mut self.todo) {
             let view = &views[self.current];
-            if let Ok(deed) = self.standing(view).plan(name, &Value::Null, pane.as_deref()) {
-                self.act(ctx, self.current, deed, true);
+            match self.standing(view).plan(name, &Value::Null, pane.as_deref()) {
+                Ok(deed) => self.act(ctx, self.current, deed, true),
+                Err("not_supported") => self.perform(name, &Value::Null, "palette", pane),
+                Err(_) => {}
             }
         }
         for (server, view) in views.iter().enumerate() {

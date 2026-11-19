@@ -40,7 +40,7 @@ rexy                          # your Rex home, or else this machine's server
 rexy --server ssh://studio    # or unix:///path, ws://, wss://, or a host name
 ```
 
-The sidebar lists that server, then every host it knows of, which `rex hosts add studio ssh://studio` adds to. A server that cannot be reached is retried, so the window can be opened before the server is up. `ssh://` needs `rex` on the other machine and an `ssh` that connects without prompting.
+The sidebar lists that server, then every host it knows of. **Add Remote Host…** in the command palette adds one, typed as `rex hosts add` takes it: `studio ssh://studio`. Right-click a server's name to change or remove it; a host declared in `init.lua` is changed there. A server that cannot be reached is retried, so the window can be opened before the server is up. `ssh://` needs `rex` on the other machine and an `ssh` that connects without prompting.
 
 ## Keys
 
@@ -63,7 +63,7 @@ These are the defaults, and `rex.bind` in your home server's `init.lua` changes 
 | **Ctrl Shift C**, **Ctrl Shift V** | Copy and paste |
 | **Ctrl Shift F** | Find in the pane |
 
-With the mouse: drag the line between two panes to resize them, drag a pane's header onto a tab to move it there, click beside a server's or a session's name to fold it away, double-click a name to rename it, and right-click anything for its menu. **Shift** overrides a program's mouse capture, and **Ctrl** with a click opens a link.
+With the mouse: drag the line between two panes to resize them, drag a pane's header onto a tab to move it there, click beside a server's or a session's name to fold it away, drag the bar at a pane's right edge to scroll through its history, double-click a name to rename it, and right-click anything for its menu. A pane's menu also clears it, and copies all its output. **Shift** overrides a program's mouse capture, and **Ctrl** with a click opens a link.
 
 ## Good to know
 
@@ -72,7 +72,7 @@ With the mouse: drag the line between two panes to resize them, drag a pane's he
 - **Remote control is off by default.** `rex -C <client> do …` works only after you choose **Allow Remote Control** in the palette. With it on, any client of the server can type into a pane or close things.
 - **Programs cannot reach your machine.** They can copy to the clipboard but never read it, `file` links are never opened, and pictures are accepted only as pixels sent inline.
 - **State** is kept in `rexy/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
-- **Not yet:** editing hosts from the window, floating panes, moving a pane to another session, animated pictures.
+- **Not yet:** floating panes, moving a pane to another session, animated pictures.
 
 Rexy speaks revision 13 of Rex's control API, and refuses a server that is older or too new.
 

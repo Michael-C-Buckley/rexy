@@ -43,10 +43,14 @@ const PROCESS: &str = "com.superlogical.terminal.process";
 const STATUS: &str = "com.superlogical.terminal.program_status";
 const THEME: &str = "com.superlogical.terminal.set_theme";
 const COPIED: &str = "com.superlogical.terminal.clipboard_read";
+const FORMAT: &str = "com.superlogical.terminal.format";
+const BLOB: &str = "com.superlogical.terminal.blob_read";
 /// How many tabs are kept fed at once, the one on show among them.
 const WARM: usize = 16;
 /// The most a program may copy, and the most of it to ask for at a time.
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
+/// The most of a pane's output to copy when the user asks for it all.
+const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const COPY_PART_BYTES: usize = 960 * 1024;
 static NULL: Value = Value::Null;
 
@@ -184,7 +188,9 @@ impl Client {
         // Reset before reading: an update arriving during the copy schedules another paint.
         self.shared.wake.pending.store(false, Ordering::Release);
         let mut state = self.shared.lock();
-        let mut view = state.view.clone();
+        // All of a pane may be long: it is handed over, not copied.
+        let output = state.view.output.take();
+        let mut view = View { output, ..state.view.clone() };
         state.view.error = None;
         state.view.made = None;
         state.view.copied = None;
@@ -486,6 +492,8 @@ enum Reply {
     Left(String),
     /// The host list.
     Hosts,
+    /// A change to the host list.
+    Host,
     /// What this client's keys do.
     Keymap,
     /// Something the server did for the user: one of its own actions, or a key
@@ -916,14 +924,23 @@ impl<'a> Connection<'a> {
                 };
                 let hosts = items(&listed["hosts"]).filter_map(|host| {
                     let endpoints = items(&host["endpoints"]).filter_map(Value::as_str);
+                    let text = |key: &str| host[key].as_str().unwrap_or_default().to_owned();
                     Some(Host {
+                        id: text("id"),
                         label: host["label"].as_str()?.into(),
                         endpoints: endpoints.map(str::to_owned).collect(),
+                        source: text("source"),
                     })
                 });
                 let hosts = hosts.collect();
                 self.hosts_hash = listed["hash"].as_str().unwrap_or_default().into();
                 return self.shared.change(|s| s.view.hosts = hosts);
+            }
+            // Every client is told of a list that has changed, this one too,
+            // and reads it again then.
+            (Reply::Host, Ok(_)) => return,
+            (Reply::Host, Err(error)) => {
+                return self.shared.fail(format!("The hosts are as they were: {error}"));
             }
             (Reply::Keymap, Ok(keymap)) => {
                 self.keymap_hash = keymap["config"]["hash"].as_str().unwrap_or_default().into();
@@ -1303,7 +1320,7 @@ impl<'a> Connection<'a> {
         let fetch = tokio::spawn(async move {
             let text = match text {
                 Some(text) => Ok(text),
-                None => copy(&rpc, &session, &pane, id).await,
+                None => whole(&rpc, &session, &pane, COPIED, id, MAX_COPY_BYTES).await,
             };
             match text {
                 Ok(text) => shared.change(|s| s.view.copied = Some((pane, text))),
@@ -1535,6 +1552,43 @@ impl<'a> Connection<'a> {
                 });
                 return Ok(());
             }
+            // As its lines were written, not as the pane's width broke them. It
+            // is asked for apart from all else that goes on here, as it may be long.
+            Action::CopyAll { pane } => {
+                let session = self.session(&pane)?;
+                let (rpc, shared) = (self.rpc.clone(), self.shared.clone());
+                tokio::spawn(async move {
+                    let args = json!({"trim": true, "unwrap": true, "max_bytes": COPY_PART_BYTES});
+                    let request = json!({"session_id": session, "block_id": pane, "args": args});
+                    let text = async {
+                        let first = rpc.call(FORMAT, request).await?;
+                        // What did not all come at once is kept, to be read from its start.
+                        match first["id"].as_u64() {
+                            Some(id) => {
+                                whole(&rpc, &session, &pane, BLOB, id, MAX_OUTPUT_BYTES).await
+                            }
+                            None => Ok(first["content"].as_str().unwrap_or_default().to_owned()),
+                        }
+                    };
+                    match text.await {
+                        Ok(text) => shared.change(|s| s.view.output = Some(text)),
+                        Err(error) => shared.fail(format!("Nothing was copied: {error:#}")),
+                    }
+                });
+                return Ok(());
+            }
+            Action::PutHost(host) => {
+                let mut put = json!({"label": host.label, "endpoints": host.endpoints});
+                if !host.id.is_empty() {
+                    put["id"] = json!(host.id);
+                }
+                self.ask(Reply::Host, "hosts.put", json!({"host": put})).await;
+                return Ok(());
+            }
+            Action::RemoveHost(id) => {
+                self.ask(Reply::Host, "hosts.remove", json!({"id": id})).await;
+                return Ok(());
+            }
             input => return self.input(input).await,
         };
         // A session yet to be made has no name to go by.
@@ -1674,16 +1728,25 @@ fn reply(call: &str, error: Option<&str>) -> Value {
     json!({"call_id": call, "error": {"code": code, "message": message}})
 }
 
-/// The whole of a long text that a program has copied, asked for a part at a time.
-async fn copy(rpc: &Rpc, session: &str, pane: &str, id: u64) -> Result<String> {
+/// The whole of a long text that a terminal keeps by an `id`, such as one a
+/// program has copied, as `method` reads it: asked for a part at a time. Longer
+/// than the `most` it may be, it fails.
+async fn whole(
+    rpc: &Rpc,
+    session: &str,
+    pane: &str,
+    method: &str,
+    id: u64,
+    most: usize,
+) -> Result<String> {
     let mut text = String::new();
     loop {
         let args = json!({"id": id, "offset": text.len(), "max_bytes": COPY_PART_BYTES});
         let request = json!({"session_id": session, "block_id": pane, "args": args});
-        let part = rpc.call(COPIED, request).await?;
+        let part = rpc.call(method, request).await?;
         let more = part["data"].as_str().unwrap_or_default();
         text.push_str(more);
-        ensure!(text.len() <= MAX_COPY_BYTES, "it is too long");
+        ensure!(text.len() <= most, "it is too long");
         if part["eof"] == true {
             return Ok(text);
         }

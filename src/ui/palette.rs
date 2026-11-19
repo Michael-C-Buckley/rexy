@@ -7,10 +7,11 @@ use super::{
     App,
     commands::{COMMANDS, Deed, label},
     heard::dot,
+    hosts,
     style::{BODY, BORDER, Icon, Item, SMALL, TEXT, bold, caption, item},
 };
 use crate::{
-    model::{Action, Session, Tab, View},
+    model::{Action, Host, Session, Tab, View},
     program::Program,
 };
 
@@ -34,6 +35,21 @@ fn words<'a>(session: &'a Session, tab: &'a Tab) -> Vec<&'a str> {
     std::iter::once(tab.name()).chain(panes).chain(session).collect()
 }
 
+/// What the palette lists until something is typed, and what it is typed for.
+#[derive(Clone, PartialEq)]
+pub enum Listing {
+    /// The sessions and the tabs. What is typed is looked for among those and
+    /// among what can be done.
+    Places,
+    /// What can be done, likewise.
+    Commands,
+    /// The host that what is typed names: one to add, or what the host given
+    /// is to be from now on.
+    Host(Option<Host>),
+    /// The hosts that can be removed.
+    Hosts,
+}
+
 /// A row of the list, and what taking it does.
 struct Row {
     label: String,
@@ -49,6 +65,8 @@ enum Pick {
     Show(usize, Action),
     /// Do something by its name: an action of this client's, or of the server's.
     Do(String),
+    /// Have home do something to its list of hosts.
+    Home(Action),
 }
 
 impl App {
@@ -77,6 +95,22 @@ impl App {
         }
     }
 
+    /// Open the palette on something to list, or put it away. It opens with
+    /// nothing typed, but on a host to change, which is there as it would be
+    /// typed. Asked for a list it is not showing, it turns to that one, and is
+    /// put away only by the one it shows.
+    pub(super) fn list(&mut self, ctx: &egui::Context, listing: Listing) {
+        let other = Popup::is_id_open(ctx, id()) && self.listing != listing;
+        self.filter = match &listing {
+            Listing::Host(Some(host)) => hosts::line(host),
+            _ => String::new(),
+        };
+        (self.listing, self.cursor) = (listing, None);
+        if !other {
+            Popup::toggle_id(ctx, id());
+        }
+    }
+
     /// The palette, while it is open: the sessions on every server, the tabs of
     /// the one on show, and what can be done just now, with the keys that do it.
     /// What is typed is looked for among the tabs of every session, too.
@@ -89,8 +123,13 @@ impl App {
         let named = (!typed.is_empty()).then(|| typed.clone());
         let found = |words: &[&str]| found(&typed, words);
         // With nothing typed it lists what it was opened for. What is typed is
-        // looked for in all of it.
-        let (places, deeds) = (named.is_some() || !self.commands, named.is_some() || self.commands);
+        // looked for among the places and the commands alike, but where it was
+        // opened for the hosts.
+        let (places, deeds) = match self.listing {
+            Listing::Places => (true, named.is_some()),
+            Listing::Commands => (named.is_some(), true),
+            Listing::Host(_) | Listing::Hosts => (false, false),
+        };
         let row = |label: &str, icon, mark, pick| Row {
             label: label.to_owned(),
             icon,
@@ -123,7 +162,7 @@ impl App {
             under.push(rows.len());
         }
         // A name that finds no session offers to make one.
-        let new = named.clone().filter(|_| rows.is_empty());
+        let new = named.clone().filter(|_| places && rows.is_empty());
         // What comes after the sessions is headed by what it is.
         let mut heads = vec![(rows.len(), "Tabs")];
         // Those of the session on show come first, by their names alone and
@@ -154,7 +193,8 @@ impl App {
         // All that can be done just now, but to put this list away.
         for (name, title, _) in COMMANDS.iter().filter(|c| deeds && found(&[c.1, c.0])) {
             let plan = self.standing(view).plan(name, &Value::Null, None);
-            if plan.is_ok_and(|deed| !matches!(deed, Deed::Palette { .. })) {
+            let away = |deed| matches!(deed, Deed::Palette(Listing::Places | Listing::Commands));
+            if plan.is_ok_and(|deed| !away(deed)) {
                 let remote = self.remembered.kept.remote;
                 rows.push(command(label(name, title, remote), name));
             }
@@ -173,6 +213,32 @@ impl App {
             let make = Pick::Show(current, Action::CreateSession(Some(name)));
             row(&label, None, None, make)
         }));
+        // The host that what is typed comes to, which Enter then adds or
+        // changes, or those of home's own list, of which one is taken away.
+        match &self.listing {
+            Listing::Host(was) => {
+                let (doing, head) = match was {
+                    Some(_) => ("Change to", "Change Host"),
+                    None => ("Add", "Add Remote Host"),
+                };
+                heads.push((rows.len(), head));
+                rows.extend(hosts::typed(&typed, was.as_ref()).map(|host| {
+                    let label =
+                        format!("{doing} “{}” at {}", host.label, host.endpoints.join(", "));
+                    row(&label, None, None, Pick::Home(Action::PutHost(host)))
+                }));
+            }
+            Listing::Hosts => {
+                heads.push((rows.len(), "Remove Host"));
+                let kept = views[0].hosts.iter().filter(|host| host.source.is_empty());
+                for host in kept.filter(|host| found(&[&host.label, &host.endpoints.join(" ")])) {
+                    let label = format!("{} at {}", host.label, host.endpoints.join(", "));
+                    let remove = Pick::Home(Action::RemoveHost(host.id.clone()));
+                    rows.push(row(&label, None, None, remove));
+                }
+            }
+            Listing::Places | Listing::Commands => {}
+        }
 
         let (mut picked, mut pointed) = (None, None);
         let top = ctx.content_rect().center_top() + egui::vec2(0.0, 56.0);
@@ -192,9 +258,11 @@ impl App {
             // The field is the head of the list, with a line under it and none
             // around it: nothing else here could be taking what is typed.
             let field = egui::TextEdit::singleline(&mut self.filter)
-                .hint_text(match self.commands {
-                    true => "Search commands…",
-                    false => "Search sessions and tabs, or name a new session…",
+                .hint_text(match self.listing {
+                    Listing::Commands => "Search commands…",
+                    Listing::Places => "Search sessions and tabs, or name a new session…",
+                    Listing::Host(_) => "A name and its address, such as: studio ssh://studio",
+                    Listing::Hosts => "Search hosts…",
                 })
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
                 .desired_width(f32::INFINITY);
@@ -253,7 +321,7 @@ impl App {
                 let mut listed = rows.iter().enumerate().peekable();
                 for (server, view) in views.iter().enumerate() {
                     // A session made on a server takes the name typed, too.
-                    if places && self.heading(ui, server, view, false) {
+                    if places && self.heading(ui, server, view, false).0 {
                         self.open(server, Action::CreateSession(named.clone()));
                         Popup::close_id(ui.ctx(), id());
                     }
@@ -279,6 +347,7 @@ impl App {
         match row.pick {
             Pick::Show(server, action) => self.open(server, action),
             Pick::Do(name) => self.run(ctx, view, &name, &Value::Null, "palette"),
+            Pick::Home(action) => self.tell(0, action),
         }
     }
 }

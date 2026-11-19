@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::{
     App,
     close::{Ask, CLOSE, asking, closer, doomed},
-    commands::{TO_TAB, title},
+    commands::{CLEAR, COPY_ALL, TO_TAB, title},
     heard::dot,
     pointer::{Pointer, Wheel},
     render::{Grid, rgb},
@@ -278,19 +278,14 @@ impl App {
                 let line = Stroke::new(1.0, rgb(frame.fg));
                 ui.painter().hline(span.x_range(), span.bottom() - 1.0, line);
             }
-            // Scrolled back, it says so at its foot, where a click returns it to
-            // the last of its output, and how far back by a mark at its edge:
-            // as long, of that edge, as the screen is of all there is to scroll
-            // through. Both are as of this frame.
+            // How far back its view is, a bar says at the edge its text keeps
+            // clear of. Scrolled back, it says so at its foot too, where a click
+            // returns it to the last of its output. Both are as of this frame.
+            let edge = terminal_rect.right();
+            let edge = Rect::from_x_y_ranges(edge - 12.0..=edge, grid.rect.y_range());
+            let id = ui.scope_id().with(("history", &pane.id));
+            scroll = scrollbar(ui, id, frame, edge).or(scroll);
             if frame.scroll_offset > 0 {
-                let (rows, back) = (f32::from(frame.rows), frame.scroll_offset as f32);
-                let history = frame.history as f32;
-                let track = grid.rect.y_range();
-                let length = (track.span() * rows / (history + rows)).max(24.0);
-                let top = track.min + (track.span() - length) * (1.0 - back / history);
-                let edge = terminal_rect.right() - 6.0;
-                let mark = Rect::from_x_y_ranges(edge..=edge + 3.0, top..=top + length);
-                ui.painter().rect_filled(mark, 1.5, rgb(frame.fg).gamma_multiply(0.4));
                 let font = FontId::proportional(SMALL);
                 let said = ui.painter().layout_no_wrap("Scrolled back".into(), font, TEXT);
                 let size = said.size() + egui::vec2(20.0, 10.0);
@@ -351,7 +346,9 @@ impl App {
             asking(&response, 270.0, |ui| {
                 let entries = [
                     ("Copy selection", "pane.copy"),
+                    ("Copy all output", COPY_ALL),
                     ("Paste", "pane.paste"),
+                    ("Clear", CLEAR),
                     (title("pane.split.right"), "pane.split.right"),
                     (title("pane.split.down"), "pane.split.down"),
                     (zoom, "pane.zoom"),
@@ -361,11 +358,14 @@ impl App {
                     if name == "pane.split.right" {
                         ui.separator();
                     }
-                    // Each is there to be taken when it can be done to this pane.
+                    // Each is there to be taken when it can be done to this pane:
+                    // by this client, or as an action of the terminal's own by
+                    // the server that offers it.
                     let plan = self.standing(view).plan(name, &Value::Null, Some(&pane.id));
+                    let served = live && self.keys.map.served(name).is_some();
                     let keys = self.keys.map.shortcut(name);
                     let row = Item { label, keys: Some(&keys), ..Default::default() };
-                    if entry(ui, plan.is_ok(), row).clicked() {
+                    if entry(ui, plan.is_ok() || served, row).clicked() {
                         self.todo.push((name, Some(pane.id.clone())));
                         ui.close();
                     }
@@ -426,6 +426,50 @@ fn room(card: Rect, header: bool) -> Rect {
     let mut room = card.shrink2(egui::vec2(12.0, 8.0));
     room.min.y = card.top() + if header { PANE_HEADER + 2.0 } else { 8.0 };
     room
+}
+
+/// Where a pane's view is in its history, as a bar down an `edge` of it: as
+/// long, of that edge, as the screen is of all there is to scroll through. It
+/// shows while the view is scrolled back, and under the pointer, which drags it:
+/// a press beside the bar brings the bar's middle there first. Where the view
+/// is to go, if it is to move.
+fn scrollbar(ui: &egui::Ui, id: egui::Id, frame: &Frame, edge: Rect) -> Option<Scroll> {
+    // A program with the whole screen keeps no history.
+    if frame.history == 0 || frame.alternate_screen {
+        return None;
+    }
+    let held = ui.interact(edge, id, Sense::drag());
+    let near = held.hovered() || held.dragged();
+    if frame.scroll_offset == 0 && !near {
+        return None;
+    }
+    let (rows, history) = (f32::from(frame.rows), frame.history as f32);
+    let length = (edge.height() * rows / (history + rows)).max(24.0);
+    // How far the bar's top can go, which is as far as there is history.
+    let run = (edge.height() - length).max(1.0);
+    let first = frame.history.saturating_sub(frame.scroll_offset);
+    let top = edge.top() + run * first as f32 / history;
+    let wide = if near { 6.0 } else { 3.0 };
+    let bar =
+        Rect::from_x_y_ranges(edge.right() - 3.0 - wide..=edge.right() - 3.0, top..=top + length);
+    let faint = if held.dragged() { 0.6 } else { 0.4 };
+    ui.painter().rect_filled(bar, wide / 2.0, rgb(frame.fg).gamma_multiply(faint));
+    // Where on the bar the pointer has hold of it, from its top, for as long
+    // as it does.
+    let Some(at) = held.interact_pointer_pos().filter(|_| held.dragged()) else {
+        ui.data_mut(|data| data.remove::<f32>(id));
+        return None;
+    };
+    let grip = if bar.y_range().contains(at.y) { at.y - top } else { length / 2.0 };
+    let grip = ui.data_mut(|data| *data.get_temp_mut_or(id, grip));
+    let to = ((at.y - grip - edge.top()) / run).clamp(0.0, 1.0);
+    let to = (to * history).round() as usize;
+    // The last of its output is followed as it comes, not held to a row.
+    match to {
+        to if to == first => None,
+        to if to >= frame.history => Some(Scroll::Bottom),
+        to => Some(Scroll::Row(to)),
+    }
 }
 
 /// Place the IME at the terminal cursor and show its composition there.
