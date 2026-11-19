@@ -231,7 +231,7 @@ impl App {
             Listing::Hosts => {
                 heads.push((rows.len(), "Remove Host"));
                 let kept = views[0].hosts.iter().filter(|host| host.source.is_empty());
-                for host in kept.filter(|host| found(&[&host.label, &host.endpoints.join(" ")])) {
+                for host in kept.filter(|host| found(&[&hosts::line(host)])) {
                     let label = format!("{} at {}", host.label, host.endpoints.join(", "));
                     let remove = Pick::Home(Action::RemoveHost(host.id.clone()));
                     rows.push(row(&label, None, None, remove));

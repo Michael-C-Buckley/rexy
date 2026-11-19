@@ -52,6 +52,8 @@ const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
 /// The most of a pane's output to copy when the user asks for it all.
 const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const COPY_PART_BYTES: usize = 960 * 1024;
+/// What is said of a change to the host list that the server would not make.
+const HOSTS_KEPT: &str = "The hosts are as they were";
 static NULL: Value = Value::Null;
 
 /// Coalesces repaint requests until the UI takes its next snapshot.
@@ -188,14 +190,17 @@ impl Client {
         // Reset before reading: an update arriving during the copy schedules another paint.
         self.shared.wake.pending.store(false, Ordering::Release);
         let mut state = self.shared.lock();
-        // All of a pane may be long: it is handed over, not copied.
-        let output = state.view.output.take();
-        let mut view = View { output, ..state.view.clone() };
-        state.view.error = None;
-        state.view.made = None;
-        state.view.copied = None;
-        state.view.asked.clear();
-        state.view.rang.clear();
+        // What is told once is handed over, not copied: some of it may be long.
+        let told = &mut state.view;
+        let mut view = View {
+            error: told.error.take(),
+            made: told.made.take(),
+            copied: told.copied.take(),
+            output: told.output.take(),
+            asked: std::mem::take(&mut told.asked),
+            rang: std::mem::take(&mut told.rang),
+            ..told.clone()
+        };
         for pane in view.panes_mut() {
             if let Some(terminal) = state.terminals.get(&pane.id) {
                 pane.frame = terminal.latest();
@@ -476,8 +481,9 @@ async fn run_connected(
 
 /// What an answer on its way from the server is to.
 enum Reply {
-    /// Input, which is said to have failed if it has.
-    Input,
+    /// Something asked of the server that has nothing to say for itself unless
+    /// it failed, which is then said in these words: input, for one.
+    Told(&'static str),
     /// A change to a session, or the making of one, whose answer says what revision
     /// the session is left at. With it are the session, a pane it brings out, and
     /// whether it makes a session or a tab, which is then to be shown.
@@ -492,8 +498,6 @@ enum Reply {
     Left(String),
     /// The host list.
     Hosts,
-    /// A change to the host list.
-    Host,
     /// What this client's keys do.
     Keymap,
     /// Something the server did for the user: one of its own actions, or a key
@@ -912,9 +916,9 @@ impl<'a> Connection<'a> {
     /// Take the server's answer to something asked of it.
     async fn answered(&mut self, reply: Reply, answer: Answer) {
         match (reply, answer) {
-            (Reply::Input, Ok(_)) => return,
-            (Reply::Input, Err(error)) => {
-                return self.shared.fail(format!("Input failed: {error}"));
+            (Reply::Told(_), Ok(_)) => return,
+            (Reply::Told(failed), Err(error)) => {
+                return self.shared.fail(format!("{failed}: {error}"));
             }
             (Reply::Hosts, answer) => {
                 // A server too old to keep a host list has none, and a list that
@@ -935,12 +939,6 @@ impl<'a> Connection<'a> {
                 let hosts = hosts.collect();
                 self.hosts_hash = listed["hash"].as_str().unwrap_or_default().into();
                 return self.shared.change(|s| s.view.hosts = hosts);
-            }
-            // Every client is told of a list that has changed, this one too,
-            // and reads it again then.
-            (Reply::Host, Ok(_)) => return,
-            (Reply::Host, Err(error)) => {
-                return self.shared.fail(format!("The hosts are as they were: {error}"));
             }
             (Reply::Keymap, Ok(keymap)) => {
                 self.keymap_hash = keymap["config"]["hash"].as_str().unwrap_or_default().into();
@@ -1320,7 +1318,9 @@ impl<'a> Connection<'a> {
         let fetch = tokio::spawn(async move {
             let text = match text {
                 Some(text) => Ok(text),
-                None => whole(&rpc, &session, &pane, COPIED, id, MAX_COPY_BYTES).await,
+                None => {
+                    whole(&rpc, &session, &pane, COPIED, id, MAX_COPY_BYTES, String::new()).await
+                }
             };
             match text {
                 Ok(text) => shared.change(|s| s.view.copied = Some((pane, text))),
@@ -1342,7 +1342,7 @@ impl<'a> Connection<'a> {
         let another = |held: &Pane| joined && !held.owner;
         if self.shared.lock().view.pane(pane).is_some_and(another) {
             let request = json!({"session_id": session, "block_ids": [pane], "mode": "take"});
-            self.ask(Reply::Input, "session.own_block", request).await;
+            self.ask(Reply::Told("Input failed"), "session.own_block", request).await;
         }
     }
 
@@ -1562,12 +1562,13 @@ impl<'a> Connection<'a> {
                     let request = json!({"session_id": session, "block_id": pane, "args": args});
                     let text = async {
                         let first = rpc.call(FORMAT, request).await?;
-                        // What did not all come at once is kept, to be read from its start.
+                        let text = first["content"].as_str().unwrap_or_default().to_owned();
+                        // What did not all come at once is kept, for the rest to be read.
                         match first["id"].as_u64() {
                             Some(id) => {
-                                whole(&rpc, &session, &pane, BLOB, id, MAX_OUTPUT_BYTES).await
+                                whole(&rpc, &session, &pane, BLOB, id, MAX_OUTPUT_BYTES, text).await
                             }
-                            None => Ok(first["content"].as_str().unwrap_or_default().to_owned()),
+                            None => Ok(text),
                         }
                     };
                     match text.await {
@@ -1577,16 +1578,18 @@ impl<'a> Connection<'a> {
                 });
                 return Ok(());
             }
+            // Every client is told of a list that has changed, this one too,
+            // and reads it again then.
             Action::PutHost(host) => {
                 let mut put = json!({"label": host.label, "endpoints": host.endpoints});
                 if !host.id.is_empty() {
                     put["id"] = json!(host.id);
                 }
-                self.ask(Reply::Host, "hosts.put", json!({"host": put})).await;
+                self.ask(Reply::Told(HOSTS_KEPT), "hosts.put", json!({"host": put})).await;
                 return Ok(());
             }
             Action::RemoveHost(id) => {
-                self.ask(Reply::Host, "hosts.remove", json!({"id": id})).await;
+                self.ask(Reply::Told(HOSTS_KEPT), "hosts.remove", json!({"id": id})).await;
                 return Ok(());
             }
             input => return self.input(input).await,
@@ -1704,7 +1707,7 @@ impl<'a> Connection<'a> {
         }
         let reply = match served {
             true => Reply::Performed(self.agree().await),
-            false => Reply::Input,
+            false => Reply::Told("Input failed"),
         };
         self.ask(reply, method, payload).await;
         Ok(())
@@ -1729,8 +1732,9 @@ fn reply(call: &str, error: Option<&str>) -> Value {
 }
 
 /// The whole of a long text that a terminal keeps by an `id`, such as one a
-/// program has copied, as `method` reads it: asked for a part at a time. Longer
-/// than the `most` it may be, it fails.
+/// program has copied, as `method` reads it: asked for a part at a time, after
+/// the `text` of it that has come already. Longer than the `most` it may be,
+/// it fails.
 async fn whole(
     rpc: &Rpc,
     session: &str,
@@ -1738,8 +1742,8 @@ async fn whole(
     method: &str,
     id: u64,
     most: usize,
+    mut text: String,
 ) -> Result<String> {
-    let mut text = String::new();
     loop {
         let args = json!({"id": id, "offset": text.len(), "max_bytes": COPY_PART_BYTES});
         let request = json!({"session_id": session, "block_id": pane, "args": args});

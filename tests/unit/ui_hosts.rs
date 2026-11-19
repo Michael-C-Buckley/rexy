@@ -20,7 +20,7 @@ fn a_host_is_typed_as_its_name_and_its_addresses() {
         id: id.into(),
         label: label.into(),
         endpoints: endpoints.iter().map(|&endpoint| endpoint.to_owned()).collect(),
-        source: String::new(),
+        ..Host::default()
     };
     assert_eq!(typed("  ", None), None);
     assert_eq!(typed("ssh://studio", None), Some(host("", "studio", &["ssh://studio"])));

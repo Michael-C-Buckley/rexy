@@ -804,10 +804,11 @@ fn live_all_of_a_pane_is_copied_and_hosts_are_kept() {
     send(&client, Action::CopyAll { pane: pane.clone() });
     let copied = wait(&client, "all of the pane", |v| v.output.is_some()).output.unwrap();
     assert!(copied.len() > 1024 * 1024, "{} bytes", copied.len());
-    // Each line is as it was written, from the first to the last, and it is
-    // handed over once.
+    // Each line is as it was written, from the first to the last and once
+    // each, and it is handed over once.
     assert!(copied.contains(&format!("\n1 {line}\n2 {line}\n")));
     assert!(copied.contains(&format!("\n11999 {line}\n12000 {line}\n")));
+    assert_eq!(copied.lines().filter(|written| written.ends_with(&line)).count(), 12000);
     assert!(client.snapshot().output.is_none());
 
     // A host is added to the server's list, changed there and taken away.
@@ -815,7 +816,7 @@ fn live_all_of_a_pane_is_copied_and_hosts_are_kept() {
         id: id.into(),
         label: label.into(),
         endpoints: vec!["ssh://rexy-live.invalid".into()],
-        source: String::new(),
+        ..Host::default()
     };
     let named = |view: &View, label: &str| view.hosts.iter().find(|h| h.label == label).cloned();
     send(&client, Action::PutHost(host("", "rexy-live")));

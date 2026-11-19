@@ -26,12 +26,11 @@ fn view() -> View {
 
 /// How a window stands with nothing wanting the user and no tab to go back to.
 fn standing<'a>(view: &'a View, keys: &'a Keys) -> Standing<'a> {
-    let (font_size, sidebar) = (15.0, false);
     Standing {
         view,
         focused: None,
-        font_size,
-        sidebar,
+        font_size: 15.0,
+        sidebar: false,
         keys,
         wanting: &[],
         back: None,

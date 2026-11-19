@@ -12,12 +12,8 @@
 //! text that is pasted too. The toolkit still copies, and reads what a middle
 //! click pastes.
 use std::{
-    ffi::OsString,
     io::Read,
-    os::{
-        fd::AsFd,
-        unix::{ffi::OsStringExt, net::UnixStream},
-    },
+    os::{fd::AsFd, unix::net::UnixStream},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -27,6 +23,7 @@ use std::{
     time::Duration,
 };
 
+use eframe::egui;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
@@ -42,6 +39,8 @@ use wayland_client::{
         wl_seat::WlSeat,
     },
 };
+
+use url::Url;
 
 use crate::upload::File;
 
@@ -67,9 +66,8 @@ pub type Dropped = ((f64, f64), Vec<PathBuf>);
 /// What was pasted, once it is read.
 pub enum Pasted {
     Text(String),
-    /// A picture as a file, as it was copied, for the pane it was pasted in:
-    /// its server and its name.
-    Picture((usize, String), File),
+    /// A picture as a file, as it was copied.
+    Picture(File),
 }
 
 /// The ways something is offered, which are told one by one.
@@ -77,7 +75,6 @@ type Ways = Mutex<Vec<String>>;
 /// What was last copied, as it was offered when the window came into use or
 /// since.
 type Copied = Arc<Mutex<Option<WlDataOffer>>>;
-type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// The listening, which goes on until it is stopped.
 pub struct Offers {
@@ -85,7 +82,8 @@ pub struct Offers {
     pub pasted: flume::Receiver<Pasted>,
     read: flume::Sender<Pasted>,
     copied: Copied,
-    wake: Wake,
+    /// The window, which is woken when there is something for it.
+    window: egui::Context,
     over: Arc<AtomicBool>,
     connection: Connection,
     queue: QueueHandle<Hearing>,
@@ -93,7 +91,7 @@ pub struct Offers {
     seat: WlSeat,
     /// The listener before the one that asked last, and that one.
     devices: [WlDataDevice; 2],
-    thread: Option<JoinHandle<()>>,
+    thread: JoinHandle<()>,
 }
 
 struct Hearing {
@@ -102,7 +100,7 @@ struct Hearing {
     at: (f64, f64),
     copied: Copied,
     dropped: flume::Sender<Dropped>,
-    wake: Wake,
+    window: egui::Context,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Hearing {
@@ -179,7 +177,7 @@ impl Dispatch<WlDataDevice, ()> for Hearing {
                 offer.finish();
                 offer.destroy();
                 if !files.is_empty() && hearing.dropped.send((hearing.at, files)).is_ok() {
-                    (hearing.wake)();
+                    hearing.window.request_repaint();
                 }
             }
             // What is copied now stands in place of what was.
@@ -219,10 +217,8 @@ fn files(offer: &WlDataOffer, connection: &Connection) -> std::io::Result<Vec<Pa
 /// The file a line of such a list names, if it is one on this machine.
 fn path(line: &str) -> Option<PathBuf> {
     // A machine may be named ahead of the path, and none is this one.
-    let path = line.trim().strip_prefix("file://")?;
-    let path = path.strip_prefix("localhost").unwrap_or(path);
-    let bytes: Vec<u8> = percent_encoding::percent_decode_str(path).collect();
-    bytes.starts_with(b"/").then(|| OsString::from_vec(bytes).into())
+    let url = Url::parse(line.trim()).ok().filter(|url| url.scheme() == "file")?;
+    url.to_file_path().ok()
 }
 
 /// The way to ask for what was copied, of those it is offered in: as text
@@ -235,14 +231,11 @@ fn way(ways: &[String]) -> Option<(&'static str, Option<&'static str>)> {
 }
 
 impl Offers {
-    /// Listen to what a window on Wayland is offered, and `wake` it when there
+    /// Listen to what a window on Wayland is offered, and wake it when there
     /// is something for it. None for a window elsewhere, whose toolkit tells
     /// of it all.
-    pub fn listen(
-        window: &impl HasDisplayHandle,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Option<Self> {
-        let RawDisplayHandle::Wayland(display) = window.display_handle().ok()?.as_raw() else {
+    pub fn listen(shown: &impl HasDisplayHandle, window: egui::Context) -> Option<Self> {
+        let RawDisplayHandle::Wayland(display) = shown.display_handle().ok()?.as_raw() else {
             return None;
         };
         // SAFETY: the display is the window's own, which is there for as long as
@@ -259,26 +252,25 @@ impl Offers {
         let devices = [(); 2].map(|()| manager.get_data_device(&seat, &queue, ()));
         let (sender, dropped) = flume::unbounded();
         let (read, pasted) = flume::unbounded();
-        let (copied, wake) = (Copied::default(), Arc::new(wake) as Wake);
+        let copied = Copied::default();
         let mut hearing = Hearing {
             carried: None,
             at: (0.0, 0.0),
             copied: copied.clone(),
             dropped: sender,
-            wake: wake.clone(),
+            window: window.clone(),
         };
         let over = Arc::new(AtomicBool::new(false));
         let done = over.clone();
         let thread = std::thread::spawn(move || {
             while !done.load(Ordering::Relaxed) && events.blocking_dispatch(&mut hearing).is_ok() {}
         });
-        let thread = Some(thread);
         Some(Self {
             dropped,
             pasted,
             read,
             copied,
-            wake,
+            window,
             over,
             connection,
             queue,
@@ -300,36 +292,35 @@ impl Offers {
         let _ = self.connection.flush();
     }
 
-    /// Paste what was copied: its text, or failing that a picture, where there
-    /// is a `pane` to take one as a file. It is read apart from the window, and
-    /// is `pasted` once it has all come. False if nothing copied is known of
-    /// here, and then the toolkit may know of it.
-    pub fn paste(&self, pane: Option<(usize, String)>) -> bool {
+    /// Paste what was copied: its text, or failing that a picture, where
+    /// `pictures` are wanted. It is read apart from the window, and is `pasted`
+    /// once it has all come. False if nothing copied is known of here, and
+    /// then the toolkit may know of it.
+    pub fn paste(&self, pictures: bool) -> bool {
         let copied = self.copied.lock().unwrap();
         let Some(offer) = copied.as_ref() else {
             return false;
         };
-        let (way, picture) = match way(&ways(offer)) {
-            Some((way, None)) => (way, None),
-            Some((way, Some(name))) if pane.is_some() => (way, pane.map(|pane| (pane, name))),
-            _ => return false,
+        let wanted = way(&ways(offer)).filter(|(_, picture)| pictures || picture.is_none());
+        let Some((way, picture)) = wanted else {
+            return false;
         };
         let Ok(mut coming) = ask(offer, &self.connection, way) else {
             return false;
         };
-        let (read, wake) = (self.read.clone(), self.wake.clone());
+        let (read, window) = (self.read.clone(), self.window.clone());
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             if coming.read_to_end(&mut bytes).is_err() || bytes.is_empty() {
                 return;
             }
             let pasted = match picture {
-                Some((pane, name)) => Pasted::Picture(pane, File::Pasted(name, bytes.into())),
+                Some(name) => Pasted::Picture(File::Pasted(name, bytes.into())),
                 // Lines of text may end as they do on the wire.
                 None => Pasted::Text(String::from_utf8_lossy(&bytes).replace("\r\n", "\n")),
             };
             if read.send(pasted).is_ok() {
-                wake();
+                window.request_repaint();
             }
         });
         true
@@ -337,13 +328,11 @@ impl Offers {
 
     /// Stop listening, which must be done while the window is still there. The
     /// listener is waiting to hear something, and so is told something.
-    pub fn stop(&mut self) {
+    pub fn stop(self) {
         self.over.store(true, Ordering::Relaxed);
         self.connection.display().sync(&self.queue, ());
         let _ = self.connection.flush();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        let _ = self.thread.join();
     }
 }
 

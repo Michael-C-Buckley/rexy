@@ -560,8 +560,8 @@ impl App {
             Deed::Find(pane) => self.find(&pane),
             // The clipboard answers in a moment, to the pane with the keyboard.
             Deed::Paste(pane) => {
-                self.focused = Some(pane.clone());
-                self.paste(ctx, Some((server, pane)));
+                self.focused = Some(pane);
+                self.paste(ctx, true);
             }
             Deed::Close(what, spared, action) => self.close(what, spared, near, server, action),
             // It asks again by the name of its row, wherever that is said: on

@@ -195,10 +195,7 @@ impl App {
             stood: [None, None],
             wanting: Vec::new(),
             closing: Closing::default(),
-            offers: offers::Offers::listen(cc, {
-                let ctx = cc.egui_ctx.clone();
-                move || ctx.request_repaint()
-            }),
+            offers: offers::Offers::listen(cc, cc.egui_ctx.clone()),
             dropped: Vec::new(),
             followed: None,
         }
@@ -214,11 +211,11 @@ impl App {
         self.tell(self.current, action);
     }
 
-    /// Paste what was copied to whatever has the keyboard, or to a `pane` as a
-    /// file if it is a picture. It is read here where this client listens for
-    /// it, and by the toolkit otherwise.
-    fn paste(&self, ctx: &egui::Context, pane: Option<(usize, String)>) {
-        if !self.offers.as_ref().is_some_and(|offers| offers.paste(pane)) {
+    /// Paste what was copied to whatever has the keyboard: text, or where
+    /// that is a pane and `pictures` are wanted, a picture as a file. It is
+    /// read here where this client listens for it, and by the toolkit otherwise.
+    fn paste(&self, ctx: &egui::Context, pictures: bool) {
+        if !self.offers.as_ref().is_some_and(|offers| offers.paste(pictures)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         }
     }
@@ -273,12 +270,13 @@ impl App {
         for host in &home.hosts {
             // A connection is to addresses, under a name. Whatever else has
             // changed of a host, the one it has is kept.
-            let reached = |host: &Host| (host.label.clone(), host.endpoints.clone());
-            let server =
-                match known.iter().position(|server| reached(&server.host) == reached(host)) {
-                    Some(index) => Server { host: host.clone(), ..known.swap_remove(index) },
-                    None => Server::connect(ctx, host.clone(), &self.herald, false),
-                };
+            let same = |known: &Server| {
+                known.host.label == host.label && known.host.endpoints == host.endpoints
+            };
+            let server = match known.iter().position(same) {
+                Some(index) => Server { host: host.clone(), ..known.swap_remove(index) },
+                None => Server::connect(ctx, host.clone(), &self.herald, false),
+            };
             self.servers.push(server);
         }
         // The server on show stays on show, whatever it is called now.
@@ -392,7 +390,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if let Some(offers) = &mut self.offers {
+        if let Some(offers) = self.offers.take() {
             offers.stop();
         }
     }
@@ -411,15 +409,15 @@ impl eframe::App for App {
             self.dropped.extend(files);
         }
         // What was pasted, now that it is read: text as the toolkit tells of
-        // it, and a picture as a file for its pane.
+        // it, and a picture as a file for the pane with the keyboard.
         let pasted = self.offers.iter().flat_map(|offers| offers.pasted.try_iter());
         for pasted in pasted.collect::<Vec<_>>() {
-            match pasted {
-                Pasted::Text(text) => input.events.push(egui::Event::Paste(text)),
-                Pasted::Picture((server, pane), file) if server < self.servers.len() => {
-                    self.tell(server, Action::Upload { pane, files: vec![file] });
+            match (pasted, self.focused.clone()) {
+                (Pasted::Text(text), _) => input.events.push(egui::Event::Paste(text)),
+                (Pasted::Picture(file), Some(pane)) => {
+                    self.send(Action::Upload { pane, files: vec![file] });
                 }
-                Pasted::Picture(..) => {}
+                (Pasted::Picture(_), None) => {}
             }
         }
         self.keyboard.settle(&mut input.events);

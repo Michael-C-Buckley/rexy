@@ -71,7 +71,7 @@ impl App {
                 }
             }
             if pressed(Modifiers::CTRL, Key::V) {
-                self.paste(ctx, None);
+                self.paste(ctx, false);
             }
         }
         // It holds while home is there. Without home the keys are this client's own.
