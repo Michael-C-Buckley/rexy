@@ -35,6 +35,9 @@ pub struct View {
     /// The session on show, and the tab of it on show.
     pub selected_session: Option<String>,
     pub selected_tab: Option<String>,
+    /// A pane looked at from elsewhere, in whatever session and tab it is. Its
+    /// terminal is fed and drawn as those on show are, and is not taken.
+    pub peeked: Option<String>,
 }
 
 impl View {
@@ -65,6 +68,12 @@ impl View {
             let pane = tab.every().find(|held| held.id == pane)?;
             Some((session, tab, pane))
         })
+    }
+
+    /// The same pane, to change.
+    pub fn find_mut(&mut self, pane: &str) -> Option<&mut Pane> {
+        let tabs = self.sessions.iter_mut().flat_map(|session| &mut session.tabs);
+        tabs.flat_map(Tab::every_mut).find(|held| held.id == pane)
     }
 
     /// The panes of the session on show.
@@ -581,6 +590,8 @@ pub enum Action {
     },
     /// Stop watching the session on show. Sent by `Client::leave`.
     Leave,
+    /// Feed the pane looked at from elsewhere, or stop. Sent by `Client::peek`.
+    Peek,
     /// Bring a pane of the session on show out from out of sight, and take the
     /// keyboard to it.
     Reveal {

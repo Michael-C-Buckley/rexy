@@ -28,3 +28,11 @@ fn how_long_ago_is_said_in_a_word() {
     assert_eq!(ago(7_300), "2h");
     assert_eq!(ago(200_000), "2d");
 }
+
+#[test]
+fn what_came_to_want_the_user_is_said_in_a_few_words() {
+    assert_eq!(recap(0, 0), None);
+    assert_eq!(recap(1, 0).unwrap(), "While you were away: 1 pane needs you.");
+    assert_eq!(recap(0, 3).unwrap(), "While you were away: 3 finished.");
+    assert_eq!(recap(2, 1).unwrap(), "While you were away: 2 panes need you and 1 finished.");
+}

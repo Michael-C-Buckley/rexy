@@ -1,7 +1,7 @@
 //! One pane of the tab on show: its header, its terminal, and what the
 //! pointer does there.
 use eframe::egui::{
-    self, Align, Align2, CornerRadius, DragAndDrop, FontId, Layout, Rect, Sense, Stroke,
+    self, Align, Align2, Color32, CornerRadius, DragAndDrop, FontId, Layout, Rect, Sense, Stroke,
     StrokeKind, UiBuilder,
 };
 use serde_json::Value;
@@ -26,11 +26,53 @@ use crate::{
     upload::File,
 };
 
-const PANE_HEADER: f32 = 28.0;
+pub(super) const PANE_HEADER: f32 = 28.0;
 /// How far toward its background a pane goes that is not the one typed in, and
 /// one that shows a last screen.
 const AWAY: f32 = 0.2;
 const LAST: f32 = 0.5;
+
+/// What heads a pane, in the room its buttons leave: its program's icon with
+/// the dot of what it has to say, a `title` in some `ink`, and at the far end
+/// a `word` on what it says, in the colour of that.
+pub(super) fn heading(
+    ui: &egui::Ui,
+    mut room: Rect,
+    pane: &Pane,
+    title: &str,
+    ink: Color32,
+    word: &str,
+) {
+    let said = dot(ui.ctx(), pane.activity).map(|(_, color)| color);
+    if !word.is_empty() {
+        let (edge, font) = (room.right_center(), FontId::proportional(SMALL));
+        let color = said.unwrap_or(DIM);
+        let word = ui.painter().text(edge, Align2::RIGHT_CENTER, word, font, color);
+        room.max.x = word.left() - 8.0;
+    }
+    // A title too long for the room left ends in an ellipsis.
+    let lead = room.left_center() + egui::vec2(8.0, 0.0);
+    badge(ui.painter(), pane.program, &[], lead, TILE, DIM, said);
+    let font = FontId::proportional(SMALL);
+    let title = fitted(ui, title, font, ink, room.width() - 16.0 - ICON);
+    let corner = lead + egui::vec2(ICON, -title.size().y / 2.0);
+    ui.painter().galley(corner, title, ink);
+}
+
+/// Give a terminal the keyboard, with the keys that would otherwise move it
+/// elsewhere.
+pub(super) fn hold(ui: &egui::Ui, terminal: &egui::Response) {
+    if !terminal.has_focus() {
+        terminal.request_focus();
+    }
+    let keys = egui::EventFilter {
+        tab: true,
+        horizontal_arrows: true,
+        vertical_arrows: true,
+        escape: true,
+    };
+    ui.memory_mut(|memory| memory.set_focus_lock_filter(terminal.id, keys));
+}
 
 impl App {
     /// A pane of the tab on show: a card on the window's ground, `rect`, in its
@@ -57,7 +99,8 @@ impl App {
         let live = view.connected && (pane.frame.is_none() || pane.status.is_empty());
         let active = self.focused.as_deref() == Some(&pane.id);
         // The focused pane holds the keyboard whenever nothing else is taking it.
-        let keyboard = active && !self.busy(ui.ctx());
+        let typed = self.typing() == Some((self.current, &pane.id));
+        let keyboard = typed && !self.busy(ui.ctx());
         let mut actions = Vec::new();
         let (what, spared) = (doomed(&pane.id), pane.idle);
         let ask = self.closing.ask(what, spared);
@@ -125,22 +168,8 @@ impl App {
                 }
             }
             header.max.x -= 2.0 * SMALL_BUTTON + 4.0;
-            // What it has to say sits ahead of them, as on its tab.
-            let said = dot(ui.ctx(), pane.activity).map(|(_, color)| color);
-            if let Some((word, color)) = pane.word().zip(said) {
-                let (edge, font) = (header.right_center(), FontId::proportional(SMALL));
-                let word = ui.painter().text(edge, Align2::RIGHT_CENTER, word, font, color);
-                header.max.x = word.left() - 8.0;
-            }
-            // Its program's icon leads, with the dot of what it has to say. A
-            // title too long for the room left ends in an ellipsis.
             let color = if active { TEXT } else { DIM };
-            let lead = header.left_center() + egui::vec2(8.0, 0.0);
-            badge(ui.painter(), pane.program, &[], lead, TILE, DIM, said);
-            let font = FontId::proportional(SMALL);
-            let title = fitted(ui, &pane.title, font, color, header.width() - 16.0 - ICON);
-            let corner = lead + egui::vec2(ICON, -title.size().y / 2.0);
-            ui.painter().galley(corner, title, color);
+            heading(ui, header, pane, &pane.title, color, &pane.word().unwrap_or_default());
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
         let within = room(rect, tab.split());
@@ -164,17 +193,7 @@ impl App {
         let id = ui.scope_id().with(("terminal", &pane.id));
         let response = ui.interact(terminal_rect, id, Sense::click_and_drag());
         if keyboard {
-            if !response.has_focus() {
-                response.request_focus();
-            }
-            // Including the keys that would otherwise move it elsewhere.
-            let keys = egui::EventFilter {
-                tab: true,
-                horizontal_arrows: true,
-                vertical_arrows: true,
-                escape: true,
-            };
-            ui.memory_mut(|m| m.set_focus_lock_filter(id, keys));
+            hold(ui, &response);
         }
         // With Ctrl held, a link under the pointer is there to be followed, even in
         // a program that takes the mouse for itself.
@@ -387,16 +406,17 @@ impl App {
             self.send(action);
         }
         if let Some(to) = scroll {
-            self.ask(&pane.id, Request::Scroll(to));
+            self.ask(self.current, &pane.id, Request::Scroll(to));
         }
         if close {
             self.todo.push(("pane.close", Some(pane.id.clone())));
         }
     }
 
-    /// Ask something of the worker of a pane on show, which no server is told of.
-    pub(super) fn ask(&self, pane: &str, request: Request) {
-        if let Ok(terminal) = self.servers[self.current].client.terminal(pane) {
+    /// Ask something of the worker of a pane of a server's, which no server is
+    /// told of.
+    pub(super) fn ask(&self, server: usize, pane: &str, request: Request) {
+        if let Ok(terminal) = self.servers[server].client.terminal(pane) {
             terminal.ask(request);
         }
     }
@@ -422,7 +442,7 @@ impl App {
 /// The room a card gives its terminal: what its edges leave, under its header
 /// where it has one. Under a header the terminal starts at once; with none, the
 /// card keeps it from its own top edge.
-fn room(card: Rect, header: bool) -> Rect {
+pub(super) fn room(card: Rect, header: bool) -> Rect {
     let mut room = card.shrink2(egui::vec2(12.0, 8.0));
     room.min.y = card.top() + if header { PANE_HEADER + 2.0 } else { 8.0 };
     room

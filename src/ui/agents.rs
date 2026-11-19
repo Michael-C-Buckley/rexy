@@ -8,6 +8,7 @@ use eframe::egui::{self, Vec2};
 use super::{
     App,
     heard::{dot, worn},
+    peek,
     style::{Icon, Item, ROW, SMALL, bold, caption, item, toggle},
 };
 use crate::model::{self, Activity, Pane, Session, Tab, View};
@@ -34,6 +35,32 @@ pub fn ago(since: Duration) -> String {
         seconds @ 60..3_600 => format!("{}m", seconds / 60),
         seconds @ 3_600..86_400 => format!("{}h", seconds / 3_600),
         seconds => format!("{}d", seconds / 86_400),
+    }
+}
+
+/// How long the window must have been out of use for what happened meanwhile
+/// to be worth saying on the way back.
+const AWAY: Duration = Duration::from_secs(30);
+
+/// What came to want the user while they were away, in a few words: so many
+/// panes `needing` them, and so many `done`. Nothing, if none did.
+fn recap(needing: usize, done: usize) -> Option<String> {
+    let needing = match needing {
+        0 => None,
+        1 => Some("1 pane needs you".to_owned()),
+        many => Some(format!("{many} panes need you")),
+    };
+    let done = (done > 0).then(|| format!("{done} finished"));
+    let both: Vec<_> = needing.into_iter().chain(done).collect();
+    (!both.is_empty()).then(|| format!("While you were away: {}.", both.join(" and ")))
+}
+
+/// What a pane goes by where it is one of all there are: its session, and its
+/// tab where the session has others to tell it from.
+pub fn place(session: &Session, tab: &Tab) -> String {
+    match session.tabs.len() {
+        1 => session.name.clone(),
+        _ => format!("{} › {}", session.name, tab.name()),
     }
 }
 
@@ -68,6 +95,28 @@ impl App {
         let [needing, done, ..] = self.listed(views);
         let wanting = needing.into_iter().chain(done);
         wanting.map(|(_, server, _, _, pane)| (server, pane.id.clone())).collect()
+    }
+
+    /// As the window comes back into use, say what came to want the user while
+    /// it was out of it, and how to look at each. What is done and on show
+    /// has been seen by now, and is not said.
+    pub(super) fn returned(&mut self, ctx: &egui::Context, views: &[View]) {
+        if !ctx.input(|i| i.focused) {
+            self.left.get_or_insert_with(Instant::now);
+            return;
+        }
+        let Some(left) = self.left.take().filter(|left| left.elapsed() >= AWAY) else {
+            return;
+        };
+        let [needing, done, ..] = self.listed(views);
+        let new = |panes: &[Listed]| panes.iter().filter(|pane| pane.0 > Some(left)).count();
+        if let Some(recap) = recap(new(&needing), new(&done)) {
+            let how = match self.keys.map.shortcut(peek::NEXT).as_str() {
+                "" => String::new(),
+                keys => format!(" {keys} looks at each."),
+            };
+            self.toast.note(recap + &how);
+        }
     }
 
     /// The button that turns the sidebar to that list and back. It wears the
@@ -110,7 +159,7 @@ impl App {
         if listed.iter().all(Vec::is_empty) {
             return caption(ui, egui::RichText::new("No activity."));
         }
-        let mut picked = None;
+        let shown = views[self.current].current_tab();
         for (kind, panes) in KINDS.iter().zip(listed) {
             if panes.is_empty() {
                 continue;
@@ -119,12 +168,8 @@ impl App {
             let head = format!("{kind} · {}", panes.len());
             caption(ui, egui::RichText::new(head).font(bold(SMALL)));
             for (_, server, session, tab, pane) in panes {
-                // It goes by its session, and by its tab where the session has
-                // others to tell it from.
-                let (name, last) = match session.tabs.len() {
-                    1 => (session.name.clone(), session.name.as_str()),
-                    _ => (format!("{} › {}", session.name, tab.name()), tab.name()),
-                };
+                let name = place(session, tab);
+                let last = if session.tabs.len() == 1 { &session.name } else { tab.name() };
                 // With nothing said of it, its title, unless it goes by that
                 // already. It is under the pointer otherwise.
                 let (said, word) = self.told(ui.ctx(), pane);
@@ -133,27 +178,29 @@ impl App {
                     false => (said.as_str(), pane.title.as_str()),
                 };
                 let under = if under == last { "" } else { under };
-                let shown = server == self.current && self.focused.as_ref() == Some(&pane.id);
+                let here = shown.is_some_and(|shown| shown.id == tab.id);
                 let host = &self.servers[server].host.label;
                 let row = Item {
                     id: Some(egui::Id::unique(("at work", host, &pane.id))),
                     icon: Some(pane.program),
                     label: &name,
                     under,
-                    selected: shown,
+                    selected: here && self.focused.as_ref() == Some(&pane.id),
                     mark: dot(ui.ctx(), pane.activity),
                     word: word.as_deref(),
+                    buttons: if here { &[] } else { &[(Icon::Peek, "Peek")] },
                     tip,
                     ..Default::default()
                 };
                 let size = Vec2::new(ui.available_width(), ROW);
-                if item(ui, size, row).0.clicked() {
-                    picked = Some((server, pane.id.clone()));
+                // A row goes to its pane. Its button looks at the pane from
+                // here, where the pane is not on show already.
+                match item(ui, size, row) {
+                    (_, Some(_)) => self.peek(server, &pane.id),
+                    (row, None) if row.clicked() => _ = self.reveal(server, &pane.id),
+                    _ => {}
                 }
             }
-        }
-        if let Some((server, pane)) = picked {
-            self.reveal(server, &pane);
         }
     }
 }

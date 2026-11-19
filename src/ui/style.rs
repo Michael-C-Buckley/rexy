@@ -286,6 +286,8 @@ pub enum Icon {
     Search,
     /// A list of things, each with its mark: what is at work.
     Agents,
+    /// An eye, to look at something from where one is.
+    Peek,
 }
 
 impl Icon {
@@ -360,6 +362,14 @@ impl Icon {
                     painter.circle_filled(center + egui::vec2(-5.5, row), 1.5, color);
                     line([-1.5, row], [7.0, row]);
                 }
+            }
+            Icon::Peek => {
+                // Two lids, each bowed from one corner of the eye to the other.
+                for bowed in [-4.5, 4.5] {
+                    let lid = |at: f32| center + egui::vec2(at, bowed * (1.0 - (at / 7.0).powi(2)));
+                    painter.line((-7..=7).map(|at| lid(at as f32)).collect(), stroke);
+                }
+                painter.circle_filled(center, 2.0, color);
             }
             Icon::Search => {
                 painter.circle_stroke(center + egui::vec2(-1.5, -1.5), 4.5, stroke);

@@ -33,6 +33,7 @@ fn standing<'a>(view: &'a View, keys: &'a Keys) -> Standing<'a> {
         sidebar: false,
         keys,
         wanting: &[],
+        peeked: None,
         back: None,
         removable: false,
     }
@@ -94,6 +95,35 @@ fn the_table_names_each_command_once_and_spells_its_keys_as_rex_does() {
         json!({"keys": ["ctrl+shift+t"], "action": "client.tab.new"})
     );
     assert!(input::press("p", "alt+9").is_some());
+}
+
+#[test]
+fn the_next_pane_that_wants_the_user_is_looked_at_from_here_unless_it_is_here() {
+    let (view, keys) = (view(), Keys::default());
+    // The first is in the tab on show. The others are elsewhere.
+    let wanting = [(0, "c".to_owned()), (2, "x".to_owned()), (1, "y".to_owned())];
+    let look = |focused, peeked, wanting| {
+        let standing = Standing { focused, peeked, wanting, ..standing(&view, &keys) };
+        match standing.plan(peek::NEXT, &Value::Null, None) {
+            Ok(Deed::Reveal(_, pane)) => format!("go to {pane}"),
+            Ok(Deed::Peek(server, pane)) => format!("look at {pane} on {server}"),
+            _ => "nothing".into(),
+        }
+    };
+    // With none looked at, the one after the pane with the keyboard: which is
+    // gone to where it is on show.
+    assert_eq!(look(Some("b"), None, &wanting), "go to c");
+    assert_eq!(look(Some("c"), None, &wanting), "look at x on 2");
+    // From one looked at, the one after it, round and round.
+    assert_eq!(look(Some("c"), Some("x"), &wanting), "look at y on 1");
+    assert_eq!(look(Some("c"), Some("y"), &wanting), "go to c");
+    assert_eq!(look(Some("b"), Some("y"), &wanting[1..]), "look at x on 2");
+    // One that wants nothing more gives way to the first that does.
+    assert_eq!(look(Some("b"), Some("gone"), &wanting[1..]), "look at x on 2");
+    // With no other there is nothing to do.
+    assert_eq!(look(Some("b"), Some("x"), &wanting[1..2]), "nothing");
+    assert_eq!(look(Some("c"), None, &wanting[..1]), "nothing");
+    assert_eq!(look(None, None, &[]), "nothing");
 }
 
 #[test]

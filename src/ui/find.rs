@@ -31,7 +31,7 @@ impl App {
     /// Stop looking. The match last shown stays selected.
     pub(super) fn find_close(&mut self) {
         if let Some(find) = self.find.take() {
-            self.ask(&find.pane, Request::Find(String::new()));
+            self.ask(self.current, &find.pane, Request::Find(String::new()));
         }
     }
 
@@ -79,7 +79,7 @@ impl App {
             None
         };
         if let Some(request) = request {
-            self.ask(&pane.id, request);
+            self.ask(self.current, &pane.id, request);
         }
     }
 }

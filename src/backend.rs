@@ -203,7 +203,7 @@ impl Client {
             rang: std::mem::take(&mut told.rang),
             ..told.clone()
         };
-        for pane in view.panes_mut() {
+        let screen = |pane: &mut Pane| {
             if let Some(terminal) = state.terminals.get(&pane.id) {
                 pane.frame = terminal.latest();
                 pane.status = match terminal.status() {
@@ -215,6 +215,11 @@ impl Client {
                 // Its last screen, with what has been selected on it since.
                 pane.frame = terminal.latest();
             }
+        };
+        view.panes_mut().for_each(screen);
+        // One looked at from elsewhere has its screen wherever it is.
+        if let Some(pane) = view.peeked.clone().and_then(|pane| view.find_mut(&pane)) {
+            screen(pane);
         }
         view
     }
@@ -275,6 +280,15 @@ impl Client {
         // Even with nothing on show: it may be in a session still, to be left.
         if state.view.connected {
             let _ = self.actions.try_send(Action::Leave);
+        }
+    }
+
+    /// Look at a pane from wherever the window is, or with none look no more.
+    pub fn peek(&self, pane: Option<&str>) {
+        let mut state = self.shared.lock();
+        state.view.peeked = pane.map(str::to_owned);
+        if state.view.connected {
+            let _ = self.actions.try_send(Action::Peek);
         }
     }
 
@@ -598,7 +612,7 @@ struct Connection<'a> {
     /// The tabs kept fed, the last shown first, each by its session and itself.
     /// Going back to one finds it as it is, with nothing to fetch.
     warm: Vec<(String, String)>,
-    /// One stream per terminal of those tabs, and whether its pane is on show.
+    /// One stream per terminal fed, and whether what it shows is drawn.
     streams: HashMap<String, (JoinHandle<()>, Arc<AtomicBool>)>,
     /// The session last on show, whose panes are this client's to size.
     held: Option<String>,
@@ -1092,6 +1106,11 @@ impl<'a> Connection<'a> {
                             if s.view.selected_session.as_ref() == Some(&session) {
                                 s.view.selected_session = None;
                             }
+                            // Nor is a pane of it looked at from elsewhere.
+                            let peeked = s.view.peeked.as_ref().and_then(|pane| s.view.find(pane));
+                            if peeked.is_some_and(|(held, ..)| held.id == session) {
+                                s.view.peeked = None;
+                            }
                             s.view.error = Some(error.to_string());
                         });
                     }
@@ -1148,12 +1167,18 @@ impl<'a> Connection<'a> {
         if self.joining.is_some() {
             return;
         }
-        let shown = self.shared.lock().view.selected_session.clone();
+        // The session on show, and then that of a pane looked at from elsewhere.
+        let wanted: Vec<String> = {
+            let view = &self.shared.lock().view;
+            let peeked = view.peeked.as_ref().and_then(|pane| view.find(pane));
+            let peeked = peeked.map(|(session, ..)| &session.id);
+            view.selected_session.iter().chain(peeked).cloned().collect()
+        };
         let attached = &mut self.link.attached;
         let kept = |session: &String| {
-            Some(session) == shown.as_ref() || self.warm.iter().any(|(held, _)| held == session)
+            wanted.contains(session) || self.warm.iter().any(|(held, _)| held == session)
         };
-        let (reply, method, session) = match shown.as_ref().filter(|new| !attached.contains(new)) {
+        let (reply, method, session) = match wanted.iter().find(|new| !attached.contains(new)) {
             Some(new) => {
                 attached.push(new.clone());
                 (Reply::Joined(new.clone()), "session.attach", new.clone())
@@ -1169,7 +1194,8 @@ impl<'a> Connection<'a> {
 
     /// Stream the terminals of the tab on show, once its session is joined, and
     /// go on streaming those of the tabs shown before it, up to `WARM` in all.
-    /// One that comes on show while another client's is taken from it.
+    /// One that comes on show while another client's is taken from it. A pane
+    /// looked at from elsewhere is streamed and drawn too, and is not taken.
     async fn reconcile(&mut self) {
         let (selected, shown, kept) = {
             let mut state = self.shared.lock();
@@ -1190,8 +1216,8 @@ impl<'a> Connection<'a> {
             };
             self.warm.retain(|(session, tab)| open(session, tab));
             self.warm.truncate(WARM);
-            // Each terminal of theirs, with its session, whether it is on show,
-            // and whether it is this client's.
+            // Each terminal of theirs, with its session, whether it is drawn,
+            // whether it is on show, and whether it is this client's.
             let mut kept = HashMap::new();
             for (session, tab) in view.every_tab() {
                 let held = (session.id.clone(), tab.id.clone());
@@ -1199,11 +1225,20 @@ impl<'a> Connection<'a> {
                     let on_show = shown.as_ref() == Some(&held);
                     let terminals =
                         tab.panes.iter().filter(|pane| self.link.blocks.contains_key(&pane.id));
-                    kept.extend(
-                        terminals
-                            .map(|pane| (pane.id.clone(), (held.0.clone(), on_show, pane.owner))),
-                    );
+                    kept.extend(terminals.map(|pane| {
+                        (pane.id.clone(), (held.0.clone(), on_show, on_show, pane.owner))
+                    }));
                 }
+            }
+            // The pane looked at from elsewhere is drawn wherever it is, and is
+            // no more on show for that.
+            let peeked = view.peeked.as_ref().and_then(|pane| view.find(pane));
+            if let Some((session, _, pane)) = peeked
+                && self.joined(&session.id)
+                && self.link.blocks.contains_key(&pane.id)
+            {
+                let apart = (session.id.clone(), false, false, pane.owner);
+                kept.entry(pane.id.clone()).or_insert(apart).1 = true;
             }
             let selected = view.selected_session.clone();
             state.terminals.retain(|id, _| kept.contains_key(id));
@@ -1236,9 +1271,9 @@ impl<'a> Connection<'a> {
         });
         // Those that have just come on show and are another client's.
         let mut others = Vec::new();
-        for (pane, (session, on_show, owner)) in kept {
+        for (pane, (session, drawn, on_show, owner)) in kept {
             match self.streams.get(&pane) {
-                Some((_, shown)) => shown.store(on_show, Ordering::Relaxed),
+                Some((_, shown)) => shown.store(drawn, Ordering::Relaxed),
                 None => {
                     // Its colours are this client's while the terminal is: the
                     // server takes them up whenever this client comes to own it.
@@ -1247,7 +1282,7 @@ impl<'a> Connection<'a> {
                             json!({"session_id": session, "block_id": pane, "args": theme});
                         let _ = self.rpc.enqueue(THEME, request).await;
                     }
-                    let shown = Arc::new(AtomicBool::new(on_show));
+                    let shown = Arc::new(AtomicBool::new(drawn));
                     let stream = stream_pane(
                         self.target.clone(),
                         self.rpc.clone(),
@@ -1398,7 +1433,7 @@ impl<'a> Connection<'a> {
         // A change to a pane names the pane, and its session is found from that.
         let (session, method, mut payload, made) = match action {
             // What is on show is as asked already, and `show` joins or leaves.
-            Action::SelectSession(_) | Action::Leave => {
+            Action::SelectSession(_) | Action::Leave | Action::Peek => {
                 self.show().await;
                 return Ok(());
             }

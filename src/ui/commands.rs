@@ -10,6 +10,7 @@ use super::{
     hosts, input,
     keymap::Keys,
     palette::Listing,
+    peek,
     rows::{Choice, Target},
     style::{Icon, icon_button},
 };
@@ -118,6 +119,7 @@ pub const COMMANDS: &[Command] = &[
     ("client.sidebar.toggle", "Toggle Sidebar", ONCE),
     ("client.sidebar.activity.toggle", "Show Activity", ONCE),
     ("client.activity.next", "Go to Next Pane That Needs You", ONCE),
+    (peek::NEXT, "Peek at Next Pane That Needs You", ONCE),
     ("client.palette.toggle", "Command Palette…", ONCE),
     // Rex has no name for this either. Its own app keeps it among its settings.
     (REMOTE, "Toggle Remote Control", ONCE),
@@ -151,6 +153,7 @@ pub(super) const KEYS: &[(&str, &str)] = &[
     ("ctrl+shift+pagedown", "client.tab.move.forward"),
     ("ctrl+shift+l", "client.tab.back"),
     ("ctrl+shift+a", "client.activity.next"),
+    ("ctrl+shift+space", peek::NEXT),
     ("ctrl+shift+d", "pane.split.right"),
     ("ctrl+alt+d", "pane.split.down"),
     ("ctrl+alt+left", "pane.focus.left"),
@@ -258,6 +261,8 @@ pub(super) enum Deed {
     Show(usize, Action),
     /// Showing a pane of some server's, whatever tab it is in.
     Reveal(usize, String),
+    /// Looking at a pane of some server's from the tab on show.
+    Peek(usize, String),
     /// Taking the keyboard to a pane.
     Focus(String),
     Font(f32),
@@ -300,6 +305,8 @@ pub(super) struct Standing<'a> {
     pub keys: &'a Keys,
     /// The panes that want the user, on every server, each with its server.
     pub wanting: &'a [(usize, String)],
+    /// The pane looked at from elsewhere, if one is.
+    pub peeked: Option<&'a str>,
     /// The tab shown before the one on show, with its session and that one's server.
     pub back: Option<&'a ((usize, String), String)>,
     /// Some host that home names is its list's own to remove.
@@ -328,6 +335,14 @@ impl Standing<'_> {
             Ok(_) => true,
             Err(code) => code == "refused" && scroll(name).is_none(),
         }
+    }
+
+    /// The pane that wants the user after one of them, round and round, or
+    /// the first of them: but not that pane itself.
+    fn after(&self, pane: Option<&str>) -> Option<&(usize, String)> {
+        let here = |(_, held): &(usize, String)| Some(held.as_str()) == pane;
+        let after = self.wanting.iter().position(here).map_or(0, |at| at + 1);
+        self.wanting.iter().cycle().nth(after).filter(|next| !here(next))
     }
 
     fn deed(&self, name: &str, args: &Value, pane: Option<&str>) -> Option<Deed> {
@@ -359,14 +374,22 @@ impl Standing<'_> {
         Some(match name {
             "client.sidebar.toggle" => Deed::Sidebar,
             "client.sidebar.activity.toggle" => Deed::Activity,
-            // The one after the pane with the keyboard, round and round, or
-            // the first of them: but not that pane itself.
             "client.activity.next" => {
-                let here = |(_, pane): &(usize, String)| Some(pane.as_str()) == self.focused;
-                let after = self.wanting.iter().position(here).map_or(0, |at| at + 1);
-                let next = self.wanting.iter().cycle().nth(after).filter(|next| !here(next))?;
-                Deed::Reveal(next.0, next.1.clone())
+                let (server, pane) = self.after(self.focused)?.clone();
+                Deed::Reveal(server, pane)
             }
+            // The same, from the pane looked at where one is, and looked at
+            // from here: but one in the tab on show is gone to. With no other
+            // there is nothing to do, and a look is over.
+            peek::NEXT => {
+                let (server, pane) = self.after(self.peeked.or(self.focused))?.clone();
+                match tab.is_some_and(|tab| tab.every().any(|held| held.id == pane)) {
+                    true => Deed::Reveal(server, pane),
+                    false => Deed::Peek(server, pane),
+                }
+            }
+            // What is pasted is typed, and a pane looked at has the keyboard.
+            "pane.paste" if let Some(pane) = self.peeked => Deed::Paste(pane.to_owned()),
             "client.tab.back" => {
                 let ((server, session), tab) = self.back?.clone();
                 Deed::Show(server, Action::SelectTab { session, tab })
@@ -502,6 +525,7 @@ impl App {
             sidebar: self.remembered.kept.sidebar,
             keys: &self.keys,
             wanting: &self.wanting,
+            peeked: self.peek.as_ref().map(|peek| peek.pane.as_str()),
             back: self.stood[1].as_ref(),
             removable: self.servers[1..].iter().any(|server| server.host.source.is_empty()),
         }
@@ -533,6 +557,7 @@ impl App {
             Deed::Server(action) => self.open(server, action),
             Deed::Show(server, action) => self.open(server, action),
             Deed::Reveal(server, pane) => _ = self.reveal(server, &pane),
+            Deed::Peek(server, pane) => self.peek(server, &pane),
             Deed::Focus(pane) => {
                 self.focused = Some(pane.clone());
                 self.send(Action::FocusPane { pane });
@@ -556,11 +581,13 @@ impl App {
                 };
                 self.toast.note(said.into());
             }
-            Deed::Terminal(pane, request) => self.ask(&pane, request),
+            Deed::Terminal(pane, request) => self.ask(server, &pane, request),
             Deed::Find(pane) => self.find(&pane),
             // The clipboard answers in a moment, to the pane with the keyboard.
             Deed::Paste(pane) => {
-                self.focused = Some(pane);
+                if self.peek.is_none() {
+                    self.focused = Some(pane);
+                }
                 self.paste(ctx, true);
             }
             Deed::Close(what, spared, action) => self.close(what, spared, near, server, action),

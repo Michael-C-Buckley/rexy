@@ -186,10 +186,17 @@ impl App {
         args: &Value,
         origin: &'static str,
     ) {
-        match self.standing(view).plan(name, args, None) {
+        let plan = self.standing(view).plan(name, args, None);
+        // A look at another pane is over when anything else is asked for, done
+        // or not: unless to look at the next, or to paste, which is typing.
+        let looking = matches!(plan, Ok(commands::Deed::Peek(..) | commands::Deed::Paste(_)));
+        match plan {
             Ok(deed) => self.act(ctx, self.current, deed, false),
             Err("not_supported") => self.perform(name, args, origin, self.focused.clone()),
             Err(_) => {}
+        }
+        if !looking {
+            self.unpeek();
         }
     }
 
@@ -241,8 +248,9 @@ impl App {
         }
     }
 
-    /// Send this frame's keyboard events to the focused pane.
-    pub(super) fn terminal_keys(&mut self, ctx: &egui::Context, pane: &Pane) {
+    /// Send this frame's keyboard events to the pane of a server's that has
+    /// the keyboard.
+    pub(super) fn terminal_keys(&mut self, ctx: &egui::Context, server: usize, pane: &Pane) {
         let selected = pane.frame.as_ref().is_some_and(|f| !f.selected.is_empty());
         // Escape leaves a selection instead of reaching the program.
         let left = selected && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
@@ -250,10 +258,10 @@ impl App {
         // Typing lets go of one too. The pane's worker is not woken for nothing:
         // this is asked at every key typed.
         if selected && (left || actions.iter().any(input::clears_selection)) {
-            self.ask(&pane.id, Request::Deselect);
+            self.ask(server, &pane.id, Request::Deselect);
         }
         for action in actions {
-            self.send(action);
+            self.tell(server, action);
         }
     }
 }

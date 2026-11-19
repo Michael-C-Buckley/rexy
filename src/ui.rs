@@ -17,6 +17,7 @@ mod motion;
 mod offers;
 mod palette;
 mod pane;
+mod peek;
 mod pointer;
 mod raise;
 mod remembered;
@@ -151,6 +152,10 @@ pub struct App {
     /// The panes that want the user, on every server, each with its server: in
     /// the order the list of what is at work has them.
     wanting: Vec<(usize, String)>,
+    /// A pane looked at over the tab on show, which has the keyboard meanwhile.
+    peek: Option<peek::Peek>,
+    /// When the window went out of use, while it is.
+    left: Option<Instant>,
     closing: Closing,
     /// The listening for what the window is offered, where that is this
     /// client's to do, and the files dropped on it since it last drew.
@@ -205,6 +210,8 @@ impl App {
             visited: [None, None],
             stood: [None, None],
             wanting: Vec::new(),
+            peek: None,
+            left: None,
             closing: Closing::default(),
             offers: offers::Offers::listen(cc, cc.egui_ctx.clone()),
             dropped: Vec::new(),
@@ -240,7 +247,19 @@ impl App {
         self.open(server, Action::SelectTab { session, tab });
         let pane = pane.to_owned();
         self.tell(server, Action::Reveal { pane });
+        // Gone to a pane, a look at one is over: and where that is the one,
+        // its tab is on show by now, and its terminal goes on as it is.
+        self.unpeek();
         true
+    }
+
+    /// The pane that what is typed goes to, with its server: the one looked
+    /// at from elsewhere, or else the one with the keyboard in the tab on show.
+    fn typing(&self) -> Option<(usize, &str)> {
+        match &self.peek {
+            Some(peek) => Some((peek.server, &peek.pane)),
+            None => Some((self.current, self.focused.as_deref()?)),
+        }
     }
 
     /// Show a session or a tab, on whichever server it lives. The window turns
@@ -276,6 +295,8 @@ impl App {
         if !home.connected || listed.eq(&home.hosts) {
             return;
         }
+        // A pane looked at goes by its server's place among them, which may change.
+        self.unpeek();
         let current = self.servers[self.current].host.id.clone();
         let mut known = self.servers.split_off(1);
         for host in &home.hosts {
@@ -423,10 +444,11 @@ impl eframe::App for App {
         // it, and a picture as a file for the pane with the keyboard.
         let pasted = self.offers.iter().flat_map(|offers| offers.pasted.try_iter());
         for pasted in pasted.collect::<Vec<_>>() {
-            match (pasted, self.focused.clone()) {
+            let typing = self.typing().map(|(server, pane)| (server, pane.to_owned()));
+            match (pasted, typing) {
                 (Pasted::Text(text), _) => input.events.push(egui::Event::Paste(text)),
-                (Pasted::Picture(file), Some(pane)) => {
-                    self.send(Action::Upload { pane, files: vec![file] });
+                (Pasted::Picture(file), Some((server, pane))) => {
+                    self.tell(server, Action::Upload { pane, files: vec![file] });
                 }
                 (Pasted::Picture(_), None) => {}
             }
@@ -453,6 +475,7 @@ impl eframe::App for App {
         }
         self.hear(&ctx, &mut views);
         self.wanting = self.wanted(&views);
+        self.returned(&ctx, &views);
         // All of a pane, which the user asked for, is theirs wherever they are now.
         for mut output in views.iter_mut().filter_map(|view| view.output.take()) {
             output.truncate(output.trim_end().len());
@@ -566,6 +589,7 @@ impl eframe::App for App {
         frame::edges(root_ui);
         self.answer(&ctx, &views);
         self.questions(&ctx, &views);
+        self.peeking(&ctx, &views, shown.inner);
         self.palette(&ctx, &views);
         self.hints(&ctx, shown.inner);
         // Under what a lost connection says there, where it says it.
@@ -576,12 +600,12 @@ impl eframe::App for App {
         if let Some(left) = self.closing.lapse(Instant::now()) {
             ctx.request_repaint_after(left);
         }
-        let typed = self.focused.as_deref().and_then(|id| view.pane(id));
-        if view.connected
-            && !busy
-            && let Some(pane) = typed
-        {
-            self.terminal_keys(&ctx, pane);
+        let typed = self.typing().and_then(|(server, pane)| {
+            let view = views.get(server).filter(|view| view.connected)?;
+            Some((server, view.find(pane)?.2))
+        });
+        if !busy && let Some((server, pane)) = typed {
+            self.terminal_keys(&ctx, server, pane);
         }
         self.panes.retain(|id, _| view.pane(id).is_some());
         // A connection that returns is told every size again.

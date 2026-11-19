@@ -34,6 +34,8 @@ impl App {
         // Something was said for the desktop, which is told what need not be passed on.
         let news = self.herald.news();
         let mut open = 0;
+        // A pane looked at from elsewhere is seen as one on show is.
+        let peeked = self.peek.as_ref().filter(|_| watching).map(|peek| &peek.pane);
         for (server, view) in views.iter_mut().enumerate() {
             let shown = view.current_tab().map(|tab| tab.id.clone());
             let shown = shown.filter(|_| watching && server == self.current);
@@ -45,6 +47,7 @@ impl App {
                 let panes = tab.panes.iter_mut().map(|pane| (pane, shown));
                 let hidden = tab.hidden.iter_mut().map(|pane| (pane, false));
                 for (pane, seen) in panes.chain(hidden) {
+                    let seen = seen || peeked == Some(&pane.id);
                     open += 1;
                     let heard = match self.heard.get_mut(&pane.id) {
                         Some(heard) => heard,
@@ -55,7 +58,10 @@ impl App {
                         heard.seen = false;
                         heard.since = Some(now);
                     }
-                    heard.rang |= view.rang.contains(&pane.id);
+                    // A bell is said when first it rings.
+                    if view.rang.contains(&pane.id) && !std::mem::replace(&mut heard.rang, true) {
+                        heard.since = Some(now);
+                    }
                     if seen {
                         heard.seen = true;
                         heard.rang = false;

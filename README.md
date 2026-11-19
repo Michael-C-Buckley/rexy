@@ -11,7 +11,8 @@ Rexy is unofficial and not affiliated with Superlogical. It is early software fo
 ## Features
 
 - **Every server in one sidebar.** Your home server and every host it knows of, over a Unix socket, SSH or WebSocket.
-- **Agent status at a glance.** Each tab shows its programs, a status dot and a line such as *Working* or *Needs approval*. An activity view gathers every pane that needs you.
+- **Agent status at a glance.** Each tab shows its programs, a status dot and a line such as *Working* or *Needs approval*. An activity view gathers every pane that needs you, on every server, with how long it has waited.
+- **Answer an agent without leaving your tab.** Peek at a pane that needs you: its terminal opens over the tab you are in and takes the keyboard, so you answer and carry on. The same key takes you to the next one, and closes the peek after the last. Coming back to the window, you are told what came to need you while you were away.
 - **Notifications that take you there.** Click one to go to the pane that sent it.
 - **Splits.** Split, resize and zoom panes, and move them between tabs.
 - **A real terminal.** libghostty does the emulation: Kitty graphics, hyperlinks, search through the whole history, and your Ghostty theme and font.
@@ -50,6 +51,7 @@ These are the defaults, and `rex.bind` in your home server's `init.lua` changes 
 |---|---|
 | **Ctrl Shift K** | Find a session, or a tab on any server |
 | **Ctrl Shift A** | Go to the next pane that needs you |
+| **Ctrl Shift Space** | Peek at the next pane that needs you |
 | **Ctrl Shift P** | Command palette |
 | **Ctrl Shift B** | Sidebar, or tabs along the top |
 | **Ctrl Shift N**, **Ctrl Shift T** | New session, new tab |
