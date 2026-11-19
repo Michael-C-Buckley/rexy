@@ -6,6 +6,7 @@ mod boxes;
 mod close;
 pub mod commands;
 mod find;
+mod fonts;
 mod frame;
 mod heard;
 mod hosts;
@@ -69,7 +70,7 @@ impl Server {
         let ctx = ctx.clone();
         let wake = Arc::new(move || ctx.request_repaint());
         let herald = herald.of(&host.label);
-        let (keymap, theme) = (home.then(commands::request), crate::theme::ghostty().cloned());
+        let (keymap, theme) = (home.then(commands::request), crate::ghostty::theme().cloned());
         Self { client: Client::spawn(host.endpoints.clone(), wake, herald, keymap, theme), host }
     }
 
@@ -163,6 +164,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, endpoint: String, remembered: Remembered) -> Self {
         style::apply(&cc.egui_ctx);
+        fonts::install(&cc.egui_ctx, crate::ghostty::fonts());
         let (herald, notes) = Herald::new();
         let (ctx, raise) = (cc.egui_ctx.clone(), Raise::of(cc));
         // A picked note brings the window forward from the desktop's thread, at once:

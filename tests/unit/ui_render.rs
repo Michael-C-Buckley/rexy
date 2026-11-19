@@ -53,15 +53,34 @@ fn a_screen_of_colours_is_one_mesh_and_only_a_glyph_too_wide_is_clipped() {
     assert!(output.shapes.len() > usize::from(cols * rows / 4));
     assert_eq!(ctx.tessellate(output.shapes, 1.0).len(), 1);
 
-    // egui's own icons are wider than a cell, which is all the terminal gives them.
-    let screen = format!("{screen}\x1b[10;10H\u{e624}\x1b[20;20H\u{e624}");
+    // Two letters written as one are wider than a cell, which is all the terminal
+    // gives them, in the font behind the terminal's own that has them.
+    let screen = format!("{screen}\x1b[10;10H\u{1C4}\x1b[20;20H\u{1C4}");
     let spills = frame(cols, rows, screen.as_bytes());
     let output = paint(&ctx, &mut PaneView::default(), &spills, 1.0);
     let meshes = ctx.tessellate(output.shapes, 1.0);
-    let cell = ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(SIZE), 'M'));
+    let cell = Grid::new(&ctx, Rect::EVERYTHING, SIZE).cell.x;
     let widths = meshes.iter().map(|mesh| mesh.clip_rect.width());
     let clipped = widths.filter(|width| (width - cell).abs() < 0.01).count();
     assert_eq!((meshes.len(), clipped), (5, 2));
+}
+
+#[test]
+fn a_cell_is_whole_pixels_and_as_wide_in_every_face() {
+    let ctx = context();
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        paint(&ctx, &mut PaneView::default(), &frame(2, 1, b""), scale);
+        let cell = Grid::new(&ctx, Rect::EVERYTHING, SIZE).cell * scale;
+        assert!((cell - cell.round()).length() < 1e-3, "{cell:?} at {scale}");
+    }
+    // The letters of a run are spread by what the upright face lacks of a
+    // cell, which is right for the others only as they are as wide.
+    let wide = |bold, italic| {
+        let font = FontId::new(SIZE, fonts::family(bold, italic));
+        ctx.fonts_mut(|f| f.glyph_width(&font, 'M'))
+    };
+    let widths = [wide(true, false), wide(false, true), wide(true, true)];
+    assert_eq!(widths, [wide(false, false); 3]);
 }
 
 #[test]
@@ -146,12 +165,13 @@ fn bench_rows() {
         let mut view = PaneView::default();
         // egui has no fonts until its first pass.
         paint(&ctx, &mut view, &frame(2, 1, b""), 1.0);
+        let grid = Grid::new(&ctx, Rect::EVERYTHING, SIZE);
         let mut screen = Bench::new(write);
         measure(&format!("shape: {name}"), |meter| {
             let frame = screen.next(&mut Meter::default());
             meter.time(|| {
                 for row in &frame.lines {
-                    CachedRow::new(&ctx, row, SIZE);
+                    CachedRow::new(&ctx, row, grid);
                 }
             });
         });

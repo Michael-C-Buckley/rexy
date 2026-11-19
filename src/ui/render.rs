@@ -1,10 +1,17 @@
 //! Per-pane view state and painting. Shaped text is cached by row identity.
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
+use eframe::egui::{
+    self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2, emath::GuiRounding as _,
+    text::LayoutJob,
+};
 use libghostty_vt::style::Underline;
 
-use super::{boxes, style};
+use super::{
+    boxes,
+    fonts::{self, Kind},
+    style,
+};
 use crate::{
     model::Size,
     terminal::{CursorShape, Frame, Picture, Placed, Row},
@@ -25,13 +32,20 @@ pub struct Grid {
     pub rect: Rect,
     pub cell: Vec2,
     pub font_size: f32,
+    /// How much wider a cell is than the font's own letters are apart, which
+    /// may be less than nothing.
+    pub spread: f32,
 }
 
 impl Grid {
     pub fn new(ctx: &egui::Context, rect: Rect, font_size: f32) -> Self {
         let font = FontId::monospace(font_size);
-        let width = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
-        Self { rect, cell: egui::vec2(width, (font_size * 1.35).ceil()), font_size }
+        let scale = ctx.pixels_per_point();
+        let (wide, tall) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
+        // A cell is a whole number of pixels each way, as Ghostty's is, so
+        // that every letter is drawn on the pixels and none between them.
+        let cell = egui::vec2(wide, tall).round_to_pixels(scale);
+        Self { rect, cell, font_size, spread: cell.x - wide }
     }
 
     /// How many cells fit, and a cell's size in physical pixels.
@@ -39,8 +53,8 @@ impl Grid {
         Size {
             cols: (self.rect.width() / self.cell.x).clamp(2.0, 1000.0) as u16,
             rows: (self.rect.height() / self.cell.y).clamp(1.0, 1000.0) as u16,
-            cell_width: (self.cell.x * pixels_per_point).ceil() as u16,
-            cell_height: (self.cell.y * pixels_per_point).ceil() as u16,
+            cell_width: (self.cell.x * pixels_per_point).round() as u16,
+            cell_height: (self.cell.y * pixels_per_point).round() as u16,
         }
     }
 
@@ -51,6 +65,38 @@ impl Grid {
             (offset.x.max(0.0) as u16).min(frame.cols.saturating_sub(1)),
             (offset.y.max(0.0) as u16).min(frame.rows.saturating_sub(1)),
         )
+    }
+
+    /// Shape what a row has in the cells from `start` to `end`, which are of
+    /// one look, in a `color`. With it, how many cells it is drawn in. A
+    /// picture and a program's mark each have a font of their own, and are
+    /// drawn no wider than the room they have: a mark may reach into a blank
+    /// cell after it, as Ghostty lets it.
+    fn shape(
+        &self,
+        ctx: &egui::Context,
+        row: &Row,
+        start: usize,
+        end: usize,
+        color: Color32,
+    ) -> (Arc<egui::Galley>, usize) {
+        let (text, style) = (row.text(start, end), row.look(&row.cells[start]).style);
+        let kind = Kind::of(text, end - start > 1);
+        let blank =
+            kind == Kind::Icon && end < row.cells.len() && row.text(end, end + 1).trim().is_empty();
+        let room = end - start + usize::from(blank);
+        let galley = ctx.fonts_mut(|f| {
+            let own = kind.font(f, text, self.font_size, room as f32 * self.cell.x);
+            let face = || FontId::new(self.font_size, fonts::family(style.bold, style.italic));
+            let format = egui::TextFormat {
+                font_id: own.unwrap_or_else(face),
+                color,
+                extra_letter_spacing: self.spread,
+                ..Default::default()
+            };
+            f.layout_job(LayoutJob::single_section(text.to_owned(), format))
+        });
+        (galley, room)
     }
 
     /// The screen area of columns `start..end` in one row.
@@ -127,7 +173,11 @@ impl PaneView {
         // What the characters that draw lines and blocks fill, and how thick a
         // light line of theirs is.
         let mut fills = egui::Mesh::default();
-        let light = (grid.font_size / 14.0).max(1.0 / painter.pixels_per_point());
+        let scale = painter.pixels_per_point();
+        let light = (grid.font_size / 14.0).max(1.0 / scale);
+        // A line under text, or through it, is a whole number of pixels thick,
+        // and thicker under larger text.
+        let thick = (grid.font_size / 20.0).round_to_pixels(scale).max(1.0 / scale);
         // A row keeps its shaped text wherever on screen it moves to, and loses it
         // when it is shown no more.
         let mut shaped = std::mem::take(&mut self.cached_rows);
@@ -142,9 +192,8 @@ impl PaneView {
         self.picture(&painter, grid, under);
         for (y, row) in frame.lines.iter().take(visible).enumerate() {
             let source = Arc::as_ptr(row).addr();
-            let cached = shaped
-                .remove(&source)
-                .unwrap_or_else(|| CachedRow::new(painter.ctx(), row, grid.font_size));
+            let cached =
+                shaped.remove(&source).unwrap_or_else(|| CachedRow::new(painter.ctx(), row, grid));
             let cached = self.cached_rows.entry(source).or_insert(cached);
             for &(start, end, color) in &cached.backgrounds {
                 if color != bg {
@@ -181,7 +230,7 @@ impl PaneView {
                 let level = span.top() + height * grid.cell.y;
                 let cell = grid.cell.x;
                 let line = [Pos2::new(span.left(), level), Pos2::new(span.right(), level)];
-                let stroke = Stroke::new(1.0, color);
+                let stroke = Stroke::new(thick, color);
                 // Each pattern repeats with the cell, so runs side by side join up.
                 match kind {
                     Underline::Curly => {
@@ -202,6 +251,13 @@ impl PaneView {
                         let dashes =
                             Shape::dashed_line_with_offset(&line, stroke, &dash, &gap, cell / 4.0);
                         painter.extend(dashes);
+                    }
+                    // Two lines lie either side of where one would, their own
+                    // thickness apart.
+                    Underline::Double => {
+                        for by in [-thick, thick] {
+                            painter.line_segment(line.map(|end| end + egui::vec2(0.0, by)), stroke);
+                        }
                     }
                     _ => {
                         painter.line_segment(line, stroke);
@@ -253,14 +309,10 @@ impl PaneView {
                     painter.rect_filled(rect, 0, color);
                     let column = usize::from(x);
                     let row = frame.lines.get(usize::from(y));
-                    let under = row.and_then(|row| Some((row, row.cells.get(column)?)));
-                    if let Some((row, cell)) = under {
-                        let font = match row.look(cell).style.bold {
-                            true => style::mono_bold(grid.font_size),
-                            false => FontId::monospace(grid.font_size),
-                        };
-                        let (text, ink) = (row.text(column, column + 1), rgb(frame.bg));
-                        let galley = painter.layout_no_wrap(text.to_owned(), font, ink);
+                    if let Some(row) = row.filter(|row| column < row.cells.len()) {
+                        let wide = row.cells.get(column + 1).is_some_and(|next| next.spacer_tail);
+                        let (end, ink) = (column + 1 + usize::from(wide), rgb(frame.bg));
+                        let (galley, _) = grid.shape(painter.ctx(), row, column, end, ink);
                         let down = (grid.cell.y - galley.size().y) * 0.5;
                         painter.galley(rect.min + egui::vec2(0.0, down), galley, ink);
                     }
@@ -315,7 +367,7 @@ fn pixels(picture: &Picture, most: usize) -> egui::ColorImage {
 }
 
 impl CachedRow {
-    fn new(ctx: &egui::Context, row: &Arc<Row>, font_size: f32) -> Self {
+    fn new(ctx: &egui::Context, row: &Arc<Row>, grid: Grid) -> Self {
         let mut result = Self {
             _source: Arc::clone(row),
             glyphs: Vec::new(),
@@ -358,32 +410,13 @@ impl CachedRow {
             if let Some(drawing) = alone.and_then(boxes::drawing) {
                 result.boxes.push((start, drawing, color));
             } else if !text.trim().is_empty() {
-                let font_id = if look.style.bold {
-                    style::mono_bold(font_size)
-                } else {
-                    FontId::monospace(font_size)
-                };
-                let format = egui::TextFormat {
-                    font_id,
-                    color,
-                    italics: look.style.italic,
-                    ..Default::default()
-                };
-                let mut job = egui::text::LayoutJob::default();
-                job.append(text, 0.0, format);
-                result.glyphs.push(GlyphRun {
-                    column: start,
-                    width: x - start,
-                    galley: ctx.fonts_mut(|f| f.layout_job(job)),
-                });
+                let (galley, width) = grid.shape(ctx, row, start, x, color);
+                result.glyphs.push(GlyphRun { column: start, width, galley });
             }
             let underline = look.underline_color.map_or(color, rgb);
             let kind = look.style.underline;
             if kind != Underline::None {
                 result.decorations.push((start, x, 0.90, underline, kind));
-                if kind == Underline::Double {
-                    result.decorations.push((start, x, 0.78, underline, kind));
-                }
             }
             if look.style.strikethrough {
                 result.decorations.push((start, x, 0.51, color, Underline::Single));

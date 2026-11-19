@@ -9,8 +9,14 @@ publish = false
 [dependencies]
 anyhow = "1"
 base64 = "0.23"
-# system_fonts finds a font on this machine for what the bundled ones cannot draw.
-eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "default_fonts", "glow", "system_fonts", "wayland", "x11"] }
+eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "default_fonts", "glow", "wayland", "x11"] }
+# Finds a font on this machine for what the bundled ones cannot draw, as the
+# desktop would choose it. Behind it, fontique lists the machine's fonts, and is
+# asked here too: for those Ghostty's configuration names, for the one that
+# draws emoji, and for one with a program's marks. It is this crate, too, that
+# has epaint draw glyphs in their own colours.
+egui_system_font_provider = "0.37.0"
+fontique = { version = "0.11.1", default-features = false, features = ["system", "fontconfig-dlopen"] }
 flume = "0.12"
 futures-util = { version = "0.3", features = ["sink"] }
 # Ghostty's terminal. No release can restore a snapshot yet, so a commit is named.

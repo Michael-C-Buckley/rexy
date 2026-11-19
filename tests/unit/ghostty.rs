@@ -34,3 +34,13 @@ fn a_configuration_comes_to_its_themes_colours_with_its_own_over_them() {
     assert_eq!(read("theme = Gone", named), None);
     assert_eq!(read("font-size = 13\n# background = #000000\n", named), None);
 }
+
+#[test]
+fn a_configuration_names_the_fonts_of_its_text() {
+    let two = "font-family = Fira Code\nfont-size = 13\nfont-family = \"Noto Sans Mono\"\n";
+    assert_eq!(families(two), ["Fira Code", "Noto Sans Mono"]);
+    // One named as nothing begins the list again.
+    assert_eq!(families("font-family = One\nfont-family = \"\"\nfont-family = Two"), ["Two"]);
+    // The fonts of one look alone, and a configuration of none, name nothing.
+    assert!(families("font-family-bold = Heavy\n# font-family = Gone\ntheme = Day").is_empty());
+}

@@ -16,6 +16,7 @@ fn steps(wheel: Wheel, unit: egui::MouseWheelUnit, by: f32, rest: &mut f32) -> i
         rect: Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 400.0)),
         cell: egui::vec2(8.0, 20.0),
         font_size: 15.0,
+        spread: 0.0,
     };
     wheel.steps(&[turned], grid, rest)
 }

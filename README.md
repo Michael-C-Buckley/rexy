@@ -14,7 +14,7 @@ Rexy is unofficial and not affiliated with Superlogical. It is early software fo
 - **Agent status at a glance.** Each tab shows its programs, a status dot and a line such as *Working* or *Needs approval*. An activity view gathers every pane that needs you.
 - **Notifications that take you there.** Click one to go to the pane that sent it.
 - **Splits.** Split, resize and zoom panes, and move them between tabs.
-- **A real terminal.** libghostty does the emulation: Kitty graphics, hyperlinks, search through the whole history, and your Ghostty theme.
+- **A real terminal.** libghostty does the emulation: Kitty graphics, hyperlinks, search through the whole history, and your Ghostty theme and font.
 - **Files and pictures reach the pane's machine.** Drop files on a pane, or paste a picture, and their paths are typed there. For a server on another machine they are sent to it first.
 - **Rex's own keymap**, from your home server's `init.lua`, and a command palette, where the actions you write there ask their questions.
 
@@ -70,6 +70,7 @@ With the mouse: drag the line between two panes to resize them, drag a pane's he
 - **Your tab stays put.** The window shows the tab you chose, not the one another client or the `rex` CLI has the server show.
 - **Panes fit the window that shows them.** Showing a tab takes its panes from any other client, which takes them back when it shows the tab.
 - **Remote control is off by default.** `rex -C <client> do …` works only after you choose **Allow Remote Control** in the palette. With it on, any client of the server can type into a pane or close things.
+- **Text is drawn as Ghostty draws it**, on whole pixels, in the `font-family` of your Ghostty configuration or else JetBrains Mono. Emoji and Nerd Font icons come from the fonts on your machine.
 - **Programs cannot reach your machine.** They can copy to the clipboard but never read it, `file` links are never opened, and pictures are accepted only as pixels sent inline.
 - **State** is kept in `rexy/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
 - **Not yet:** floating panes, moving a pane to another session, animated pictures.

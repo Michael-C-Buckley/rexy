@@ -149,10 +149,6 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
 }
 
-pub fn mono_bold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("mono-bold".into()))
-}
-
 /// What surrounds a dark terminal is its background, a little lighter, so that
 /// the terminal lies on it as a card of the same hue. The light ink that is
 /// written there would be lost around a light terminal, which gets the plain ground.
@@ -180,17 +176,24 @@ fn lifted(color: Color32, by: u32) -> Option<Color32> {
 }
 
 pub fn apply(ctx: &egui::Context) {
-    // Each variable font serves as a regular and a bold face. egui's own fonts
-    // stay behind them for symbols, and behind those eframe finds a font of this
-    // machine's for what none of them can draw.
+    // Each variable font serves as a regular and a bold face, and egui's own
+    // fonts stay behind them for symbols. What the slanted faces cannot draw,
+    // the upright one does before any other: it is set up before them for that.
     let mut fonts = egui::FontDefinitions::default();
     let inter = FontData::from_static(include_bytes!("../../assets/fonts/Inter.ttf"));
     let mono = FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMono.ttf"));
-    let faces =
-        [(FontFamily::Proportional, "bold", inter), (FontFamily::Monospace, "mono-bold", mono)];
-    for (regular, bold, face) in faces {
-        let fallbacks = fonts.families[&regular].clone();
-        for (family, weight) in [(regular, 400.0), (FontFamily::Name(bold.into()), 700.0)] {
+    let slanted =
+        FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMono-Italic.ttf"));
+    let (words, code, own) =
+        (FontFamily::Proportional, FontFamily::Monospace, super::fonts::family);
+    let faces = [
+        (words.clone(), [words, FontFamily::Name("bold".into())], inter),
+        (code.clone(), [own(false, false), own(true, false)], mono),
+        (code, [own(false, true), own(true, true)], slanted),
+    ];
+    for (behind, families, face) in faces {
+        let fallbacks = fonts.families[&behind].clone();
+        for (family, weight) in families.into_iter().zip([400.0, 700.0]) {
             let name = format!("{family} {weight}");
             let tweak = FontTweak {
                 coords: VariationCoords::new([(b"wght", weight)]),

@@ -1,11 +1,11 @@
 pub mod backend;
+pub mod ghostty;
 pub mod link;
 pub mod model;
 pub mod notify;
 pub mod program;
 mod ssh;
 pub mod terminal;
-pub mod theme;
 pub mod ui;
 pub mod upload;
 mod wire;

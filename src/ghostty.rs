@@ -1,19 +1,29 @@
-//! The colours this window gives the terminals it owns. Rex has each client say
-//! its own, and a pane shows its owner's. This one says Ghostty's, where
-//! Ghostty's configuration is on this machine, and otherwise none: a pane then
-//! keeps the colours it has.
-use std::{collections::BTreeMap, env, fs, path::PathBuf, sync::LazyLock};
+//! What this window takes from Ghostty's configuration, where that is on this
+//! machine: the colours it gives the terminals it owns, and the fonts their
+//! text is drawn in. Rex has each client say its own colours, and a pane shows
+//! its owner's. Without Ghostty's this one says none, and a pane then keeps the
+//! colours it has.
+use std::{collections::BTreeMap, env, ffi::OsString, fs, path::PathBuf, sync::LazyLock};
 
 use serde_json::{Map, Value, json};
 
+fn var(name: &str) -> Option<OsString> {
+    env::var_os(name).filter(|value| !value.is_empty())
+}
+
+/// Ghostty's configuration, and the directory that the user's are kept under.
+fn config() -> Option<(PathBuf, String)> {
+    let home = var("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home = home.or_else(|| Some(PathBuf::from(var("HOME")?).join(".config")))?;
+    let config = fs::read_to_string(home.join("ghostty/config")).ok()?;
+    Some((home, config))
+}
+
 /// The theme Ghostty would use here, as Rex's `set_theme` takes it. It is read
 /// once: a change to Ghostty's configuration shows in the next window.
-pub fn ghostty() -> Option<&'static Value> {
+pub fn theme() -> Option<&'static Value> {
     static THEME: LazyLock<Option<Value>> = LazyLock::new(|| {
-        let var = |name: &str| env::var_os(name).filter(|value| !value.is_empty());
-        let home = var("XDG_CONFIG_HOME").map(PathBuf::from);
-        let home = home.or_else(|| Some(PathBuf::from(var("HOME")?).join(".config")))?;
-        let config = fs::read_to_string(home.join("ghostty/config")).ok()?;
+        let (home, config) = config()?;
         // A theme is a file of that name: the user's own, or one Ghostty came with.
         let shared = var("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into());
         let shared: Vec<_> = env::split_paths(&shared).collect();
@@ -26,6 +36,27 @@ pub fn ghostty() -> Option<&'static Value> {
         read(&config, named)
     });
     THEME.as_ref()
+}
+
+/// The families of font Ghostty would draw its text in here, each standing
+/// behind the one before it for what that cannot draw. None, where Ghostty is
+/// left to its own.
+pub fn fonts() -> Vec<String> {
+    config().map(|(_, config)| families(&config)).unwrap_or_default()
+}
+
+/// The families a configuration names. One named as nothing begins the list
+/// again, as it does for Ghostty.
+fn families(config: &str) -> Vec<String> {
+    let mut named = Vec::new();
+    for (_, name) in settings(config).filter(|(key, _)| *key == "font-family") {
+        if name.is_empty() {
+            named.clear();
+        } else {
+            named.push(name.to_owned());
+        }
+    }
+    named
 }
 
 /// The settings of a file of Ghostty's: a key and its value to a line, with
@@ -89,5 +120,5 @@ fn read(config: &str, named: impl Fn(&str) -> Option<String>) -> Option<Value> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/theme.rs"]
+#[path = "../tests/unit/ghostty.rs"]
 mod tests;
