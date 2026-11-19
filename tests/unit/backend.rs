@@ -44,7 +44,7 @@ fn panes_sit_where_the_server_puts_them() {
 }
 
 #[test]
-fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
+fn every_split_of_a_layer_on_show_has_a_border_to_drag() {
     let tiled = json!({"kind": "tiled", "layout": three()});
     let tab = |layers: Value| json!({"windows": [{"window_id": "w", "layers": layers}]});
     let borders = |view: &Value| tabs(view).remove(0).borders;
@@ -62,18 +62,17 @@ fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
         [border("b", "c", false, [0.6, 0., 0.4, 1.], 0.25), border("a", "b", true, FULL, 0.6)]
     );
     // A floating layer has its own, after the tab's, which keeps them under one.
+    let bounds = [0.2, 0.2, 0.5, 0.5];
     let floating = |state: &str| {
-        let bounds = [0.2, 0.2, 0.5, 0.5];
         let layout =
             split(bounds, leaf([0.2, 0.2, 0.25, 0.5], "d"), leaf([0.45, 0.2, 0.25, 0.5], "e"));
         json!({"layer_id": "f", "kind": "floating", "state": state, "bounds": bounds, "layout": layout})
     };
     let over = tabs(&tab(json!([tiled, floating("normal")]))).remove(0);
-    let within =
-        Border { float: Some("f".into()), ..border("d", "e", true, [0.2, 0.2, 0.5, 0.5], 0.45) };
+    let within = Border { float: Some("f".into()), ..border("d", "e", true, bounds, 0.45) };
     assert_eq!(over.borders[2..], [within]);
     // Its panes are on show after the tab's own, and know the layer they are in.
-    let float = Float { id: "f".into(), bounds: [0.2, 0.2, 0.5, 0.5], away: false };
+    let float = Float { id: "f".into(), bounds, away: false };
     assert_eq!(over.floats, std::slice::from_ref(&float));
     let layers = |panes: &[Pane]| panes.iter().map(|pane| pane.float.clone()).collect::<Vec<_>>();
     let f = || Some("f".to_owned());

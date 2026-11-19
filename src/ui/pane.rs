@@ -60,6 +60,18 @@ pub(super) fn heading(
     ui.painter().galley(corner, title, ink);
 }
 
+/// The two buttons of a pane's header, which go at the far end of its `bar`
+/// from there inward: what they are put in, and the room they leave for what
+/// heads the pane.
+pub(super) fn buttons(ui: &mut egui::Ui, bar: Rect) -> (egui::Ui, Rect) {
+    let mut room = bar.shrink2(egui::vec2(4.0, 0.0));
+    let layout = Layout::right_to_left(Align::Center);
+    let mut buttons = ui.new_child(UiBuilder::new().max_rect(room).layout(layout));
+    buttons.spacing_mut().item_spacing.x = 0.0;
+    room.max.x -= 2.0 * SMALL_BUTTON + 4.0;
+    (buttons, room)
+}
+
 /// Give a terminal the keyboard, with the keys that would otherwise move it
 /// elsewhere.
 pub(super) fn hold(ui: &egui::Ui, terminal: &egui::Response) {
@@ -79,7 +91,9 @@ impl App {
     /// A pane of the tab on show: a card on the window's ground, `rect`, in its
     /// terminal's own colour. It may show a last screen: of a connection that
     /// was lost, or of its own terminal where that alone is fed no more. The
-    /// card may be on its way to where it comes to `rest`.
+    /// card may be on its way to where the server has the pane, `rest`, or be
+    /// held away from there by the pointer: its terminal is sized for `rest`.
+    /// The pointer is `over` it where no other card lies between.
     pub(super) fn terminal_pane(
         &mut self,
         ui: &mut egui::Ui,
@@ -154,10 +168,7 @@ impl App {
                 painter.rect_stroke(pill, 6, Stroke::new(1.0, BORDER), StrokeKind::Inside);
                 painter.galley(pill.min + pad, title, TEXT);
             }
-            let mut header = bar.shrink2(egui::vec2(4.0, 0.0));
-            let layout = Layout::right_to_left(Align::Center);
-            let mut buttons = ui.new_child(UiBuilder::new().max_rect(header).layout(layout));
-            buttons.spacing_mut().item_spacing.x = 0.0;
+            let (mut buttons, header) = buttons(ui, bar);
             // Its buttons show on the pane with the keyboard, and under the
             // pointer. The way back from a pane that fills the tab shows always.
             let offered = over || active;
@@ -173,7 +184,6 @@ impl App {
                     self.todo.push(("pane.zoom", Some(pane.id.clone())));
                 }
             }
-            header.max.x -= 2.0 * SMALL_BUTTON + 4.0;
             let color = if active { TEXT } else { DIM };
             heading(ui, header, pane, &pane.title, color, &pane.word().unwrap_or_default());
         }

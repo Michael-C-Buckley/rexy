@@ -2,7 +2,9 @@
 //! panes, and how the pointer moves one and gives it another size.
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, CursorIcon, Rect, ResizeDirection, Sense, Vec2};
+use eframe::egui::{
+    self, Color32, CursorIcon, Rect, ResizeDirection, Sense, Vec2, emath::RectTransform,
+};
 
 use super::{App, frame, style::CARD_RADIUS};
 use crate::model::{Action, Float, Tab, View};
@@ -98,15 +100,16 @@ impl App {
     /// Have the layer the pointer has hold of go where the pointer has taken
     /// it, in the tab that fills `area`. It is asked of the server as the
     /// pointer moves, and drawn there without waiting to be told: so what is
-    /// given is the layer, where the server has it, and where it is drawn. Let
-    /// go of, it is drawn there until the server has it there too.
+    /// given is the layer, and what takes a place in the tab as the server
+    /// has it to where it is drawn. Let go of, it is drawn there until the
+    /// server has it there too.
     pub(super) fn held<'a>(
         &mut self,
         ui: &egui::Ui,
         view: &View,
         tab: &'a Tab,
         area: Rect,
-    ) -> Option<(&'a str, [Rect; 2])> {
+    ) -> Option<(&'a str, RectTransform)> {
         let grip = self.grip.as_mut()?;
         // One that has closed, or gone out of sight, is held no more.
         let Some(float) = tab.floating().find(|float| float.id == grip.float.id) else {
@@ -141,6 +144,7 @@ impl App {
         let rect = |[x, y, width, height]: [f32; 4]| {
             Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height))
         };
-        Some((&float.id, [rect(float.bounds), rect(self.grip.as_ref()?.sent)]))
+        let ahead = RectTransform::from_to(rect(float.bounds), rect(self.grip.as_ref()?.sent));
+        Some((&float.id, ahead))
     }
 }

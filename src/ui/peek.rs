@@ -1,15 +1,15 @@
 //! A look at a pane from wherever the window is: its card over the tab on
 //! show, with the keyboard, so that what its program asks can be answered
 //! without going to it. The pane is not taken, and stays the size it is.
-use eframe::egui::{self, Align, Align2, FontId, Layout, Rect, Sense, UiBuilder, Vec2};
+use eframe::egui::{self, Align2, FontId, Rect, Sense, Vec2};
 
 use super::{
     App,
     agents::place,
-    pane::{PANE_HEADER, heading, hold, room},
+    pane::{PANE_HEADER, buttons, heading, hold, room},
     pointer::{Pointer, Wheel},
     render::{Grid, PaneView, rgb},
-    style::{BODY, CARD, CARD_RADIUS, DIM, Icon, SMALL_BUTTON, TEXT, small_button},
+    style::{BODY, CARD, CARD_RADIUS, DIM, Icon, TEXT, small_button},
 };
 use crate::{model::View, terminal::Request};
 
@@ -116,15 +116,10 @@ impl App {
                     ui.allocate_exact_size(all.min(most) + edges, Sense::click());
                 // The key that looked at it looks at the next, and closes it
                 // after the last.
-                let mut bar =
-                    card.with_max_y(card.top() + PANE_HEADER).shrink2(egui::vec2(4.0, 0.0));
-                let layout = Layout::right_to_left(Align::Center);
-                let mut buttons = ui.new_child(UiBuilder::new().max_rect(bar).layout(layout));
-                buttons.spacing_mut().item_spacing.x = 0.0;
+                let (mut buttons, bar) = buttons(ui, card.with_max_y(card.top() + PANE_HEADER));
                 let tip = self.keys.map.tip("Next, or Close", NEXT);
                 close = small_button(&mut buttons, Icon::Close, &tip).clicked();
                 go = small_button(&mut buttons, Icon::Zoom, "Go to Pane").clicked();
-                bar.max.x -= 2.0 * SMALL_BUTTON + 4.0;
                 heading(ui, bar, pane, &title, TEXT, &lasted.unwrap_or_default());
                 if keyboard {
                     hold(ui, &response);

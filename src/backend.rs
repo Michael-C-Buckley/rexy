@@ -301,7 +301,7 @@ impl Client {
         state.view.selected_tab = None;
         // Even with nothing on show: it may be in a session still, to be left.
         if state.view.connected {
-            let _ = self.actions.try_send(Action::Leave);
+            let _ = self.actions.try_send(Action::Shown);
         }
     }
 
@@ -310,11 +310,11 @@ impl Client {
         let mut state = self.shared.lock();
         state.view.peeked = pane.map(str::to_owned);
         if state.view.connected {
-            let _ = self.actions.try_send(Action::Peek);
+            let _ = self.actions.try_send(Action::Shown);
         }
     }
 
-    /// The terminal of a pane on show, or the one kept for its last screen, for
+    /// The terminal of a pane that is fed, or the one kept for its last screen, for
     /// what is done to it here and never sent to the server: moving through its
     /// history, selecting, and finding text.
     pub fn terminal(&self, pane: &str) -> Result<TerminalHandle, String> {
@@ -1141,8 +1141,7 @@ impl<'a> Connection<'a> {
                                 s.view.selected_session = None;
                             }
                             // Nor is a pane of it looked at from elsewhere.
-                            let peeked = s.view.peeked.as_ref().and_then(|pane| s.view.find(pane));
-                            if peeked.is_some_and(|(held, ..)| held.id == session) {
+                            if s.view.looked().is_some_and(|(held, ..)| held.id == session) {
                                 s.view.peeked = None;
                             }
                             s.view.error = Some(error.to_string());
@@ -1204,8 +1203,7 @@ impl<'a> Connection<'a> {
         // The session on show, and then that of a pane looked at from elsewhere.
         let wanted: Vec<String> = {
             let view = &self.shared.lock().view;
-            let peeked = view.peeked.as_ref().and_then(|pane| view.find(pane));
-            let peeked = peeked.map(|(session, ..)| &session.id);
+            let peeked = view.looked().map(|(session, ..)| &session.id);
             view.selected_session.iter().chain(peeked).cloned().collect()
         };
         let attached = &mut self.link.attached;
@@ -1266,8 +1264,7 @@ impl<'a> Connection<'a> {
             }
             // The pane looked at from elsewhere is drawn wherever it is, and is
             // no more on show for that.
-            let peeked = view.peeked.as_ref().and_then(|pane| view.find(pane));
-            if let Some((session, _, pane)) = peeked
+            if let Some((session, _, pane)) = view.looked()
                 && self.joined(&session.id)
                 && self.link.blocks.contains_key(&pane.id)
             {
@@ -1509,7 +1506,7 @@ impl<'a> Connection<'a> {
         // A change to a pane names the pane, and its session is found from that.
         let (session, method, mut payload, made) = match action {
             // What is on show is as asked already, and `show` joins or leaves.
-            Action::SelectSession(_) | Action::Leave | Action::Peek => {
+            Action::SelectSession(_) | Action::Shown => {
                 self.show().await;
                 return Ok(());
             }

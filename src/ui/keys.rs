@@ -1,5 +1,6 @@
 //! The keys that are the window's own, by the keymap in force, and those that go
-//! to the terminal. Other clients' requests are answered here too.
+//! to the terminal. Other clients' requests are answered here too, and what
+//! home's actions ask of the window's other servers is passed on.
 use eframe::egui::{self, Align2, Key, Margin, Modifiers, Popup, Rect};
 use serde_json::Value;
 

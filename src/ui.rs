@@ -35,9 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui::{
-    self, Align2, FontId, Key, Margin, Rect, RichText, Sense, Vec2, emath::RectTransform,
-};
+use eframe::egui::{self, Align2, FontId, Key, Margin, Rect, RichText, Sense, Vec2};
 
 use crate::{
     backend::Client,
@@ -109,7 +107,7 @@ pub struct App {
     next: Option<usize>,
     /// Home's address, as typed.
     endpoint: String,
-    /// The pane that has the keyboard, while one is on screen.
+    /// The pane that has the keyboard in the tab on show, while one is on screen.
     focused: Option<String>,
     panes: HashMap<String, PaneView>,
     keyboard: Keyboard,
@@ -586,8 +584,7 @@ impl eframe::App for App {
             };
             let belong = panes.iter().map(|pane| {
                 let held = taken.filter(|(layer, _)| pane.float.as_deref() == Some(layer));
-                let ahead = held.map(|(_, [from, to])| RectTransform::from_to(from, to));
-                (&*pane.id, ahead.map_or(part(pane), |ahead| ahead.transform_rect(part(pane))))
+                (&*pane.id, held.map_or(part(pane), |(_, ahead)| ahead.transform_rect(part(pane))))
             });
             let belong: Vec<_> = belong.collect();
             // What the pointer has hold of, such as a border, goes where it does.

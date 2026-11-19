@@ -70,6 +70,11 @@ impl View {
         })
     }
 
+    /// The pane looked at from elsewhere, where it is.
+    pub fn looked(&self) -> Option<(&Session, &Tab, &Pane)> {
+        self.find(self.peeked.as_ref()?)
+    }
+
     /// The same pane, to change.
     pub fn find_mut(&mut self, pane: &str) -> Option<&mut Pane> {
         let tabs = self.sessions.iter_mut().flat_map(|session| &mut session.tabs);
@@ -705,10 +710,10 @@ pub enum Action {
         session: String,
         tab: String,
     },
-    /// Stop watching the session on show. Sent by `Client::leave`.
-    Leave,
-    /// Feed the pane looked at from elsewhere, or stop. Sent by `Client::peek`.
-    Peek,
+    /// Watch and feed what is now on show, and the pane now looked at from
+    /// elsewhere, and no more what is not. Sent by `Client::leave` and
+    /// `Client::peek`, which have said what those are.
+    Shown,
     /// Bring a pane of the session on show out from out of sight, and take the
     /// keyboard to it.
     Reveal {

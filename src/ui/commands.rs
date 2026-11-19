@@ -304,7 +304,7 @@ pub(super) enum Deed {
 pub(super) struct Standing<'a> {
     /// What the server a command is for has.
     pub view: &'a View,
-    /// The pane with the keyboard.
+    /// The pane with the keyboard in the tab on show.
     pub focused: Option<&'a str>,
     pub font_size: f32,
     pub sidebar: bool,

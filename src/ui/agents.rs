@@ -178,7 +178,7 @@ impl App {
                     false => (said.as_str(), pane.title.as_str()),
                 };
                 let under = if under == last { "" } else { under };
-                let here = shown.is_some_and(|shown| shown.id == tab.id);
+                let here = server == self.current && shown.is_some_and(|shown| shown.id == tab.id);
                 let host = &self.servers[server].host.label;
                 let row = Item {
                     id: Some(egui::Id::unique(("at work", host, &pane.id))),
