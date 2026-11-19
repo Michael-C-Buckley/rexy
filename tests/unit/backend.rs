@@ -60,18 +60,25 @@ fn every_split_of_the_layer_that_fills_the_tab_has_a_border_to_drag() {
         borders(&tab(json!([tiled]))),
         [border("b", "c", false, [0.6, 0., 0.4, 1.], 0.25), border("a", "b", true, FULL, 0.6)]
     );
-    // A floating layer has none of its own, and while it is on show it lies over
-    // those of the tab. Put away, it is over nothing.
+    // A floating layer has none of its own, and the tab keeps its own under one.
     let floating = |state: &str| {
-        let layout = split(
-            [0.2, 0.2, 0.5, 0.5],
-            leaf([0.2, 0.2, 0.25, 0.5], "d"),
-            leaf([0.45, 0.2, 0.25, 0.5], "e"),
-        );
-        json!({"kind": "floating", "state": state, "layout": layout})
+        let bounds = [0.2, 0.2, 0.5, 0.5];
+        let layout =
+            split(bounds, leaf([0.2, 0.2, 0.25, 0.5], "d"), leaf([0.45, 0.2, 0.25, 0.5], "e"));
+        json!({"layer_id": "f", "kind": "floating", "state": state, "bounds": bounds, "layout": layout})
     };
-    assert_eq!(borders(&tab(json!([tiled, floating("normal")]))), []);
-    assert_eq!(borders(&tab(json!([tiled, floating("minimized")]))).len(), 2);
+    let over = tabs(&tab(json!([tiled, floating("normal")]))).remove(0);
+    assert_eq!(over.borders.len(), 2);
+    // Its panes are on show after the tab's own, and know the layer they are in.
+    let float = Float { id: "f".into(), bounds: [0.2, 0.2, 0.5, 0.5], away: false };
+    assert_eq!(over.floats, std::slice::from_ref(&float));
+    let layers = |panes: &[Pane]| panes.iter().map(|pane| pane.float.clone()).collect::<Vec<_>>();
+    let f = || Some("f".to_owned());
+    assert_eq!(layers(&over.panes), [None, None, None, f(), f()]);
+    // Put away, the layer is still the tab's, and its panes are out of sight.
+    let away = tabs(&tab(json!([tiled, floating("minimized")]))).remove(0);
+    assert_eq!(away.floats, [Float { away: true, ..float }]);
+    assert_eq!((away.borders.len(), layers(&away.hidden)), (2, vec![f(), f()]));
     // Nor has a tab that one pane fills.
     let mut zoomed = tab(json!([tiled]));
     zoomed["windows"][0]["zoomed_block_id"] = json!("b");

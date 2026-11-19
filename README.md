@@ -15,6 +15,7 @@ Rexy is unofficial and not affiliated with Superlogical. It is early software fo
 - **Answer an agent without leaving your tab.** Peek at a pane that needs you: its terminal opens over the tab you are in and takes the keyboard, so you answer and carry on. The same key takes you to the next one, and closes the peek after the last. Coming back to the window, you are told what came to need you while you were away.
 - **Notifications that take you there.** Click one to go to the pane that sent it.
 - **Splits.** Split, resize and zoom panes, and move them between tabs.
+- **Floating panes.** A scratch terminal over any tab: one key makes it, takes you to it, and from it puts it away, still running. Float any pane out of the layout and dock it again, and move and resize it with the mouse. They are Rex's own floating layers, so every client sees them.
 - **A real terminal.** libghostty does the emulation: Kitty graphics, hyperlinks, search through the whole history, and your Ghostty theme and font.
 - **Files and pictures reach the pane's machine.** Drop files on a pane, or paste a picture, and their paths are typed there. For a server on another machine they are sent to it first.
 - **Rex's own keymap**, from your home server's `init.lua`, and a command palette, where the actions you write there ask their questions.
@@ -61,11 +62,13 @@ These are the defaults, and `rex.bind` in your home server's `init.lua` changes 
 | **Ctrl Shift D**, **Ctrl Alt D** | Split the pane right or down |
 | **Ctrl Alt** + arrow | Focus the pane on that side |
 | **Ctrl Shift Enter** | Zoom the pane |
+| **Ctrl Shift S** | Go to the floating panes, or from one put them away; with none, make one |
+| **Ctrl Alt F** | Float the pane, or dock it |
 | **Ctrl Shift W** | Close the pane |
 | **Ctrl Shift C**, **Ctrl Shift V** | Copy and paste |
 | **Ctrl Shift F** | Find in the pane |
 
-With the mouse: drag the line between two panes to resize them, drag a pane's header onto a tab to move it there, click beside a server's or a session's name to fold it away, drag the bar at a pane's right edge to scroll through its history, double-click a name to rename it, and right-click anything for its menu. A pane's menu also clears it, and copies all its output. **Shift** overrides a program's mouse capture, and **Ctrl** with a click opens a link.
+With the mouse: drag the line between two panes to resize them, drag a pane's header onto a tab to move it there, drag a floating pane by its header to move it and by an edge or corner to resize it, click beside a server's or a session's name to fold it away, drag the bar at a pane's right edge to scroll through its history, double-click a name to rename it, and right-click anything for its menu. A pane's menu also clears it, and copies all its output. **Shift** overrides a program's mouse capture, and **Ctrl** with a click opens a link.
 
 ## Good to know
 
@@ -75,7 +78,7 @@ With the mouse: drag the line between two panes to resize them, drag a pane's he
 - **Text is drawn as Ghostty draws it**, on whole pixels, in the `font-family` of your Ghostty configuration or else JetBrains Mono. Emoji and Nerd Font icons come from the fonts on your machine.
 - **Programs cannot reach your machine.** They can copy to the clipboard but never read it, `file` links are never opened, and pictures are accepted only as pixels sent inline.
 - **State** is kept in `rexy/state.json` under `$XDG_STATE_HOME` or `~/.local/state`.
-- **Not yet:** floating panes, moving a pane to another session, animated pictures.
+- **Not yet:** moving a pane to another session, animated pictures.
 
 Rexy speaks revisions 13 to 18 of Rex's control API, and refuses a server too old for the first of them.
 

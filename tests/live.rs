@@ -241,7 +241,7 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
     send(&client, divide(0.5));
     divided(0.5);
     // The server is told some things from outside: this window types only into
-    // what it shows, and makes no floating layers.
+    // what it shows.
     let rex = |args: &[&str]| rex(&endpoint, args).unwrap();
     // A pane fills its tab in place of the rest, and gives it back to them.
     for (label, zoomed, panes) in [("a pane zoomed", true, 1), ("a pane restored", false, 2)] {
@@ -266,33 +266,64 @@ fn live_input_resize_splits_tabs_sessions_and_reconnect() {
         let note = notes.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!((note.pane.as_str(), note.body.as_str()), (other.as_str(), "Done"));
     }
-    // A pane of a floating layer that has been put away runs on out of sight too,
-    // and comes back, with the keyboard, when it is revealed.
     let call = |method: &str, payload: Value| call(&endpoint, method, payload).unwrap();
-    let layout = json!({"block": {"flavor": "com.superlogical.terminal.shell"}});
-    let bounds = [0.2, 0.2, 0.5, 0.5];
-    let layer =
-        json!({"session_id": session, "window_id": tab, "bounds": bounds, "layout": layout});
-    let layer = call("session.new_layer", layer);
-    let floating = layer["block_ids"][0].as_str().unwrap().to_owned();
-    let away = json!({"session_id": session, "layer_id": layer["layer_id"], "state": "minimized"});
-    call("session.set_layer_state", away);
+    // A pane is made to float over the tab's layout, with the keyboard. The
+    // layout keeps its border under it.
     let holds = |v: &View, shown: usize, hidden: &[&str]| {
         let hides = |w: &Tab| w.hidden.iter().map(|p| p.id.as_str()).eq(hidden.iter().copied());
         find(v, &tab).is_some_and(|w| w.panes.len() == shown && hides(w))
     };
-    wait(&client, "a pane put away", |v| holds(v, 2, &[&floating]));
-    let reveal = Action::Reveal { pane: floating.clone() };
-    send(&client, reveal);
-    // Nor is there one to drag under a pane that floats over it.
+    let floats = |v: &View| find(v, &tab).map_or(Vec::new(), |w| w.floats.clone());
     let borders = |v: &View| find(v, &tab).unwrap().borders.len();
-    let back = wait(&client, "a pane brought back", |v| {
-        v.made.as_ref() == Some(&floating) && holds(v, 3, &[])
+    let over = [0.2, 0.2, 0.5, 0.5];
+    send(&client, Action::NewFloat { session: session.clone(), tab: tab.clone(), bounds: over });
+    let made = wait(&client, "a floating pane made", |v| {
+        v.made.is_some() && holds(v, 3, &[]) && floats(v).len() == 1
     });
-    assert_eq!(borders(&back), 0);
+    let (floating, layer) = (made.made.clone().unwrap(), floats(&made)[0].id.clone());
+    let floated = |v: &View| find(v, &tab).and_then(|w| w.panes.last()).map(|p| p.float.clone());
+    assert_eq!((floated(&made), borders(&made)), (Some(Some(layer.clone())), 1));
+    assert_eq!(find(&made, &tab).unwrap().focus.as_ref(), Some(&floating));
+    // It is moved, and given another size, where it floats.
+    let placed = [0.25, 0.125, 0.5, 0.75];
+    let place = Action::Place { session: session.clone(), layer: layer.clone(), bounds: placed };
+    send(&client, place);
+    wait(&client, "a floating pane moved", |v| {
+        floats(v).first().is_some_and(|f| f.bounds == placed)
+    });
+    // Put away, it runs on out of sight, and comes back with the keyboard:
+    // brought back with its layer, or revealed alone.
+    let stow = |back| Action::Stow { session: session.clone(), layers: vec![layer.clone()], back };
+    for back in [stow(Some(floating.clone())), Action::Reveal { pane: floating.clone() }] {
+        send(&client, stow(None));
+        wait(&client, "a pane put away", |v| holds(v, 2, &[&floating]) && floats(v)[0].away);
+        send(&client, back);
+        wait(&client, "a pane brought back", |v| {
+            v.made.as_ref() == Some(&floating) && holds(v, 3, &[]) && !floats(v)[0].away
+        });
+    }
+    // Another floats in front of it, until the first is given the keyboard.
+    let beyond = [0.5, 0.5, 0.25, 0.25];
+    send(&client, Action::NewFloat { session: session.clone(), tab: tab.clone(), bounds: beyond });
+    let two = wait(&client, "a second floating pane", |v| v.made.is_some() && floats(v).len() == 2);
+    assert_eq!(floats(&two)[0].id, layer);
+    send(&client, Action::FocusPane { pane: floating.clone() });
+    wait(&client, "a floating pane to the front", |v| {
+        floats(v).last().is_some_and(|f| f.id == layer)
+    });
+    send(&client, Action::ClosePane { pane: two.made.clone().unwrap() });
+    wait(&client, "the second closed", |v| holds(v, 3, &[]) && floats(v).len() == 1);
+    // It goes back into the layout beside a pane there, and out of it again.
+    send(&client, Action::Dock { pane: floating.clone(), beside: pane.clone() });
+    let docked = wait(&client, "a pane docked", |v| holds(v, 3, &[]) && floats(v).is_empty());
+    assert_eq!(borders(&docked), 2);
+    send(&client, Action::Float { pane: floating.clone(), bounds: over });
+    let again =
+        wait(&client, "a pane floated", |v| floats(v).first().is_some_and(|f| f.bounds == over));
+    assert_eq!(borders(&again), 1);
     send(&client, Action::ClosePane { pane: floating });
     let closed = wait(&client, "a floating pane closed", |v| holds(v, 2, &[]));
-    assert_eq!(borders(&closed), 1);
+    assert_eq!((borders(&closed), floats(&closed).len()), (1, 0));
     send(&client, Action::CreateTab(session.clone()));
     let next = wait(&client, "new tab", |v| {
         v.tabs().len() == initial.tabs().len() + 1

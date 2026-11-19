@@ -241,6 +241,57 @@ pub struct Tab {
     pub hidden: Vec<Pane>,
     /// The borders between the panes on show that can be dragged.
     pub borders: Vec<Border>,
+    /// The layers that float over its layout, from the back to the front.
+    pub floats: Vec<Float>,
+}
+
+/// A layer of a tab that floats over the tab's layout, with panes of its own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Float {
+    pub id: String,
+    /// Its place, as a pane's is given: x, y, width and height, each a
+    /// fraction of the tab.
+    pub bounds: [f32; 4],
+    /// It has been put away, and its panes run on out of sight.
+    pub away: bool,
+}
+
+impl Float {
+    /// Where one is first put, over the middle of its tab: the next a step
+    /// down and to the right of the last, so far as there is room.
+    pub fn first(others: usize) -> [f32; 4] {
+        let step = 0.03 * (others % 5) as f32;
+        [0.15 + step, 0.12 + step, 0.7, 0.7]
+    }
+
+    /// Where it is after the pointer has taken hold of it and gone `by` so
+    /// much of the tab: all of it moves, or with `sides` only the edge named
+    /// along x and along y, -1 for its left or top and 1 for its right or
+    /// bottom. It stays within the tab, and is made no smaller than the
+    /// `least` of the tab, each way.
+    pub fn held(&self, sides: Option<[i8; 2]>, by: [f32; 2], least: [f32; 2]) -> [f32; 4] {
+        let [x, y, width, height] = self.bounds;
+        let (mut min, mut max) = ([x, y], [x + width, y + height]);
+        for axis in 0..2 {
+            let size = max[axis] - min[axis];
+            match sides.map(|sides| sides[axis]) {
+                None => {
+                    min[axis] = (min[axis] + by[axis]).clamp(0.0, 1.0 - size);
+                    max[axis] = min[axis] + size;
+                }
+                Some(-1) => {
+                    let most = max[axis] - least[axis].min(size);
+                    min[axis] = (min[axis] + by[axis]).clamp(0.0, most);
+                }
+                Some(1) => {
+                    let least = min[axis] + least[axis].min(size);
+                    max[axis] = (max[axis] + by[axis]).clamp(least, 1.0);
+                }
+                Some(_) => {}
+            }
+        }
+        [min[0], min[1], max[0] - min[0], max[1] - min[1]]
+    }
 }
 
 /// The line between the two sides of a split, which drags to give one of them room
@@ -366,12 +417,43 @@ impl Tab {
         self.zoomed || self.panes.len() > 1
     }
 
+    /// The panes in its layout, on show or not: those that do not float over it.
+    pub fn tiled(&self) -> impl Iterator<Item = &Pane> {
+        self.every().filter(|pane| pane.float.is_none())
+    }
+
+    /// The layers that float over its layout and are on show, from the back:
+    /// none while one pane fills the tab.
+    pub fn floating(&self) -> impl Iterator<Item = &Float> {
+        self.floats.iter().filter(|float| !float.away && !self.zoomed)
+    }
+
+    /// The layer a pane is drawn in, where that is one that floats on show.
+    pub fn layer(&self, pane: &Pane) -> Option<&Float> {
+        self.floating().find(|float| Some(&float.id) == pane.float.as_ref())
+    }
+
+    /// The layer of a pane that floats with another in front of it, of those
+    /// not put away.
+    pub fn covered(&self, pane: &Pane) -> Option<&Float> {
+        let mut shown = self.floats.iter().filter(|float| !float.away);
+        shown.next_back()?;
+        shown.find(|float| Some(&float.id) == pane.float.as_ref())
+    }
+
+    /// Whether a pane of its panes on show has a header: one of several in the
+    /// layout has, and one that fills the tab in place of the rest, and one
+    /// that floats, which is moved by it.
+    pub fn headed(&self, pane: &Pane) -> bool {
+        self.zoomed || pane.float.is_some() || self.tiled().nth(1).is_some()
+    }
+
     /// What moves a pane's edge a step `toward` one side, along x or y: it asks
     /// that of the border of the innermost split that lies that way across and
     /// has the pane in it. None when there is none, or it is as far that way as
     /// a border goes.
     pub fn nudged(&self, pane: &str, toward: [f32; 2]) -> Option<Division> {
-        let pane = self.panes.iter().find(|held| held.id == pane)?;
+        let pane = self.tiled().find(|held| held.id == pane)?;
         let upright = toward[1] == 0.0;
         let across = |border: &&Border| border.upright == upright && border.parts(pane);
         let room = |border: &&Border| border.room[2] * border.room[3];
@@ -392,7 +474,7 @@ impl Tab {
                     let before = [pane.x, pane.y][along] + 0.001 < border.at;
                     border.parts(pane) && before == first
                 };
-                let side = || self.panes.iter().filter(side);
+                let side = || self.tiled().filter(side);
                 // Where a pane starts the other way, and its size: one is level
                 // with another whose middle is within that.
                 let span =
@@ -549,6 +631,8 @@ pub struct Pane {
     /// Nothing is in it but the shell it started with, at its prompt, so closing it
     /// loses nothing. False where that is not known.
     pub idle: bool,
+    /// The layer it is in, where that floats over its tab's layout.
+    pub float: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -685,6 +769,38 @@ pub enum Action {
     /// Move borders. A border asked to move again before the server has moved
     /// it goes only where it was last asked to.
     Divide(Vec<Division>),
+    /// A new pane in a layer of its own that floats over a tab's layout, at
+    /// `bounds` of the tab, with the keyboard.
+    NewFloat {
+        session: String,
+        tab: String,
+        bounds: [f32; 4],
+    },
+    /// Take a pane out of its tab's layout, to float over it at `bounds`.
+    Float {
+        pane: String,
+        bounds: [f32; 4],
+    },
+    /// Put a pane that floats back into the layout, beside a pane there.
+    Dock {
+        pane: String,
+        beside: String,
+    },
+    /// Move a floating layer of a session's, or give it another size. Like a
+    /// border, it goes only where it was last asked to.
+    Place {
+        session: String,
+        layer: String,
+        bounds: [f32; 4],
+    },
+    /// Put floating layers of a session's away, where their panes run on out
+    /// of sight: or bring them back for a pane of one of them, which is
+    /// revealed.
+    Stow {
+        session: String,
+        layers: Vec<String>,
+        back: Option<String>,
+    },
     /// Let a pane fill its tab, or give the tab back to all its panes.
     Zoom {
         pane: String,

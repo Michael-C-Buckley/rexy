@@ -52,6 +52,11 @@ fn plan(view: &View, focused: &str, name: &str, args: Value) -> Result<String, &
         Deed::Server(Action::Zoom { pane }) => format!("zoom {pane}"),
         Deed::Server(Action::MovePane { pane, tab }) => format!("move {pane} to {tab:?}"),
         Deed::Server(Action::Key { code, .. }) => format!("press {code}"),
+        Deed::Server(Action::NewFloat { tab, .. }) => format!("float over {tab}"),
+        Deed::Server(Action::Stow { layers, back, .. }) => format!("stow {layers:?} for {back:?}"),
+        Deed::Server(Action::Float { pane, .. }) => format!("float {pane}"),
+        Deed::Server(Action::Dock { pane, beside }) => format!("dock {pane} by {beside}"),
+        Deed::Server(Action::Place { layer, bounds, .. }) => format!("{layer} at {bounds:?}"),
         Deed::Focus(pane) => format!("focus {pane}"),
         Deed::Close(_, spared, _) => format!("close, spared: {spared}"),
         Deed::CloseTab(_, tab, spared) => format!("close {tab}, spared: {spared}"),
@@ -291,4 +296,45 @@ fn hosts_are_added_always_and_removed_while_one_can_be() {
     assert!(opens(false, hosts::ADD) == Some(Listing::Host(None)));
     assert!(opens(true, hosts::REMOVE) == Some(Listing::Hosts));
     assert!(opens(false, hosts::REMOVE).is_none());
+}
+
+#[test]
+fn floating_panes_are_made_put_away_and_brought_back_by_one_command() {
+    let mut view = view();
+    let said = |view: &View, focused: &str, name: &str| {
+        plan(view, focused, name, Value::Null).unwrap_or_else(|_| "nothing".into())
+    };
+    // With none, one is made: and a pane of the layout can be made to float.
+    assert_eq!(said(&view, "b", floats::TOGGLE), "float over t2");
+    assert_eq!(said(&view, "b", floats::FLOAT), "float b");
+    // With one on show, the command goes to it from a pane of the layout, and
+    // from the one that floats puts it away: and that pane can go back into
+    // the layout.
+    let tab = &mut view.sessions[0].tabs[1];
+    tab.panes[2].float = Some("f".into());
+    tab.floats = vec![Float { id: "f".into(), ..Float::default() }];
+    assert_eq!(said(&view, "b", floats::TOGGLE), "stow [] for Some(\"c\")");
+    assert_eq!(said(&view, "c", floats::TOGGLE), "stow [\"f\"] for None");
+    assert_eq!(said(&view, "c", floats::FLOAT), "dock c by b");
+    assert_eq!(said(&view, "b", floats::NEW), "float over t2");
+    // Put away, it is brought back for its pane.
+    let tab = &mut view.sessions[0].tabs[1];
+    tab.floats[0].away = true;
+    let away = tab.panes.pop().unwrap();
+    tab.hidden.push(away);
+    assert_eq!(said(&view, "b", floats::TOGGLE), "stow [\"f\"] for Some(\"c\")");
+    // Behind a pane that fills the tab, it is gone to as it is from beside it.
+    let tab = &mut view.sessions[0].tabs[1];
+    (tab.floats[0].away, tab.zoomed) = (false, true);
+    assert_eq!(said(&view, "b", floats::TOGGLE), "stow [] for Some(\"c\")");
+    // A tab keeps a pane on show: the last pane of a layout stays in it, and
+    // where all of them float none is put away. One of those is given the tab,
+    // there being no layout for it to go back into.
+    let tab = &mut view.sessions[0].tabs[1];
+    tab.zoomed = false;
+    tab.panes = tab.hidden.split_off(0);
+    assert_eq!(said(&view, "c", floats::TOGGLE), "nothing");
+    assert_eq!(said(&view, "c", floats::FLOAT), "f at [0.0, 0.0, 1.0, 1.0]");
+    view.sessions[0].tabs[1].panes[0].float = None;
+    assert_eq!(said(&view, "c", floats::FLOAT), "nothing");
 }

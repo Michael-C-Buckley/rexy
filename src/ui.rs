@@ -6,6 +6,7 @@ mod boxes;
 mod close;
 pub mod commands;
 mod find;
+mod floats;
 mod fonts;
 mod frame;
 mod heard;
@@ -34,11 +35,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui::{self, Align2, FontId, Key, Margin, Rect, RichText, Sense, Vec2};
+use eframe::egui::{
+    self, Align2, FontId, Key, Margin, Rect, RichText, Sense, Vec2, emath::RectTransform,
+};
 
 use crate::{
     backend::Client,
-    model::{Action, Host, Question, Tab, View},
+    model::{Action, Float, Host, Pane, Question, Tab, View},
     notify::{Desktop, Herald},
 };
 use close::Closing;
@@ -154,6 +157,8 @@ pub struct App {
     wanting: Vec<(usize, String)>,
     /// A pane looked at over the tab on show, which has the keyboard meanwhile.
     peek: Option<peek::Peek>,
+    /// A floating layer the pointer has hold of, to move it or give it another size.
+    grip: Option<floats::Grip>,
     /// When the window went out of use, while it is.
     left: Option<Instant>,
     closing: Closing,
@@ -211,6 +216,7 @@ impl App {
             stood: [None, None],
             wanting: Vec::new(),
             peek: None,
+            grip: None,
             left: None,
             closing: Closing::default(),
             offers: offers::Offers::listen(cc, cc.egui_ctx.clone()),
@@ -528,7 +534,8 @@ impl eframe::App for App {
         // pane in use and what programs have to say.
         let shown = panes.iter().find_map(|p| p.frame.as_ref());
         let shown = shown.map(|frame| (rgb(frame.bg), frame.ansi.map(rgb)));
-        frame::ground(root_ui, style::theme(&ctx, shown));
+        let ground = style::theme(&ctx, shown);
+        frame::ground(root_ui, ground);
         // With the sidebar, tabs are listed in it. Without, they run along the top.
         let sidebar = self.remembered.kept.sidebar;
         if sidebar {
@@ -561,11 +568,18 @@ impl eframe::App for App {
             if !view.connected {
                 self.lost(ui.ctx(), view, within);
             }
-            // Each has its part of the tab, and is drawn on its way there.
-            let belong = panes.iter().map(|pane| {
+            // Each has its part of the tab, and is drawn on its way there: but
+            // those of a layer the pointer has hold of are drawn where the
+            // pointer has it, ahead of the server.
+            let taken = self.held(ui, view, tab, area);
+            let part = |pane: &Pane| {
                 let size = egui::vec2(pane.width, pane.height);
-                let part = Rect::from_min_size(egui::pos2(pane.x, pane.y), size);
-                (&*pane.id, part)
+                Rect::from_min_size(egui::pos2(pane.x, pane.y), size)
+            };
+            let belong = panes.iter().map(|pane| {
+                let held = taken.filter(|(layer, _)| pane.float.as_deref() == Some(layer));
+                let ahead = held.map(|(_, [from, to])| RectTransform::from_to(from, to));
+                (&*pane.id, ahead.map_or(part(pane), |ahead| ahead.transform_rect(part(pane))))
             });
             let belong: Vec<_> = belong.collect();
             // What the pointer has hold of, such as a border, goes where it does.
@@ -575,11 +589,37 @@ impl eframe::App for App {
                 let [min, max] = [part.min, part.max].map(|at| area.lerp_inside(at.to_vec2()));
                 Rect::from_min_max(min, max).shrink(GUTTER / 2.0)
             };
-            for ((pane, (_, rest)), shown) in panes.iter().zip(&belong).zip(shown) {
-                self.terminal_pane(ui, view, tab, pane, card(shown), card(*rest));
-            }
+            // Each terminal is sized for the place the server has given its
+            // pane, which one held by the pointer comes to as the server answers.
+            let cards = shown.into_iter().zip(panes).map(|(shown, pane)| [shown, part(pane)]);
+            let cards: Vec<[Rect; 2]> = cards.map(|parts| parts.map(card)).collect();
+            // The pointer is over the last drawn of those it is in: the panes
+            // come as their layers do, from the back.
+            let over = cards.iter().rposition(|[card, _]| ui.rect_contains_pointer(*card));
+            // Those of one layer: of the layout, as is the one that fills the
+            // tab for now, or of a layer that floats.
+            let draw = |app: &mut Self, ui: &mut egui::Ui, layer: Option<&Float>| {
+                for (index, pane) in panes.iter().enumerate() {
+                    if tab.layer(pane) == layer {
+                        app.terminal_pane(ui, view, tab, pane, cards[index], over == Some(index));
+                    }
+                }
+            };
+            // The panes of the tab's layout, and the borders between them.
+            draw(self, ui, None);
             if view.connected {
                 self.borders(ui, tab, area);
+            }
+            // Over those the layers that float, from the back, each on ground
+            // that reaches round its panes.
+            for float in tab.floating() {
+                let held =
+                    panes.iter().zip(&cards).filter(|(pane, _)| tab.layer(pane) == Some(float));
+                let round = held.map(|(_, [card, _])| *card).reduce(Rect::union);
+                if let Some(round) = round {
+                    self.float(ui, float, round, ground);
+                    draw(self, ui, Some(float));
+                }
             }
             within
         });

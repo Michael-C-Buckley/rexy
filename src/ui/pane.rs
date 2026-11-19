@@ -10,6 +10,7 @@ use super::{
     App,
     close::{Ask, CLOSE, asking, closer, doomed},
     commands::{CLEAR, COPY_ALL, TO_TAB, title},
+    floats,
     heard::dot,
     pointer::{Pointer, Wheel},
     render::{Grid, rgb},
@@ -85,8 +86,8 @@ impl App {
         view: &View,
         tab: &Tab,
         pane: &Pane,
-        rect: Rect,
-        rest: Rect,
+        [rect, rest]: [Rect; 2],
+        over: bool,
     ) {
         let frame = pane.frame.as_ref();
         let card = frame.map_or(CARD, |frame| rgb(frame.bg));
@@ -104,7 +105,6 @@ impl App {
         let mut actions = Vec::new();
         let (what, spared) = (doomed(&pane.id), pane.idle);
         let ask = self.closing.ask(what, spared);
-        let over = ui.rect_contains_pointer(rect);
         // It was asked to close just now, with the pointer.
         let mut close = false;
         // Its header was clicked.
@@ -117,25 +117,31 @@ impl App {
             true => (Icon::Restore, "Restore Panes"),
             false => (Icon::Zoom, title("pane.zoom")),
         };
-        // One pane of several has a header, and so has one that fills the tab in
-        // place of the rest.
-        if tab.split() {
+        let headed = tab.headed(pane);
+        // The layer it floats in, unless it fills the tab for now.
+        let float = tab.layer(pane);
+        if headed {
             terminal_rect.min.y += PANE_HEADER;
             // A click on it takes the keyboard to the pane, as one in its terminal
             // does. Its buttons lie over it.
             let bar = rect.with_max_y(terminal_rect.top());
             let id = ui.scope_id().with(("header", &pane.id));
             let grip = ui.interact(bar, id, Sense::click_and_drag());
-            picked = grip.clicked();
+            // One that floats has it from the moment it is taken hold of.
+            picked = grip.clicked() || (float.is_some() && grip.drag_started());
             // Dragged, it carries the pane to a row of the sidebar or a tab
             // along the top, and its title goes with the pointer meanwhile.
-            if grip.drag_started()
+            // But one that floats is moved by it, where it is.
+            if let Some(float) = float {
+                self.grip(&grip, float, None);
+            } else if grip.drag_started()
                 && let Some(session) = view.selected_session.clone()
             {
                 let from = Target { server: self.current, session, tab: Some(tab.id.clone()) };
                 DragAndDrop::set_payload(ui.ctx(), Carried { from, pane: pane.id.clone() });
             }
-            if let Some(at) = grip.interact_pointer_pos().filter(|_| grip.dragged()) {
+            let carried = grip.interact_pointer_pos().filter(|_| grip.dragged() && float.is_none());
+            if let Some(at) = carried {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 let layer = egui::LayerId::new(egui::Order::Tooltip, id);
                 let painter = ui.ctx().layer_painter(layer);
@@ -172,10 +178,10 @@ impl App {
             heading(ui, header, pane, &pane.title, color, &pane.word().unwrap_or_default());
         }
         let state = self.panes.entry(pane.id.clone()).or_default();
-        let within = room(rect, tab.split());
+        let within = room(rect, headed);
         // What dims the terminal, where it is dimmed, keeps to the card's corners.
         let below = CornerRadius { sw: CARD_RADIUS, se: CARD_RADIUS, ..CornerRadius::ZERO };
-        let corners = match tab.split() {
+        let corners = match headed {
             true => below,
             false => CornerRadius::same(CARD_RADIUS),
         };
@@ -222,7 +228,7 @@ impl App {
         }
         // The terminal is as large as the card will be at rest, from the first:
         // its program is told its size once, not all the way there.
-        let settled = Grid { rect: room(rest, tab.split()), ..grid };
+        let settled = Grid { rect: room(rest, headed), ..grid };
         let size = settled.size(ui.ctx().pixels_per_point());
         if state.last_size != Some(size) {
             let (pane, client) = (pane.id.clone(), &self.servers[self.current].client);
@@ -252,8 +258,10 @@ impl App {
         if pressed || picked {
             self.focused = Some(pane.id.clone());
             // A pane that is this window's, and where the server has the keyboard
-            // already, needs no telling.
-            if !active || !pane.owner || tab.focus.as_ref() != Some(&pane.id) {
+            // already, needs no telling: unless it floats behind another, and
+            // is to come to the front.
+            let behind = tab.covered(pane).is_some();
+            if !active || !pane.owner || tab.focus.as_ref() != Some(&pane.id) || behind {
                 actions.push(Action::FocusPane { pane: pane.id.clone() });
             }
         }
@@ -372,6 +380,7 @@ impl App {
                     (title("pane.split.down"), "pane.split.down"),
                     (zoom, "pane.zoom"),
                     (title(TO_TAB), TO_TAB),
+                    (if pane.float.is_some() { "Dock Pane" } else { "Float Pane" }, floats::FLOAT),
                 ];
                 for (label, name) in entries {
                     if name == "pane.split.right" {

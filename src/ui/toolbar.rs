@@ -6,6 +6,7 @@ use super::{
     App,
     close::{Ask, CLOSE_TAB},
     commands::title,
+    floats,
     frame::{controls, titlebar},
     heard::{dot, worn},
     rows::Target,
@@ -17,14 +18,17 @@ use super::{
 use crate::model::{Action, Tab, View};
 
 impl App {
-    /// The buttons that make another terminal: in a tab of its own, or beside
-    /// the focused pane or below it. They stand together, apart from the window's own.
+    /// The buttons that make another terminal: in a tab of its own, beside the
+    /// focused pane or below it, or floating over the tab, where the button
+    /// also goes to those that do and puts them away. They stand together,
+    /// apart from the window's own.
     fn makers(&mut self, ui: &mut egui::Ui, view: &View) {
         self.button(ui, view, Icon::Plus, "New tab", "client.tab.new");
         let splits = [(Icon::SplitRight, "pane.split.right"), (Icon::SplitDown, "pane.split.down")];
         for (icon, name) in splits {
             self.button(ui, view, icon, title(name), name);
         }
+        self.button(ui, view, Icon::Float, "Floating panes", floats::TOGGLE);
     }
 
     /// A button that lists the panes of the tab on show that are out of sight:

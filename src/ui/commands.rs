@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use super::{
     App, DEFAULT_FONT_SIZE, FONT_SIZES,
     close::doomed,
-    hosts, input,
+    floats, hosts, input,
     keymap::Keys,
     palette::Listing,
     peek,
@@ -15,7 +15,7 @@ use super::{
     style::{Icon, icon_button},
 };
 use crate::{
-    model::{Action, Edit, Tab, View},
+    model::{Action, Edit, Float, Tab, View},
     terminal::{Request, Scroll},
 };
 
@@ -86,6 +86,10 @@ pub const COMMANDS: &[Command] = &[
     ("pane.move.down", "Move Pane Down", ONCE),
     // Nor for this, which takes a pane out of a tab it shares.
     (TO_TAB, "Move Pane to New Tab", ONCE),
+    // Nor for a pane that floats over the others, though its servers have them.
+    (floats::FLOAT, "Float or Dock Pane", ONCE),
+    (floats::TOGGLE, "Show or Hide Floating Panes", ONCE),
+    (floats::NEW, "New Floating Pane", ONCE),
     ("pane.focus.left", "Focus Pane Left", HELD),
     ("pane.focus.right", "Focus Pane Right", HELD),
     ("pane.focus.up", "Focus Pane Up", HELD),
@@ -166,6 +170,8 @@ pub(super) const KEYS: &[(&str, &str)] = &[
     ("ctrl+alt+shift+down", "pane.resize.down"),
     ("ctrl+alt+=", "pane.balance"),
     ("ctrl+shift+enter", "pane.zoom"),
+    ("ctrl+shift+s", floats::TOGGLE),
+    ("ctrl+alt+f", floats::FLOAT),
     ("ctrl+shift+w", "pane.close"),
     // The keys some keyboards have for these. Rex has no spelling for them, and
     // keeps this one as it comes.
@@ -477,6 +483,52 @@ impl Standing<'_> {
             "pane.move.left" | "pane.move.right" | "pane.move.up" | "pane.move.down" => {
                 let with = tab?.beside(&pane?.id, toward(name)?)?.id.clone();
                 Deed::Server(Action::Swap { pane: pane?.id.clone(), with })
+            }
+            // Another pane floats over the tab: and with none that does, the
+            // command that goes to them makes one.
+            floats::NEW | floats::TOGGLE if name == floats::NEW || tab?.floats.is_empty() => {
+                let (tab, bounds) = (tab?.id.clone(), Float::first(tab?.floats.len()));
+                Deed::Server(Action::NewFloat { session: session()?, tab, bounds })
+            }
+            // From a pane that floats over the tab, the layers that do are put
+            // away together, where that leaves a pane on show. From another
+            // it goes to the one in front, behind whatever hides it: those put
+            // away are brought back, and a pane that fills the tab makes way.
+            floats::TOGGLE => {
+                let (tab, session) = (tab?, session()?);
+                let layers = |away: bool| {
+                    let layers = tab.floats.iter().filter(|float| float.away == away);
+                    layers.map(|float| float.id.clone()).collect()
+                };
+                Deed::Server(if pane.is_some_and(|pane| pane.float.is_some()) {
+                    tab.tiled().next()?;
+                    Action::Stow { session, layers: layers(false), back: None }
+                } else {
+                    let front = &tab.floats.last()?.id;
+                    let held = tab.every().find(|pane| pane.float.as_ref() == Some(front))?;
+                    Action::Stow { session, layers: layers(true), back: Some(held.id.clone()) }
+                })
+            }
+            // A pane of the layout floats over it, but for the last one there.
+            // One that floats goes back into it, beside the first pane there:
+            // or, the layout empty, is given all of the tab.
+            floats::FLOAT => {
+                let (pane, tab) = (pane?, tab?);
+                let mut layout = tab.tiled();
+                Deed::Server(match (&pane.float, layout.next()) {
+                    (None, _) => {
+                        layout.next()?;
+                        let bounds = Float::first(tab.floats.len());
+                        Action::Float { pane: pane.id.clone(), bounds }
+                    }
+                    (Some(_), Some(beside)) => {
+                        Action::Dock { pane: pane.id.clone(), beside: beside.id.clone() }
+                    }
+                    (Some(layer), None) => {
+                        let (session, layer) = (session()?, layer.clone());
+                        Action::Place { session, layer, bounds: [0.0, 0.0, 1.0, 1.0] }
+                    }
+                })
             }
             // Alone in its tab, it has one already.
             TO_TAB if tab?.every().count() > 1 => {

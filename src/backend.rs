@@ -6,7 +6,9 @@
 //! of it newer than the one held. Nothing asked is waited for where input is taken:
 //! each answer is dealt with when it comes.
 use crate::{
-    model::{self, Action, Activity, Border, Division, Edit, Host, Pane, Session, Tab, View, Wait},
+    model::{
+        self, Action, Activity, Border, Division, Edit, Float, Host, Pane, Session, Tab, View, Wait,
+    },
     notify::Herald,
     program::Program,
     ssh,
@@ -623,8 +625,9 @@ struct Connection<'a> {
     showing: HashSet<String>,
     /// The fetching of the last text a program copied.
     copying: Option<JoinHandle<()>>,
-    /// Where a border was last asked to go, for `divide` to ask of the server.
-    borders: watch::Sender<Vec<Value>>,
+    /// Where borders and floating layers were last asked to go, for `shape`
+    /// to ask of the server.
+    shaping: watch::Sender<Vec<(&'static str, Value)>>,
 }
 
 #[derive(Default)]
@@ -761,7 +764,7 @@ impl<'a> Connection<'a> {
             held: None,
             showing: HashSet::new(),
             copying: None,
-            borders: divide(control.rpc.clone(), shared.clone()),
+            shaping: shape(control.rpc.clone(), shared.clone()),
         };
         match shown {
             Some(shown) if joined.is_object() => connection.view(&shown, joined).await,
@@ -1387,6 +1390,32 @@ impl<'a> Connection<'a> {
         }
     }
 
+    /// What takes the keyboard to a pane, for `perform` to ask. The pane is
+    /// taken for this client first, and its layer comes to the front where
+    /// another floats in front of it, which the server leaves to be asked.
+    /// One `brought` out from out of sight has the window's keyboard when it
+    /// is seen: focus ends a zoom that hides it, and brings back a floating
+    /// layer that was put away.
+    async fn focus(
+        &mut self,
+        pane: String,
+        brought: bool,
+    ) -> Result<(String, &'static str, Value, Option<String>)> {
+        let session = self.session(&pane)?;
+        self.claim(&session, &pane).await;
+        let covered = {
+            let state = self.shared.lock();
+            let found = state.view.find(&pane);
+            found.and_then(|(_, tab, pane)| tab.covered(pane)).map(|layer| layer.id.clone())
+        };
+        if let Some(layer) = covered {
+            let request = json!({"session_id": session, "layer_id": layer});
+            let _ = self.rpc.enqueue("session.raise_layer", request).await;
+        }
+        let payload = json!({"block_id": pane});
+        Ok((session, "session.focus_block", payload, brought.then_some(pane)))
+    }
+
     /// Have the server show the tab this window shows, where it shows another,
     /// before it is asked to act for the user: what its configuration does, it
     /// does to the tab the server shows. Returns the session and the tab on show.
@@ -1425,6 +1454,13 @@ impl<'a> Connection<'a> {
         let state = self.shared.lock();
         let (session, ..) = state.view.find(pane).context("That pane has closed")?;
         Ok(session.id.clone())
+    }
+
+    /// The pane that speaks for a tab, in whatever session the tab is.
+    fn front(&self, tab: &str) -> Option<String> {
+        let state = self.shared.lock();
+        let (_, tab) = state.view.every_tab().find(|(_, held)| held.id == tab)?;
+        tab.front().map(|pane| pane.id.clone())
     }
 
     /// Do what the UI asked, which is to ask it of the server and go on: typing
@@ -1492,12 +1528,7 @@ impl<'a> Connection<'a> {
             }
             Action::MovePane { pane, tab: Some(tab) } => {
                 let session = self.session(&pane)?;
-                let front = {
-                    let state = self.shared.lock();
-                    let tab = state.view.every_tab().find(|(_, held)| held.id == tab);
-                    tab.and_then(|(_, tab)| tab.front()).map(|pane| pane.id.clone())
-                };
-                let front = front.context("That tab has closed")?;
+                let front = self.front(&tab).context("That tab has closed")?;
                 let payload = json!({"block_id": pane, "anchor_block_id": front});
                 (session, "session.move_block", payload, Some(pane))
             }
@@ -1514,17 +1545,51 @@ impl<'a> Connection<'a> {
             }
             Action::Divide(borders) => {
                 let request = |border: &Division| {
-                    anyhow::Ok(json!({
+                    let request = json!({
                         "session_id": self.session(&border.before)?,
                         "direction": if border.upright { "horizontal" } else { "vertical" },
                         "before_block_id": border.before,
                         "after_block_id": border.after,
                         "ratio": border.ratio,
-                    }))
+                    });
+                    anyhow::Ok(("session.resize_pane", request))
                 };
                 let requests = borders.iter().map(request).collect::<Result<_>>()?;
-                let _ = self.borders.send(requests);
+                let _ = self.shaping.send(requests);
                 return Ok(());
+            }
+            Action::NewFloat { session, tab, bounds } => {
+                // It starts where the pane with the keyboard is, as a new tab does.
+                let layout = self.shell(self.front(&tab).as_deref());
+                let payload =
+                    json!({"window_id": tab, "bounds": bounds, "layout": layout, "focus": true});
+                (session, "session.new_layer", payload, None)
+            }
+            Action::Float { pane, bounds } => {
+                let payload = json!({"block_id": pane, "bounds": bounds});
+                (self.session(&pane)?, "session.float_block", payload, None)
+            }
+            Action::Dock { pane, beside } => {
+                let payload = json!({"block_id": pane, "anchor_block_id": beside});
+                (self.session(&pane)?, "session.move_block", payload, None)
+            }
+            Action::Place { session, layer, bounds } => {
+                let request = json!({"session_id": session, "layer_id": layer, "bounds": bounds});
+                let _ = self.shaping.send(vec![("session.resize_layer", request)]);
+                return Ok(());
+            }
+            Action::Stow { session, layers, back } => {
+                let state = if back.is_some() { "normal" } else { "minimized" };
+                for layer in layers {
+                    let request = json!({"session_id": session, "layer_id": layer, "state": state});
+                    let kept = Reply::Told("The floating panes are as they were");
+                    self.ask(kept, "session.set_layer_state", request).await;
+                }
+                // They are brought back for a pane, which then has the keyboard.
+                let Some(pane) = back else {
+                    return Ok(());
+                };
+                self.focus(pane, true).await?
             }
             Action::Zoom { pane } => {
                 let session = self.session(&pane)?;
@@ -1537,19 +1602,8 @@ impl<'a> Connection<'a> {
                 let payload = json!({"block_id": pane});
                 (self.session(&pane)?, "block.close", payload, None)
             }
-            Action::Reveal { pane } => {
-                // Focus ends a zoom that hides the pane, and brings back a floating
-                // layer that was put away.
-                let payload = json!({"block_id": pane});
-                let session = self.session(&pane)?;
-                (session, "session.focus_block", payload, Some(pane))
-            }
-            Action::FocusPane { pane } => {
-                let session = self.session(&pane)?;
-                self.claim(&session, &pane).await;
-                let payload = json!({"block_id": pane});
-                (session, "session.focus_block", payload, None)
-            }
+            Action::Reveal { pane } => self.focus(pane, true).await?,
+            Action::FocusPane { pane } => self.focus(pane, false).await?,
             Action::Perform { name, args, origin, pane } => {
                 // A terminal's action is done to a pane, in the pane's session.
                 // One of the configuration's is given what there is.
@@ -1932,20 +1986,21 @@ fn list(sessions: &mut Vec<Session>, event: &Event) {
     }
 }
 
-/// Move borders as they are asked to be moved, one request at a time: a drag asks
-/// faster than a server answers, and every move reflows the terminals either side.
-/// Only where borders were last asked to go is asked of the server, once it has
-/// answered for the time before. The view that comes of it is in the server's news.
-fn divide(rpc: Rpc, shared: Shared) -> watch::Sender<Vec<Value>> {
-    let (borders, mut asked) = watch::channel(Vec::new());
+/// Move borders and floating layers as they are asked to be moved, one request
+/// at a time, each by its method: a drag asks faster than a server answers,
+/// and every move reflows the terminals it touches. Only where they were last
+/// asked to go is asked of the server, once it has answered for the time
+/// before. The view that comes of it is in the server's news.
+fn shape(rpc: Rpc, shared: Shared) -> watch::Sender<Vec<(&'static str, Value)>> {
+    let (shaping, mut asked) = watch::channel(Vec::new());
     tokio::spawn(async move {
         // Until the connection is dropped, and the asking with it.
         while asked.changed().await.is_ok() {
             let requests = asked.borrow_and_update().clone();
-            for request in requests {
+            for (method, request) in requests {
                 // What the server would not do is said. That the connection ended
                 // is said already, above its last screen.
-                if let Err(error) = rpc.call("session.resize_pane", request).await
+                if let Err(error) = rpc.call(method, request).await
                     && error.is::<Failed>()
                 {
                     shared.fail(format!("{error:#}"));
@@ -1953,7 +2008,7 @@ fn divide(rpc: Rpc, shared: Shared) -> watch::Sender<Vec<Value>> {
             }
         }
     });
-    borders
+    shaping
 }
 
 /// The panes under one node of a layout, each with the place the server gives it:
@@ -1995,15 +2050,21 @@ fn parse_tabs(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> Vec
             let id: String = tab["window_id"].as_str()?.into();
             let zoom = tab["zoomed_block_id"].as_str();
             let (mut panes, mut hidden, mut borders) = (Vec::new(), Vec::new(), Vec::new());
+            let mut floats = Vec::new();
             for layer in items(&tab["layers"]) {
                 let (mut placed, mut split) = (Vec::new(), Vec::new());
                 layout(&layer["layout"], &mut placed, &mut split);
-                // Only the layer that fills the tab has borders to drag, while its
-                // panes are all on show and no other floats over them.
-                if layer["kind"] == "tiled" && zoom.is_none() {
+                // Only the layer that fills the tab has borders to drag, while
+                // its panes are all on show. The others float over it, in the
+                // order they come: a layer of no kind is taken to fill the tab.
+                let floating = layer["kind"] == "floating";
+                let float = layer["layer_id"].as_str().filter(|_| floating);
+                let away = layer["state"] == "minimized";
+                if !floating && zoom.is_none() {
                     borders = split;
-                } else if layer["state"] != "minimized" && !placed.is_empty() {
-                    borders.clear();
+                }
+                if let Some((id, bounds)) = float.zip(rect(&layer["bounds"])) {
+                    floats.push(Float { id: id.into(), bounds, away });
                 }
                 for (id, bounds) in placed {
                     let block = block(&layer["blocks"], &id);
@@ -2016,7 +2077,7 @@ fn parse_tabs(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> Vec
                     // A zoomed pane fills the tab, and the rest are out of sight behind
                     // it. So are those of a floating layer that has been put away.
                     let (panes, bounds) = match zoom {
-                        _ if layer["state"] == "minimized" => (&mut hidden, bounds),
+                        _ if away => (&mut hidden, bounds),
                         Some(zoom) if zoom == id => (&mut panes, FULL),
                         Some(_) => (&mut hidden, bounds),
                         None => (&mut panes, bounds),
@@ -2043,6 +2104,7 @@ fn parse_tabs(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> Vec
                         },
                         owner: block["owner"] == client_id,
                         idle: false,
+                        float: float.map(str::to_owned),
                     });
                 }
             }
@@ -2059,6 +2121,7 @@ fn parse_tabs(view: &Value, client_id: &str, terminals: &mut Vec<String>) -> Vec
                 panes,
                 hidden,
                 borders,
+                floats,
             })
         })
         .collect()

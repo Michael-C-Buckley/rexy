@@ -234,3 +234,48 @@ fn a_pane_says_how_far_along_it_is_only_while_it_works() {
     let saying = pane(Activity::Working, None).saying();
     assert_eq!(saying, "Refactor auth: running tests");
 }
+
+#[test]
+fn a_floating_layer_goes_with_the_pointer_and_stays_in_its_tab() {
+    let float = Float { id: "f".into(), bounds: [0.25, 0.25, 0.5, 0.5], away: false };
+    let near = |got: [f32; 4], want: [f32; 4]| {
+        assert!(got.iter().zip(want).all(|(got, want)| (got - want).abs() < 1e-6), "{got:?}");
+    };
+    let held = |sides, by| float.held(sides, by, [0.2, 0.15]);
+    // All of it moves, as far as the tab's edges.
+    near(held(None, [0.125, -0.125]), [0.375, 0.125, 0.5, 0.5]);
+    near(held(None, [0.75, -0.75]), [0.5, 0.0, 0.5, 0.5]);
+    // A side goes alone, and a corner is two sides: no further than leaves
+    // the layer the least it may be, nor past the tab's edge.
+    near(held(Some([1, 0]), [0.125, 0.5]), [0.25, 0.25, 0.625, 0.5]);
+    near(held(Some([-1, -1]), [0.125, -0.5]), [0.375, 0.0, 0.375, 0.75]);
+    near(held(Some([-1, 1]), [0.75, 0.75]), [0.55, 0.25, 0.2, 0.75]);
+    // Each new one starts a step from the last.
+    assert_ne!(Float::first(0), Float::first(1));
+    let [x, y, width, height] = Float::first(4);
+    assert!(x + width <= 1.0 && y + height <= 1.0);
+}
+
+#[test]
+fn a_tab_knows_which_of_its_panes_float_and_what_is_in_front_of_them() {
+    let over = |id: &str, layer: &str| Pane { float: Some(layer.into()), ..pane(id, [0.0; 4]) };
+    let float = |id: &str, away| Float { id: id.into(), away, ..Float::default() };
+    let mut tab = Tab {
+        panes: vec![pane("a", [0.0; 4]), over("b", "back"), over("c", "front")],
+        hidden: vec![over("d", "away")],
+        floats: vec![float("back", false), float("front", false), float("away", true)],
+        ..tab("w")
+    };
+    let ids = |panes: Vec<&Pane>| panes.iter().map(|pane| pane.id.clone()).collect::<String>();
+    assert_eq!(ids(tab.tiled().collect()), "a");
+    assert_eq!(tab.floating().map(|float| &*float.id).collect::<Vec<_>>(), ["back", "front"]);
+    let layer = |tab: &Tab, pane: usize| tab.layer(&tab.panes[pane]).map(|float| float.id.clone());
+    assert_eq!([layer(&tab, 0), layer(&tab, 1)], [None, Some("back".into())]);
+    // One put away is in front of nothing: only the one behind is covered.
+    let covered = |tab: &Tab, pane: usize| tab.covered(&tab.panes[pane]).is_some();
+    assert_eq!([covered(&tab, 0), covered(&tab, 1), covered(&tab, 2)], [false, true, false]);
+    // While a pane fills the tab none floats on show, though the layout is as it was.
+    tab.zoomed = true;
+    assert_eq!((tab.floating().count(), layer(&tab, 1)), (0, None));
+    assert_eq!(ids(tab.tiled().collect()), "a");
+}

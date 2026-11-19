@@ -288,6 +288,8 @@ pub enum Icon {
     Agents,
     /// An eye, to look at something from where one is.
     Peek,
+    /// A pane over the corner of another: one that floats.
+    Float,
 }
 
 impl Icon {
@@ -316,6 +318,11 @@ impl Icon {
             Icon::SplitDown => {
                 window();
                 line([-7.0, 0.0], [7.0, 0.0]);
+            }
+            Icon::Float => {
+                window();
+                let over = Rect::from_center_size(center, egui::vec2(8.0, 6.0));
+                painter.rect_stroke(over, 1.5, stroke, StrokeKind::Inside);
             }
             Icon::Close => {
                 line([-4.0, -4.0], [4.0, 4.0]);

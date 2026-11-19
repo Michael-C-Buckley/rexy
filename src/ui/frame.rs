@@ -87,31 +87,11 @@ pub fn edges(ui: &egui::Ui) {
     let window = ctx.content_rect();
     let line = Stroke::new(1.0, EDGE_LINE);
     ui.painter().rect_stroke(window, corners(ctx), line, StrokeKind::Inside);
-    use ResizeDirection::*;
-    // The corners come after the sides they lie over.
-    let (x, y) = (window.x_range(), window.y_range());
-    let (left, right) = (window.left(), window.right());
-    let (top, bottom) = (window.top(), window.bottom());
-    let handles = [
-        (North, Rect::from_x_y_ranges(x, top..=top + EDGE)),
-        (South, Rect::from_x_y_ranges(x, bottom - EDGE..=bottom)),
-        (West, Rect::from_x_y_ranges(left..=left + EDGE, y)),
-        (East, Rect::from_x_y_ranges(right - EDGE..=right, y)),
-        (NorthWest, corner(window.left_top(), [1.0, 1.0])),
-        (NorthEast, corner(window.right_top(), [-1.0, 1.0])),
-        (SouthWest, corner(window.left_bottom(), [1.0, -1.0])),
-        (SouthEast, corner(window.right_bottom(), [-1.0, -1.0])),
-    ];
-    for (direction, rect) in handles {
+    for (direction, rect) in handles(window, EDGE, CORNER) {
         let id = egui::Id::unique(("window edge", direction as u8));
         let handle = ui.interact(rect, id, Sense::click_and_drag());
         if handle.hovered() || handle.dragged() {
-            ctx.set_cursor_icon(match direction {
-                North | South => CursorIcon::ResizeVertical,
-                East | West => CursorIcon::ResizeHorizontal,
-                NorthWest | SouthEast => CursorIcon::ResizeNwSe,
-                NorthEast | SouthWest => CursorIcon::ResizeNeSw,
-            });
+            ctx.set_cursor_icon(cursor(direction));
         }
         // The desktop sizes the window from the press on: it is not for waiting
         // to see whether the pointer moves.
@@ -122,7 +102,35 @@ pub fn edges(ui: &egui::Ui) {
     }
 }
 
-/// The square a corner's handle takes, inward from the corner itself.
-fn corner(at: egui::Pos2, inward: [f32; 2]) -> Rect {
-    Rect::from_two_pos(at, at + CORNER * Vec2::from(inward))
+/// What takes the pointer to give a rect another size, each with the way it
+/// goes: a strip `edge` deep inside each side, and a square of `corner`
+/// inward from each corner. The corners come after the sides they lie over.
+pub fn handles(rect: Rect, edge: f32, corner: f32) -> [(ResizeDirection, Rect); 8] {
+    use ResizeDirection::*;
+    let (x, y) = (rect.x_range(), rect.y_range());
+    let (left, right) = (rect.left(), rect.right());
+    let (top, bottom) = (rect.top(), rect.bottom());
+    let square =
+        |at: egui::Pos2, inward: [f32; 2]| Rect::from_two_pos(at, at + corner * Vec2::from(inward));
+    [
+        (North, Rect::from_x_y_ranges(x, top..=top + edge)),
+        (South, Rect::from_x_y_ranges(x, bottom - edge..=bottom)),
+        (West, Rect::from_x_y_ranges(left..=left + edge, y)),
+        (East, Rect::from_x_y_ranges(right - edge..=right, y)),
+        (NorthWest, square(rect.left_top(), [1.0, 1.0])),
+        (NorthEast, square(rect.right_top(), [-1.0, 1.0])),
+        (SouthWest, square(rect.left_bottom(), [1.0, -1.0])),
+        (SouthEast, square(rect.right_bottom(), [-1.0, -1.0])),
+    ]
+}
+
+/// The pointer's shape over one of them.
+pub fn cursor(direction: ResizeDirection) -> CursorIcon {
+    use ResizeDirection::*;
+    match direction {
+        North | South => CursorIcon::ResizeVertical,
+        East | West => CursorIcon::ResizeHorizontal,
+        NorthWest | SouthEast => CursorIcon::ResizeNwSe,
+        NorthEast | SouthWest => CursorIcon::ResizeNeSw,
+    }
 }
