@@ -15,6 +15,7 @@ Rexy is unofficial and not affiliated with Superlogical. It is early software fo
 - **Notifications that take you there.** Click one to go to the pane that sent it.
 - **Splits.** Split, resize and zoom panes, and move them between tabs.
 - **A real terminal.** libghostty does the emulation: Kitty graphics, hyperlinks, search through the whole history, and your Ghostty theme.
+- **Files and pictures reach the pane's machine.** Drop files on a pane, or paste a picture, and their paths are typed there. For a server on another machine they are sent to it first.
 - **Rex's own keymap**, from your home server's `init.lua`, and a command palette.
 
 ## Install

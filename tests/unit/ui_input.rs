@@ -136,6 +136,23 @@ fn a_paste_is_sent_once_as_a_paste() {
 }
 
 #[test]
+fn a_pasted_picture_is_sent_as_a_png_of_the_same_pixels() {
+    let pixels = [255, 0, 0, 255, 0, 0, 255, 128];
+    let image = Arc::new(ColorImage::from_rgba_unmultiplied([2, 1], &pixels));
+    let out = Keyboard::default().translate("p", &[Event::PasteImage(image)]);
+    let [Action::Upload { pane, files }] = &out[..] else {
+        panic!("a picture is one upload: {out:?}");
+    };
+    let [File::Pasted("clipboard.png", file)] = &files[..] else {
+        panic!("and one file of it: {files:?}");
+    };
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&file[..])).read_info().unwrap();
+    let mut read = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut read).unwrap();
+    assert_eq!((pane.as_str(), read.as_slice()), ("p", &pixels[..]));
+}
+
+#[test]
 fn ime_commit_has_no_extra_printable_press() {
     let mut keyboard = Keyboard::default();
     let out = keyboard.translate(

@@ -4,6 +4,7 @@ use rexy::{
     model::{self, Action, Activity, Edit, Size, Tab, View, Wait},
     notify::Herald,
     terminal::Frame,
+    upload::File,
 };
 use serde_json::{Value, json};
 use std::{
@@ -714,4 +715,68 @@ fn live_keymap_actions_and_requests() {
     // The configuration is left as it was found.
     std::fs::write(path, "").unwrap();
     rex(&endpoint, &["config", "reload"]).unwrap();
+}
+
+/// Files given to a pane reach its machine, and its terminal types where they
+/// are: what was pasted is sent, and a file the server can read is not.
+#[test]
+#[ignore = "requires REXY_TEST_SERVER pointing to a disposable Rex server"]
+fn live_files_reach_a_pane() {
+    let endpoint = endpoint();
+    let shell = ["new", "files", "--shell=none", "--keep-open", "--json", "--", "/bin/sh"];
+    let made: Value = serde_json::from_str(&rex(&endpoint, &shell).unwrap()).unwrap();
+    let session = made["session_id"].as_str().unwrap().to_owned();
+    let pane = made["initial_windows"][0]["block_ids"][0].as_str().unwrap().to_owned();
+    let client = open(&endpoint, Herald::new().0);
+    wait(&client, "a connection", |v| v.connected);
+    send(&client, Action::SelectSession(session.clone()));
+    wait(&client, "the pane", |v| frame(v, &pane).is_some());
+    // Wide, so that no path is broken over two lines.
+    let size = Size { cols: 240, rows: 24, cell_width: 9, cell_height: 19 };
+    send(&client, Action::Resize { pane: pane.clone(), size });
+    let shows = |label: &str, text: &str| wait(&client, label, |v| screen(v, &pane).contains(text));
+    let give = |files: Vec<File>| {
+        send(&client, Action::Text { pane: pane.clone(), text: "cat ".into() });
+        send(&client, Action::Upload { pane: pane.clone(), files });
+    };
+    let pasted = |name, text: &str| File::Pasted(name, Arc::from(text.as_bytes()));
+    // One file, and then two, whose paths are typed together and in order.
+    give(vec![pasted("alone.txt", "sent-alone\n")]);
+    shows("the path of a file sent alone", "alone.txt");
+    enter(&client, &pane);
+    shows("what was sent alone", "\nsent-alone");
+    // What is pasted is nowhere for the server to read, so a file here goes with it.
+    let second = std::env::temp_dir().join(format!("rexy-live-{}", std::process::id()));
+    std::fs::create_dir(&second).unwrap();
+    let second = second.join("second.txt");
+    std::fs::write(&second, "sent-second\n").unwrap();
+    give(vec![pasted("first.txt", "sent-first\n"), File::Path(second.clone())]);
+    let typed = shows("the paths of two files sent together", "second.txt");
+    assert!(screen(&typed, &pane).contains("first.txt"));
+    enter(&client, &pane);
+    shows("what was sent together", "\nsent-first\nsent-second");
+    assert!(!screen(&typed, &pane).contains(&second.display().to_string()));
+    std::fs::remove_dir_all(second.parent().unwrap()).unwrap();
+    // A large one arrives whole, in more than one message.
+    let large = "0123456789abcdef".repeat(20_000) + "\nsent-large\n";
+    send(&client, Action::Text { pane: pane.clone(), text: "tail -c 28 ".into() });
+    send(&client, Action::Upload { pane: pane.clone(), files: vec![pasted("large.txt", &large)] });
+    shows("the path of a large file", "large.txt");
+    enter(&client, &pane);
+    shows("the end of the large file", "\n0123456789abcdef\nsent-large");
+    // A file on the server's own machine is named where it is, as one word.
+    let here = std::env::temp_dir().join(format!("rexy live {}.txt", std::process::id()));
+    std::fs::write(&here, "read-in-place\n").unwrap();
+    give(vec![File::Path(here.clone())]);
+    let typed = format!("cat '{}'", here.display());
+    shows("the path of a file that is here already", &typed);
+    enter(&client, &pane);
+    shows("what was here already", "\nread-in-place");
+    std::fs::remove_file(here).unwrap();
+    // A folder is not sent, and the window is told why.
+    give(vec![pasted("kept.txt", "kept"), File::Path(std::env::temp_dir())]);
+    let failed = wait(&client, "word that nothing was sent", |v| v.error.is_some());
+    assert!(failed.error.unwrap().starts_with("Nothing was sent to the pane"));
+    // The server is left with the sessions it had, for the tests after this.
+    rex(&endpoint, &["kill", &session]).unwrap();
 }

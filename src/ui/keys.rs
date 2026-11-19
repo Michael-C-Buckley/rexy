@@ -71,7 +71,7 @@ impl App {
                 }
             }
             if pressed(Modifiers::CTRL, Key::V) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                self.paste(ctx, None);
             }
         }
         // It holds while home is there. Without home the keys are this client's own.

@@ -12,6 +12,7 @@ mod input;
 mod keymap;
 mod keys;
 mod motion;
+mod offers;
 mod palette;
 mod pane;
 mod pointer;
@@ -25,6 +26,7 @@ mod toolbar;
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -41,6 +43,7 @@ use find::Find;
 use heard::Heard;
 use input::Keyboard;
 use keymap::Keys;
+use offers::Pasted;
 use raise::Raise;
 pub use remembered::{LEAST_WINDOW, Remembered, state_home};
 use render::{PaneView, rgb};
@@ -141,6 +144,10 @@ pub struct App {
     /// the order the list of what is at work has them.
     wanting: Vec<(usize, String)>,
     closing: Closing,
+    /// The listening for what the window is offered, where that is this
+    /// client's to do, and the files dropped on it since it last drew.
+    offers: Option<offers::Offers>,
+    dropped: Vec<PathBuf>,
     /// The tab on show that its list was last scrolled to, and in which list. It
     /// is scrolled to once, and the list is the user's to scroll after that.
     followed: Option<egui::Id>,
@@ -187,6 +194,11 @@ impl App {
             stood: [None, None],
             wanting: Vec::new(),
             closing: Closing::default(),
+            offers: offers::Offers::listen(cc, {
+                let ctx = cc.egui_ctx.clone();
+                move || ctx.request_repaint()
+            }),
+            dropped: Vec::new(),
             followed: None,
         }
     }
@@ -199,6 +211,15 @@ impl App {
 
     fn send(&mut self, action: Action) {
         self.tell(self.current, action);
+    }
+
+    /// Paste what was copied to whatever has the keyboard, or to a `pane` as a
+    /// file if it is a picture. It is read here where this client listens for
+    /// it, and by the toolkit otherwise.
+    fn paste(&self, ctx: &egui::Context, pane: Option<(usize, String)>) {
+        if !self.offers.as_ref().is_some_and(|offers| offers.paste(pane)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+        }
     }
 
     /// Show a pane of a server's, whatever tab it is in and whatever hides it
@@ -364,7 +385,37 @@ impl eframe::App for App {
         }
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(offers) = &mut self.offers {
+            offers.stop();
+        }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        // Files dropped on the window, as the toolkit tells of them or as this
+        // client heard for itself: and then the pointer is where they landed.
+        self.dropped = input.dropped_files.iter().map(|file| file.path().to_owned()).collect();
+        let focus = |event: &egui::Event| matches!(event, egui::Event::WindowFocused(_));
+        if let Some(offers) = self.offers.as_mut().filter(|_| input.events.iter().any(focus)) {
+            offers.renew();
+        }
+        for ((x, y), files) in self.offers.iter().flat_map(|offers| offers.dropped.try_iter()) {
+            let at = egui::pos2(x as f32, y as f32) / ctx.zoom_factor();
+            input.events.push(egui::Event::PointerMoved(at));
+            self.dropped.extend(files);
+        }
+        // What was pasted, now that it is read: text as the toolkit tells of
+        // it, and a picture as a file for its pane.
+        let pasted = self.offers.iter().flat_map(|offers| offers.pasted.try_iter());
+        for pasted in pasted.collect::<Vec<_>>() {
+            match pasted {
+                Pasted::Text(text) => input.events.push(egui::Event::Paste(text)),
+                Pasted::Picture((server, pane), file) if server < self.servers.len() => {
+                    self.tell(server, Action::Upload { pane, files: vec![file] });
+                }
+                Pasted::Picture(..) => {}
+            }
+        }
         self.keyboard.settle(&mut input.events);
         self.keyboard.watch(&input.events);
     }

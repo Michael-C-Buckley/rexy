@@ -1,5 +1,5 @@
 //! Small UI-facing value model. Terminal frames are immutable, shared snapshots.
-use crate::{program::Program, terminal::Frame};
+use crate::{program::Program, terminal::Frame, upload::File};
 use serde_json::Value;
 use std::{cmp::Reverse, collections::HashSet, sync::Arc};
 
@@ -549,6 +549,13 @@ pub enum Action {
     Paste {
         pane: String,
         text: String,
+    },
+    /// Give a pane files, whose paths its terminal then types as a paste: where
+    /// they are, on a server on this machine, and otherwise where the server
+    /// keeps what is sent to it.
+    Upload {
+        pane: String,
+        files: Vec<File>,
     },
     Resize {
         pane: String,

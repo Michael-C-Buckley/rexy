@@ -11,6 +11,7 @@ use crate::{
     program::Program,
     ssh,
     terminal::{Notify, Request, Scroll, TerminalHandle},
+    upload,
     wire::{self, Answer, Control, Ended, Event, Failed, News, Rpc},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -300,6 +301,8 @@ struct Link {
     attached: Vec<String>,
     /// The address that answered last, of the several a host name can stand for.
     target: Option<wire::Target>,
+    /// The server is on this machine, and so are the files it can read.
+    local: bool,
     /// What is known of every terminal on the server, shown or not.
     blocks: HashMap<String, Block>,
     /// What each connection asks the server's keymap with, if this client has keys.
@@ -398,6 +401,7 @@ async fn run_connected(
         let (tunnel, mut control) = connect(endpoints, link).await?;
         link.token = control.reconnect_token.take();
         link.target = Some(control.target.clone());
+        link.local = tunnel.is_none() && matches!(control.target, wire::Target::Unix(_));
         let opened = Connection::open(&control, link, shared).await;
         // What the server would not answer is reason enough. Of a connection
         // that ended meanwhile, its worker alone knows why.
@@ -1510,6 +1514,25 @@ impl<'a> Connection<'a> {
                 // Whoever asked has stopped waiting if this comes too late, and
                 // there is nobody to tell.
                 let _ = self.rpc.enqueue("client.reply", reply(&call, error)).await;
+                return Ok(());
+            }
+            Action::Upload { pane, files } => {
+                let session = self.session(&pane)?;
+                // Files on the pane's own machine are named where they are.
+                let here = files.iter().map(|file| file.path().filter(|_| self.link.local));
+                if let Some(here) = here.collect::<Option<Vec<_>>>() {
+                    let quoted = here.iter().map(|path| upload::quoted(&path.to_string_lossy()));
+                    let text = quoted.collect::<Vec<_>>().join(" ");
+                    return self.input(Action::Paste { pane, text }).await;
+                }
+                let (rpc, target, shared) =
+                    (self.rpc.clone(), self.target.clone(), self.shared.clone());
+                tokio::spawn(async move {
+                    let sent = upload::send(&rpc, &target, &session, &pane, &files).await;
+                    if let Err(error) = sent {
+                        shared.fail(format!("Nothing was sent to the pane: {error:#}"));
+                    }
+                });
                 return Ok(());
             }
             input => return self.input(input).await,

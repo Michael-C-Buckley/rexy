@@ -1,11 +1,17 @@
 //! Translate egui events once, preserving physical key identity without typing twice.
 //! Every key reaches the terminal as itself: the window is told not to turn Ctrl+C,
 //! X and V into clipboard events. A key is also spelled here as Rex's keymaps spell it.
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use eframe::egui::{Event, ImeEvent, Key, Modifiers};
+use eframe::egui::{ColorImage, Event, ImeEvent, Key, Modifiers};
 
-use crate::model::{self, Action};
+use crate::{
+    model::{self, Action},
+    upload::File,
+};
 
 #[derive(Default)]
 pub struct Keyboard {
@@ -135,6 +141,13 @@ impl Keyboard {
                 Event::Paste(text) => {
                     actions.push(Action::Paste { pane: pane.into(), text: text.clone() })
                 }
+                // A picture has no text to type. It is sent to the pane's machine
+                // as a file, and where it is kept there is typed.
+                Event::PasteImage(image) => {
+                    let files = png(image).map(|png| vec![File::Pasted("clipboard.png", png)]);
+                    let upload = |files| Action::Upload { pane: pane.into(), files };
+                    actions.extend(files.map(upload));
+                }
                 Event::Ime(ImeEvent::Preedit { text, .. }) => {
                     self.preedit.clone_from(text);
                 }
@@ -156,6 +169,18 @@ impl Keyboard {
         }
         actions
     }
+}
+
+/// A picture as a PNG file.
+fn png(image: &ColorImage) -> Option<Arc<[u8]>> {
+    let (mut file, [width, height]) = (Vec::new(), image.size);
+    let mut encoder = png::Encoder::new(&mut file, width as u32, height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_compression(png::Compression::Fast);
+    let pixels: Vec<u8> =
+        image.pixels.iter().flat_map(|pixel| pixel.to_srgba_unmultiplied()).collect();
+    encoder.write_header().ok()?.write_image_data(&pixels).ok()?;
+    Some(file.into())
 }
 
 /// A copy chord still presses and releases its modifiers. Those must leave the

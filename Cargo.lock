@@ -2417,6 +2417,7 @@ dependencies = [
  "libc",
  "libghostty-vt",
  "percent-encoding",
+ "png",
  "raw-window-handle",
  "resvg",
  "rustls",

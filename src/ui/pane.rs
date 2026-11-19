@@ -23,6 +23,7 @@ use crate::{
     link,
     model::{Action, Pane, Tab, View},
     terminal::{Copied, Frame, Request, Scroll},
+    upload::File,
 };
 
 const PANE_HEADER: f32 = 28.0;
@@ -223,7 +224,12 @@ impl App {
         };
         let paste = ui.input(|i| i.events.iter().find_map(paste));
         let paste = paste.filter(|_| response.hovered() && !tracking);
+        // Files dropped on the window are for the pane they landed on, or the
+        // one in use where the desktop does not say where that was.
+        let here = if ui.input(|i| i.pointer.has_pointer()) { over } else { active };
+        let dropped = if here && live { std::mem::take(&mut self.dropped) } else { Vec::new() };
         let pressed = response.clicked() || response.drag_started() || paste.is_some();
+        let pressed = pressed || !dropped.is_empty();
         if pressed || picked {
             self.focused = Some(pane.id.clone());
             // A pane that is this window's, and where the server has the keyboard
@@ -239,6 +245,10 @@ impl App {
             }
             let pane = pane.id.clone();
             actions.push(Action::Paste { pane, text });
+        }
+        if !dropped.is_empty() {
+            let files = dropped.into_iter().map(File::Path).collect();
+            actions.push(Action::Upload { pane: pane.id.clone(), files });
         }
         if let Some(frame) = frame {
             let events = ui.input(|i| i.events.clone());

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in X11 smoke check on an existing isolated display and disposable Rex pane.
 
-Requires libX11, libXtst, xclip, and the Rex CLI. Never uses the default display/server.
+Requires libX11, libXtst, xclip, ImageMagick, file, and the Rex CLI. Never uses the default display/server.
 """
 import argparse
 import ctypes as C
@@ -150,6 +150,18 @@ chord(ord('v'), ctrl=True, shift=True)
 chord(RETURN)
 expect('paste of what another program copied', lambda text: text.count(f'outside-{nonce}') >= 2)
 chord(ord('c'), ctrl=True)
+
+# A picture alone on the clipboard is sent to the pane's machine, and where it
+# is kept there is typed.
+picture = subprocess.run(['magick', '-size', '64x48', 'gradient:red-blue', 'png:-'],
+    capture_output=True, check=True).stdout
+subprocess.run(['xclip', '-selection', 'clipboard', '-t', 'image/png', '-display', args.display,
+    '-i'], input=picture, check=True, timeout=5, stderr=subprocess.DEVNULL)
+type_text('file ')
+chord(ord('v'), ctrl=True, shift=True)
+expect('a pasted picture is typed as a path', lambda text: 'clipboard.png' in text)
+chord(RETURN)
+expect('the pasted picture is on the pane\'s machine', lambda text: 'PNG image data, 64 x 48' in text)
 
 # A program tracking the mouse gets the clicks on its pane.
 type_text("printf '\\033[?1000h\\033[?1006h'; cat -v")
