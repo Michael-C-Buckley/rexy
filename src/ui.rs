@@ -153,6 +153,8 @@ pub struct App {
     /// The panes that want the user, on every server, each with its server: in
     /// the order the list of what is at work has them.
     wanting: Vec<(usize, String)>,
+    /// Of every server, whether it has a session to turn the window to.
+    hosts: Vec<bool>,
     /// A pane looked at over the tab on show, which has the keyboard meanwhile.
     peek: Option<peek::Peek>,
     /// A floating layer the pointer has hold of, to move it or give it another size.
@@ -213,6 +215,7 @@ impl App {
             visited: [None, None],
             stood: [None, None],
             wanting: Vec::new(),
+            hosts: Vec::new(),
             peek: None,
             grip: None,
             left: None,
@@ -487,6 +490,7 @@ impl eframe::App for App {
         }
         self.hear(&ctx, &mut views);
         self.wanting = self.wanted(&views);
+        self.hosts = views.iter().map(|view| view.connected && !view.sessions.is_empty()).collect();
         self.returned(&ctx, &views);
         // All of a pane, which the user asked for, is theirs wherever they are now.
         for mut output in views.iter_mut().filter_map(|view| view.output.take()) {

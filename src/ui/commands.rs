@@ -67,6 +67,9 @@ pub const COMMANDS: &[Command] = &[
     ("session.refresh", "Reconnect", ONCE),
     (hosts::ADD, "Add Remote Host…", ONCE),
     (hosts::REMOVE, "Remove Host…", ONCE),
+    // Rex has no name for these, which turn the window to another server.
+    (hosts::NEXT, "Next Host", HELD),
+    (hosts::PREVIOUS, "Previous Host", HELD),
     ("client.tab.new", "New Tab", ONCE),
     ("client.tab.close", "Close Tab", ONCE),
     ("client.tab.rename", "Rename Tab", ONCE),
@@ -269,6 +272,9 @@ pub(super) enum Deed {
     Reveal(usize, String),
     /// Looking at a pane of some server's from the tab on show.
     Peek(usize, String),
+    /// Turning the window to another server, where it shows what it last
+    /// showed there.
+    Turn(usize),
     /// Taking the keyboard to a pane.
     Focus(String),
     Font(f32),
@@ -317,6 +323,10 @@ pub(super) struct Standing<'a> {
     pub back: Option<&'a ((usize, String), String)>,
     /// Some host that home names is its list's own to remove.
     pub removable: bool,
+    /// The server on show, and of every server whether it has a session to
+    /// turn the window to.
+    pub server: usize,
+    pub hosts: &'a [bool],
 }
 
 impl Standing<'_> {
@@ -404,6 +414,17 @@ impl Standing<'_> {
             "session.switch" => Deed::Palette(Listing::Places),
             hosts::ADD => Deed::Palette(Listing::Host(None)),
             hosts::REMOVE if self.removable => Deed::Palette(Listing::Hosts),
+            // The next server with a session, or the one before, round and
+            // round: but not the one on show.
+            hosts::NEXT | hosts::PREVIOUS => {
+                let of = self.hosts.len();
+                let mut at = self.server;
+                let next = (1..of).find_map(|_| {
+                    at = round(at, of);
+                    self.hosts[at].then_some(at)
+                });
+                Deed::Turn(next?)
+            }
             REMOTE => Deed::Remote,
             "client.font.increase" => Deed::Font(self.font_size + 1.0),
             "client.font.decrease" => Deed::Font(self.font_size - 1.0),
@@ -581,6 +602,8 @@ impl App {
             peeked: self.peek.as_ref().map(|peek| peek.pane.as_str()),
             back: self.stood[1].as_ref(),
             removable: self.servers[1..].iter().any(|server| server.host.source.is_empty()),
+            server: self.current,
+            hosts: &self.hosts,
         }
     }
 
@@ -611,6 +634,7 @@ impl App {
             Deed::Show(server, action) => self.open(server, action),
             Deed::Reveal(server, pane) => _ = self.reveal(server, &pane),
             Deed::Peek(server, pane) => self.peek(server, &pane),
+            Deed::Turn(server) => self.next = Some(server),
             Deed::Focus(pane) => self.focus(pane),
             Deed::Font(size) => {
                 self.remembered.kept.font_size = size.clamp(FONT_SIZES[0], FONT_SIZES[1]);
