@@ -66,6 +66,7 @@
                 ./assets/fonts
                 ./assets/icons
                 ./assets/dev.rexy.client.svg
+                ./assets/dev.rexy.client.desktop
               ];
             };
             nativeBuildInputs = with pkgs; [
@@ -84,6 +85,12 @@
             commonArgs
             // {
               cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+              postInstall = ''
+                install -Dm644 assets/dev.rexy.client.desktop \
+                  "$out/share/applications/dev.rexy.client.desktop"
+                install -Dm644 assets/dev.rexy.client.svg \
+                  "$out/share/icons/hicolor/scalable/apps/dev.rexy.client.svg"
+              '';
               postFixup = ''
                 wrapProgram "$out/bin/rexy" \
                   --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeLibraries}" \
